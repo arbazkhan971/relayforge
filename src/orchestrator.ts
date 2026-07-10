@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
   addEvent,
@@ -22,13 +23,15 @@ import {
   discoverTestFiles,
   hashFiles,
   headSha,
+  changedFiles,
   hasChanges,
   isGitRepo,
+  resetHard,
   revertWorkingTree,
   workingDiff
 } from "./git.js";
 import { analyzeProject, writeIntelligence } from "./intelligence.js";
-import { buildHeadlessCommand, commandToShell, shellQuote } from "./providers.js";
+import { buildHeadlessCommand, shellQuote } from "./providers.js";
 import { buildRolePrompt } from "./prompts.js";
 import { ensureWindow, paneTitle, runCommandInPane, sessionName } from "./tmux.js";
 import {
@@ -50,12 +53,102 @@ export type RunContext = {
   boardDir: string;
   promptDir: string;
   session: string;
+  runLog: string;
+  statePath: string;
+  contextPath: string;
+  heartbeatPath: string;
   /** role -> isolated worktree, populated when isolation is enabled. */
   worktrees?: Record<string, Worktree>;
 };
 
+export type LoopRunState = {
+  runId: string;
+  project: string;
+  phase: "init" | "verify-preflight" | "dispatch" | "review" | "post-check" | "stopped" | "complete";
+  status: "running" | "blocked" | "done" | "stopped";
+  iteration: number;
+  dispatched: number;
+  accepted: number;
+  rejected: number;
+  escalations: number;
+  repeatFailures: number;
+  lastGreenCommit?: string;
+  lastFailureSignature?: string;
+  lastFailureSummary?: string;
+  lastStopReason?: string;
+  verifyFingerprint?: string;
+  startedAt: string;
+  updatedAt: string;
+};
+
+type LoopLogEvent = {
+  ts: string;
+  runId: string;
+  iter: number;
+  event: string;
+  role?: string;
+  taskId?: string;
+  detail: string;
+};
+
 export function nowIso(): string {
   return new Date().toISOString();
+}
+
+function defaultLoopState(ctx: RunContext): LoopRunState {
+  const now = nowIso();
+  return {
+    runId: ctx.runId,
+    project: ctx.project.name,
+    phase: "init",
+    status: "running",
+    iteration: 0,
+    dispatched: 0,
+    accepted: 0,
+    rejected: 0,
+    escalations: 0,
+    repeatFailures: 0,
+    startedAt: now,
+    updatedAt: now
+  };
+}
+
+function loadLoopState(ctx: RunContext): LoopRunState {
+  if (!existsSync(ctx.statePath)) {
+    const initial = defaultLoopState(ctx);
+    writeFileSync(ctx.statePath, JSON.stringify(initial, null, 2));
+    return initial;
+  }
+
+  try {
+    const raw = readFileSync(ctx.statePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return defaultLoopState(ctx);
+    return { ...defaultLoopState(ctx), ...parsed };
+  } catch {
+    const reset = defaultLoopState(ctx);
+    writeFileSync(ctx.statePath, JSON.stringify(reset, null, 2));
+    return reset;
+  }
+}
+
+function saveLoopState(ctx: RunContext, state: LoopRunState): LoopRunState {
+  state.updatedAt = nowIso();
+  writeFileSync(ctx.statePath, JSON.stringify({ ...state }, null, 2));
+  return state;
+}
+
+function logLoopEvent(ctx: RunContext, event: Omit<LoopLogEvent, "ts" | "runId">): void {
+  const entry = {
+    ts: nowIso(),
+    runId: ctx.runId,
+    ...event
+  } as LoopLogEvent;
+  appendFileSync(ctx.runLog, `${JSON.stringify(entry)}\n`);
+}
+
+function heartbeat(ctx: RunContext, iteration: number): void {
+  writeFileSync(ctx.heartbeatPath, `${nowIso()}\titer=${iteration}\n`);
 }
 
 function delay(ms: number): Promise<void> {
@@ -73,20 +166,34 @@ export function prepareRun(
     cadenceMinutes: 30,
     maxIterations: 8,
     stopWhen: ["tests pass", "all tasks done"],
-    idleSeconds: 20,
     pollSeconds: 8,
-    orchestrator: "pm"
+    orchestrator: "pm",
+    reviewer: "qa",
+    verifyStabilityRuns: 3,
+    maxSameFailureCount: 2,
+    contextTokenBudget: 16000,
+    postMergeVerify: true,
+    maxParallel: 1,
+    isolate: true,
+    budgetUsd: 0,
+    maxRepairs: 2,
+    idleSeconds: 20
   };
   const cwd = resolve(loaded.rootDir, project.workingDir);
   const runDir = resolve(loaded.rootDir, loaded.config.defaults.runDir, runId);
   const boardDir = resolve(runDir, "board");
   const promptDir = resolve(runDir, "prompts");
+  const runLog = resolve(runDir, ".loop_log.jsonl");
+  const statePath = resolve(runDir, ".loop_state.json");
+  const contextPath = resolve(runDir, ".loop_context.md");
+  const heartbeatPath = resolve(runDir, ".loop_heartbeat");
+  mkdirSync(runDir, { recursive: true });
   mkdirSync(promptDir, { recursive: true });
   initBoard(boardDir);
 
   const session = sessionName(loaded.config.defaults.namespace, project.name, runId, "team");
 
-  return { loaded, project, loop, runId, goal, cwd, runDir, boardDir, promptDir, session };
+  return { loaded, project, loop, runId, goal, cwd, runDir, boardDir, promptDir, session, runLog, statePath, contextPath, heartbeatPath };
 }
 
 /** Write each role's persistent system prompt (SME + project intelligence + protocol). */
@@ -262,6 +369,155 @@ function dependenciesMet(task: TaskView, all: TaskView[]): boolean {
   return task.dependsOn.every((dep) => byId.get(dep)?.status === "done");
 }
 
+export type VerifyResult = {
+  ok: boolean;
+  code: number;
+  output: string;
+  fingerprint: string;
+};
+
+function stableFingerprints(results: VerifyResult[]): boolean {
+  if (results.length <= 1) return true;
+  const first = results[0];
+  return results.slice(1).every((r) => r.ok === first.ok && r.fingerprint === first.fingerprint);
+}
+
+function runVerifyWithFingerprint(cwd: string, verifyCmd: string): VerifyResult {
+  const result = spawnSync("bash", ["-lc", verifyCmd], { cwd, encoding: "utf8", timeout: 300_000 });
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  return {
+    ok: result.status === 0,
+    code: result.status ?? -1,
+    output,
+    fingerprint: createHash("sha256").update(output).digest("hex")
+  };
+}
+
+function runVerifyStable(cwd: string, verifyCmd: string, runs: number): {
+  runs: number;
+  results: VerifyResult[];
+  stable: boolean;
+} {
+  const iterations = Math.max(1, runs);
+  const results: VerifyResult[] = [];
+  for (let i = 0; i < iterations; i++) {
+    results.push(runVerifyWithFingerprint(cwd, verifyCmd));
+  }
+  return {
+    runs: iterations,
+    results,
+    stable: stableFingerprints(results)
+  };
+}
+
+function signatureFromText(taskId: string, text: string): string {
+  return createHash("sha256")
+    .update(taskId)
+    .update("\0")
+    .update(text)
+    .digest("hex");
+}
+
+function noteLoopFailure(
+  ctx: RunContext,
+  state: LoopRunState,
+  summary: string,
+  role: string,
+  taskId: string,
+  event: string
+): void {
+  const signature = signatureFromText(taskId, summary);
+  state.rejected += 1;
+  state.lastFailureSummary = summary;
+  state.repeatFailures = state.lastFailureSignature === signature ? state.repeatFailures + 1 : 1;
+  state.lastFailureSignature = signature;
+  logLoopEvent(ctx, {
+    iter: state.iteration,
+    event,
+    role,
+    taskId,
+    detail: summary
+  });
+}
+
+function extractFailureFiles(text: string): string[] {
+  const re = /\b([a-zA-Z0-9_./-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|cpp|c|cs|rb|php|yml|yaml|json))\b/g;
+  const out = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) out.add(m[1]);
+  return [...out];
+}
+
+function buildIterationContext(ctx: RunContext, state: LoopRunState): string {
+  const board = foldBoard(ctx.boardDir);
+  const open = board.filter((t) => t.status !== "done" && t.status !== "rejected" && t.status !== "escalated");
+  const terminal = board.filter((t) => t.status === "done" || t.status === "rejected" || t.status === "escalated");
+
+  const candidateFiles = new Set<string>();
+  if (state.lastFailureSummary) {
+    for (const f of extractFailureFiles(state.lastFailureSummary)) candidateFiles.add(f);
+  }
+  if (state.lastGreenCommit) {
+    for (const f of changedFiles(ctx.cwd, state.lastGreenCommit)) candidateFiles.add(f);
+  }
+  for (const f of changedFiles(ctx.cwd)) candidateFiles.add(f);
+
+  const files = [...candidateFiles]
+    .filter((f) => f && existsSync(resolve(ctx.cwd, f)))
+    .filter((f) => /\.(ts|tsx|js|jsx|py|go|rs|java|cpp|c|cs|rb|php|yml|yaml|json)$/.test(f))
+    .slice(0, 30);
+  const budget = ctx.loop.contextTokenBudget ?? 16_000;
+  let used = 0;
+  const lines: string[] = [];
+
+  const push = (line: string): void => {
+    used += line.length + 1;
+    lines.push(line);
+  };
+
+  push("# Loop execution context");
+  push(`runId: ${ctx.runId}`);
+  push(`project: ${ctx.project.name}`);
+  push(`iteration: ${state.iteration}`);
+  push(`phase: ${state.phase}`);
+  push(`status: ${state.status}`);
+  push(`summary: dispatched=${state.dispatched} accepted=${state.accepted} rejected=${state.rejected} escalations=${state.escalations}`);
+  push(`lastFailureSummary: ${state.lastFailureSummary ?? "none"}`);
+  push(`lastFailureSignature: ${state.lastFailureSignature ?? "none"}`);
+  push(`verifyFingerprint: ${state.verifyFingerprint ?? "none"}`);
+
+  push("");
+  push("## Open work");
+  for (const task of open.slice(0, 20)) {
+    push(`- ${task.id} ${task.status} (${task.assignee}) attempts=${task.attempts} summary=${task.lastSummary ?? "—"}`);
+  }
+  if (terminal.length) {
+    push("## Completed / terminal");
+    for (const task of terminal.slice(0, 20)) {
+      push(`- ${task.id} ${task.status} (${task.assignee}) attempts=${task.attempts}`);
+    }
+  }
+  push("## Relevant files");
+  for (const file of files) {
+    push(`### ${file}`);
+    if (used >= budget) break;
+    let body = "";
+    try {
+      body = readFileSync(resolve(ctx.cwd, file), "utf8");
+    } catch {
+      continue;
+    }
+    body = body.trim();
+    if (!body) continue;
+    const remaining = budget - used;
+    if (remaining <= 0) break;
+    const chunk = body.length > remaining - 80 ? body.slice(0, Math.max(0, remaining - 80)) : body;
+    push(chunk);
+  }
+  const raw = lines.join("\n");
+  return raw.length > budget ? raw.slice(0, Math.max(0, budget - 80)) + "\n…(context truncated)" : raw;
+}
+
 /**
  * Run one headless SME child for a task inside its tmux pane (so a human watching the
  * window sees the work), detect completion by exit code + structured output, then run
@@ -273,11 +529,40 @@ async function dispatchTask(
   task: TaskView,
   paneId: string,
   verifyCmd: string | undefined,
+  state: LoopRunState,
+  iterationContext: string,
+  worktree: Worktree | undefined,
   workCwd: string = ctx.cwd
 ): Promise<void> {
   const provider = ctx.project.providers[role.provider];
+  if (!provider) {
+    const summary = `No provider configured for role ${role.name}.`;
+    noteLoopFailure(ctx, state, summary, role.name, task.id, "provider_missing");
+    addEvent(ctx.boardDir, {
+      ts: nowIso(),
+      role: role.name,
+      taskId: task.id,
+      status: "blocked",
+      summary
+    });
+    return;
+  }
+
   const promptFile = resolve(ctx.promptDir, `${role.name}.md`);
   const isRepair = task.attempts > 0 || task.status === "blocked" || task.status === "rejected";
+
+  if (ctx.loop.isolate && worktree && !worktree.isolated) {
+    const summary = `Isolation unavailable for ${role.name}: ${worktree.reason ?? "worktree fallback to shared checkout"}.`;
+    noteLoopFailure(ctx, state, summary, role.name, task.id, "isolation_unavailable");
+    addEvent(ctx.boardDir, {
+      ts: nowIso(),
+      role: role.name,
+      taskId: task.id,
+      status: "blocked",
+      summary
+    });
+    return;
+  }
 
   addEvent(ctx.boardDir, { ts: nowIso(), role: role.name, taskId: task.id, status: "claimed" });
 
@@ -288,7 +573,9 @@ async function dispatchTask(
   const baseSha = git ? headSha(workCwd) : undefined;
   const testFiles = git ? discoverTestFiles(workCwd) : [];
   const testHashBefore = git ? hashFiles(workCwd, testFiles) : "";
-  const baselineGreen = verifyCmd ? runVerify(workCwd, verifyCmd).ok : true;
+  const baselineVerify = verifyCmd
+    ? runVerifyWithFingerprint(workCwd, verifyCmd)
+    : { ok: true, code: 0, output: "", fingerprint: "" };
 
   // #4 Give the SME the inbox + upstream results so coordination is real, and #2 inject
   // the prior failure so a repair attempt doesn't repeat the same mistake.
@@ -300,6 +587,7 @@ async function dispatchTask(
     `Acceptance criteria:`,
     ...task.acceptanceCriteria.map((c) => `- ${c}`),
     context ? `\n${context}` : "",
+    iterationContext ? `\n\n## Iteration context snapshot\n${iterationContext}` : "",
     isRepair && task.lastSummary
       ? `\nPREVIOUS ATTEMPT FAILED: ${task.lastSummary}\nDo NOT repeat the failed approach. Fix the root cause.`
       : "",
@@ -330,35 +618,41 @@ async function dispatchTask(
   // of what the suite now reports.
   if (git && testFiles.length && hashFiles(workCwd, testFiles) !== testHashBefore) {
     revertWorkingTree(workCwd);
+    const summary = "Rejected: agent modified test/CI files (tampering with the grader).";
+    noteLoopFailure(ctx, state, summary, role.name, task.id, "reward_hack");
     addEvent(ctx.boardDir, {
       ts: nowIso(),
       role: role.name,
       taskId: task.id,
       status: "blocked",
-      summary: "Rejected: agent modified test/CI files (tampering with the grader)."
+      summary
     });
     return;
   }
 
   if (!result.ok) {
     if (git) revertWorkingTree(workCwd);
+    const summary = `Agent failed: ${failureTail(result.stdout, result.stderr) || "exited non-zero / no result"}`;
+    noteLoopFailure(ctx, state, summary, role.name, task.id, "agent_fail");
     addEvent(ctx.boardDir, {
       ts: nowIso(),
       role: role.name,
       taskId: task.id,
       status: "blocked",
-      summary: `Agent failed: ${failureTail(result.stdout, result.stderr) || "exited non-zero / no result"}`
+      summary
     });
     return;
   }
 
   if (git && !hasChanges(workCwd)) {
+    const summary = "Agent reported success but made no changes to the working tree.";
+    noteLoopFailure(ctx, state, summary, role.name, task.id, "no_change");
     addEvent(ctx.boardDir, {
       ts: nowIso(),
       role: role.name,
       taskId: task.id,
       status: "blocked",
-      summary: "Agent reported success but made no changes to the working tree."
+      summary
     });
     return;
   }
@@ -366,25 +660,42 @@ async function dispatchTask(
   let verifyOutput = "";
   let verified = true;
   if (verifyCmd) {
-    const v = runVerify(workCwd, verifyCmd);
+    const v = runVerifyWithFingerprint(workCwd, verifyCmd);
     verified = v.ok;
     verifyOutput = v.output;
+    state.verifyFingerprint = v.fingerprint;
   }
 
   // #3 Revert a regression: only when the suite was green before and is red now. Never
   // let a regression persist on disk for the next task to inherit.
-  if (baselineGreen && !verified) {
+  if (baselineVerify.ok && !verified) {
     if (git) revertWorkingTree(workCwd);
+    const summary = `Verification (${verifyCmd}) regressed — reverted. ${failureTail(verifyOutput, "")}`;
+    noteLoopFailure(ctx, state, summary, role.name, task.id, "verify_regression");
     addEvent(ctx.boardDir, {
       ts: nowIso(),
       role: role.name,
       taskId: task.id,
       status: "blocked",
-      summary: `Verification (${verifyCmd}) regressed — reverted. ${failureTail(verifyOutput, "")}`
+      summary
     });
     return;
   }
 
+  if (!verified) {
+    const summary = `Implemented but verification (${verifyCmd}) failed. ${failureTail(verifyOutput, "")}`;
+    noteLoopFailure(ctx, state, summary, role.name, task.id, "verify_failed");
+    addEvent(ctx.boardDir, {
+      ts: nowIso(),
+      role: role.name,
+      taskId: task.id,
+      status: "blocked",
+      summary
+    });
+    return;
+  }
+
+  if (verified) state.repeatFailures = 0;
   addEvent(ctx.boardDir, {
     ts: nowIso(),
     role: role.name,
@@ -472,6 +783,7 @@ export function agentReportedSuccess(stdout: string): boolean {
 }
 
 function mirrorToPane(paneId: string, chunk: string): void {
+  if (!paneId) return;
   const line = chunk.split("\n").filter(Boolean).slice(-1)[0];
   if (!line) return;
   // display-message is non-destructive and shows in the pane's status without
@@ -479,14 +791,94 @@ function mirrorToPane(paneId: string, chunk: string): void {
   spawnSync("tmux", ["display-message", "-t", paneId, "-d", "1", line.slice(0, 120)], { stdio: "ignore" });
 }
 
-function runVerify(cwd: string, verifyCmd: string): { ok: boolean; output: string } {
-  const result = spawnSync("bash", ["-lc", verifyCmd], { cwd, encoding: "utf8", timeout: 300_000 });
-  return { ok: result.status === 0, output: `${result.stdout ?? ""}\n${result.stderr ?? ""}` };
-}
+function stopConditionMet(
+  ctx: RunContext,
+  state: LoopRunState,
+  verifyCmd: string | undefined
+): boolean {
+  const wanted = new Set((ctx.loop.stopWhen ?? []).map((s) => s.toLowerCase()));
+  const doneOrTerminal = isComplete(ctx.boardDir);
+  let recognized = false;
 
-/** stopWhen evaluation: today we support the structural condition "all tasks done". */
-function stopConditionMet(ctx: RunContext): boolean {
-  return isComplete(ctx.boardDir);
+  if (wanted.has("all tasks done") || wanted.has("review complete")) {
+    recognized = true;
+    if (doneOrTerminal) {
+      state.phase = "complete";
+      logLoopEvent(ctx, { iter: state.iteration, event: "stop_condition", detail: "all tasks in terminal state" });
+      return true;
+    }
+  }
+
+  if (wanted.has("tests pass") && verifyCmd) {
+    recognized = true;
+    const gate = runVerifyStable(ctx.cwd, verifyCmd, Math.max(1, ctx.loop.verifyStabilityRuns));
+    const final = gate.results[gate.results.length - 1];
+    if (!gate.stable) {
+      logLoopEvent(ctx, {
+        iter: state.iteration,
+        event: "tests_not_stable",
+        detail: `verify-stability failed after ${gate.runs} runs`
+      });
+      return false;
+    }
+    if (final?.ok) {
+      state.verifyFingerprint = final.fingerprint;
+      state.lastGreenCommit = headSha(ctx.cwd);
+      logLoopEvent(ctx, {
+        iter: state.iteration,
+        event: "tests_pass",
+        detail: `tests pass condition satisfied after ${gate.runs} stable runs`
+      });
+      return true;
+    }
+  }
+
+  if (wanted.has("tests pass") && !verifyCmd) {
+    recognized = true;
+    if (doneOrTerminal) {
+      state.phase = "complete";
+      logLoopEvent(ctx, {
+        iter: state.iteration,
+        event: "stop_condition",
+        detail: "tests pass requested but verify unavailable; stopping on terminal tasks"
+      });
+      return true;
+    }
+    logLoopEvent(ctx, {
+      iter: state.iteration,
+      event: "stop_condition_unknown",
+      detail: "stopWhen requested tests pass, but verify command not detected; falling back to task completion"
+    });
+  }
+
+  if (wanted.has("pull request opened")) {
+    recognized = true;
+    if (doneOrTerminal) {
+      state.phase = "complete";
+      logLoopEvent(ctx, { iter: state.iteration, event: "stop_condition", detail: "stop alias: pull request opened treated as all-tasks-done" });
+      return true;
+    }
+  }
+
+  if (!wanted.size) {
+    if (doneOrTerminal) {
+      state.phase = "complete";
+      logLoopEvent(ctx, { iter: state.iteration, event: "stop_condition", detail: "default stop condition: all tasks done" });
+      return true;
+    }
+  }
+
+  if (!recognized && doneOrTerminal) {
+    state.phase = "complete";
+    logLoopEvent(ctx, {
+      iter: state.iteration,
+      event: "stop_condition",
+      detail: "fallback stop condition: all tasks done"
+    });
+    return true;
+  }
+
+  return false;
 }
 
 export type IterationReport = {
@@ -494,6 +886,8 @@ export type IterationReport = {
   dispatched: { role: string; taskId: string }[];
   summary: ReturnType<typeof boardSummary>;
 };
+
+export type ReviewResult = { accepted: number };
 
 /**
  * The autonomy loop. Each iteration: for every SME, dispatch its highest-priority
@@ -508,23 +902,64 @@ export async function runAutonomyLoop(
 ): Promise<IterationReport[]> {
   const verifyCmd = detectVerifyCommand(ctx);
   initCostLedger(ctx.boardDir);
+  let state = loadLoopState(ctx);
+  if (state.status === "done") {
+    return [];
+  }
   const panes = ensureWindow(
     ctx.session,
     ctx.cwd,
     ctx.project.roles.map((r) => ({ name: r.name, title: paneTitle(r.title) }))
   );
+  state.phase = "verify-preflight";
+  state.status = "running";
+  state.lastStopReason = undefined;
+  saveLoopState(ctx, state);
+  logLoopEvent(ctx, { iter: 0, event: "loop_start", detail: `roles=${ctx.project.roles.length}` });
 
   const reports: IterationReport[] = [];
   const budget = ctx.loop.budgetUsd ?? 0;
+  let stopReason: string | undefined;
   // #5/#6 Isolation enables real parallelism. Worktrees require a git repo; without one we
   // force serial execution so concurrent agents can't clobber the shared working dir.
   const isolate = ctx.loop.isolate && worktreesSupported(ctx.cwd);
   const maxParallel = isolate ? Math.max(1, ctx.loop.maxParallel) : 1;
   // Track each role's worktree across iterations so the critic can merge accepted work back.
   ctx.worktrees = ctx.worktrees ?? {};
+  const verifyStabilityRuns = Math.max(1, ctx.loop.verifyStabilityRuns);
+
+  // preflight: ensure deterministic verify gate before dispatching.
+  if (verifyCmd) {
+    const preflight = runVerifyStable(ctx.cwd, verifyCmd, verifyStabilityRuns);
+    const final = preflight.results[preflight.results.length - 1];
+    if (final) state.verifyFingerprint = final.fingerprint;
+    state.lastGreenCommit = isComplete(ctx.boardDir) ? headSha(ctx.cwd) : state.lastGreenCommit;
+    logLoopEvent(ctx, {
+      iter: 0,
+      event: "preflight_verify",
+      detail: `runs=${preflight.runs}, stable=${preflight.stable}, ok=${final?.ok}`
+    });
+    if (!preflight.stable) {
+      state.status = "stopped";
+      state.phase = "stopped";
+      state.lastStopReason = "preflight verifier unstable";
+      saveLoopState(ctx, state);
+      logLoopEvent(ctx, { iter: 0, event: "stopped", detail: state.lastStopReason });
+      if (isolate) cleanupRunWorktrees(ctx.cwd, ctx.runId, ctx.project.roles.map((r) => r.name));
+      return reports;
+    }
+    if (final?.ok) state.lastGreenCommit = headSha(ctx.cwd);
+    state.repeatFailures = 0;
+  }
 
   for (let iteration = 1; iteration <= ctx.loop.maxIterations; iteration++) {
+    state.iteration = iteration;
+    state.phase = "dispatch";
+    heartbeat(ctx, iteration);
     const all = foldBoard(ctx.boardDir);
+    const iterationContext = buildIterationContext(ctx, state);
+    writeFileSync(ctx.contextPath, iterationContext);
+    saveLoopState(ctx, state);
 
     // Select at most one task per role this iteration (a role works one thing at a time),
     // skipping roles that already have work awaiting review.
@@ -564,27 +999,73 @@ export async function runAutonomyLoop(
           }
           const wt = isolate ? ensureWorktree(ctx.cwd, ctx.runId, role.name) : undefined;
           if (wt) ctx.worktrees![role.name] = wt;
-          return dispatchTask(ctx, role, task, panes[role.name], verifyCmd, wt?.path ?? ctx.cwd);
+          return dispatchTask(ctx, role, task, panes[role.name], verifyCmd, state, iterationContext, wt, wt?.path ?? ctx.cwd);
         })
       );
     }
 
+    state.phase = "review";
     // #1 Independent critic review of every needs-review task; #2 escalate exhausted ones.
-    await reviewPass(ctx, panes, options.execute, verifyCmd);
-    escalateExhausted(ctx);
+    const review = await reviewPass(ctx, panes, options.execute, verifyCmd, state);
+    state.accepted += review.accepted;
+    state.phase = "post-check";
+    state.escalations += escalateExhausted(ctx, state);
+    if (isComplete(ctx.boardDir)) {
+      state.lastGreenCommit = headSha(ctx.cwd);
+      if (state.verifyFingerprint === undefined && verifyCmd) {
+        state.verifyFingerprint = runVerifyWithFingerprint(ctx.cwd, verifyCmd).fingerprint;
+      }
+    }
+    state.dispatched += dispatched.length;
 
     const summary = boardSummary(ctx.boardDir);
     const report: IterationReport = { iteration, dispatched, summary };
     reports.push(report);
     options.onIteration?.(report);
+    saveLoopState(ctx, state);
 
-    if (stopConditionMet(ctx)) break;
-    if (budget > 0 && totalSpend(ctx.boardDir) >= budget) break;
-    if (!dispatched.length) break; // nothing left to do
+    if (state.repeatFailures >= ctx.loop.maxSameFailureCount && state.repeatFailures > 0) {
+      state.status = "stopped";
+      state.phase = "stopped";
+      state.lastStopReason = stopReason = `repeat failure threshold reached (${state.repeatFailures})`;
+      logLoopEvent(ctx, { iter: iteration, event: "stuck", detail: state.lastStopReason });
+      break;
+    }
+
+    if (stopConditionMet(ctx, state, verifyCmd)) break;
+    if (budget > 0 && totalSpend(ctx.boardDir) >= budget) {
+      state.status = "stopped";
+      state.phase = "stopped";
+      state.lastStopReason = stopReason = `budget limit reached (${budget} USD)`;
+      logLoopEvent(ctx, { iter: iteration, event: "budget_limit", detail: state.lastStopReason });
+      break;
+    }
+
+    if (!dispatched.length) {
+      state.status = "stopped";
+      state.phase = "stopped";
+      state.lastStopReason = stopReason = "no dispatchable work found";
+      logLoopEvent(ctx, { iter: iteration, event: "stopped", detail: state.lastStopReason });
+      break;
+    } // nothing left to do
+    state.phase = "dispatch";
     await delay(ctx.loop.pollSeconds * 1000);
   }
 
   if (isolate) cleanupRunWorktrees(ctx.cwd, ctx.runId, ctx.project.roles.map((r) => r.name));
+  if (isComplete(ctx.boardDir) && state.status === "running") {
+    state.status = "done";
+    state.phase = "complete";
+    state.lastStopReason = state.lastStopReason ?? "all tasks in terminal state";
+  }
+  if (state.status === "running" && state.phase !== "complete") {
+    stopReason = stopReason ?? `iteration limit reached (${ctx.loop.maxIterations})`;
+    state.status = "stopped";
+    state.phase = "stopped";
+    state.lastStopReason = stopReason;
+    logLoopEvent(ctx, { iter: state.iteration, event: "stopped", detail: stopReason });
+  }
+  saveLoopState(ctx, state);
   return reports;
 }
 
@@ -604,8 +1085,11 @@ async function reviewPass(
   ctx: RunContext,
   panes: Record<string, string>,
   execute: boolean,
-  verifyCmd: string | undefined
-): Promise<void> {
+  verifyCmd: string | undefined,
+  state: LoopRunState
+): Promise<ReviewResult> {
+  let accepted = 0;
+
   for (const task of foldBoard(ctx.boardDir)) {
     if (task.status !== "needs-review") continue;
 
@@ -617,6 +1101,7 @@ async function reviewPass(
         status: "done",
         summary: "Accepted (prompt-only mode — no independent review)."
       });
+      accepted += 1;
       continue;
     }
 
@@ -631,8 +1116,11 @@ async function reviewPass(
       // silently accepting un-merged work.
       let mergeNote = "";
       if (wt) {
+        const preMergeSha = headSha(ctx.cwd);
         const merge = mergeWorktree(ctx.cwd, wt);
         if (!merge.ok) {
+          const summary = `Accepted but merge failed (${merge.reason ?? "conflict"})`;
+          noteLoopFailure(ctx, state, summary, reviewerRole.name, task.id, "review_merge_fail");
           addEvent(ctx.boardDir, {
             ts: nowIso(),
             role: reviewerRole.name,
@@ -650,6 +1138,53 @@ async function reviewPass(
           continue;
         }
         mergeNote = " Merged to main.";
+        if (ctx.loop.postMergeVerify && verifyCmd && preMergeSha) {
+          const v = runVerifyWithFingerprint(ctx.cwd, verifyCmd);
+          state.verifyFingerprint = v.fingerprint;
+          if (!v.ok) {
+            resetHard(ctx.cwd, preMergeSha);
+            const summary = `Post-merge verification failed for ${task.id}: ${failureTail(v.output, "")}`;
+            noteLoopFailure(ctx, state, summary, reviewerRole.name, task.id, "post_merge_verify");
+            addEvent(ctx.boardDir, {
+              ts: nowIso(),
+              role: reviewerRole.name,
+              taskId: task.id,
+              status: "rejected",
+              summary: `Post-merge verify failed: ${summary}`.slice(0, 240)
+            });
+            addMessage(ctx.boardDir, {
+              ts: nowIso(),
+              from: reviewerRole.name,
+              to: implementer,
+              taskId: task.id,
+              body: `Post-merge verification failed for ${task.id}: ${failureTail(v.output, "")}`
+            });
+            continue;
+          }
+        }
+      }
+      if (!wt && ctx.loop.postMergeVerify && verifyCmd) {
+        const v = runVerifyWithFingerprint(ctx.cwd, verifyCmd);
+        state.verifyFingerprint = v.fingerprint;
+        if (!v.ok) {
+          const summary = `Post-merge verification failed for ${task.id}: ${failureTail(v.output, "")}`;
+          noteLoopFailure(ctx, state, summary, reviewerRole.name, task.id, "post_merge_verify");
+          addEvent(ctx.boardDir, {
+            ts: nowIso(),
+            role: reviewerRole.name,
+            taskId: task.id,
+            status: "rejected",
+            summary: summary.slice(0, 240)
+          });
+          addMessage(ctx.boardDir, {
+            ts: nowIso(),
+            from: reviewerRole.name,
+            to: implementer,
+            taskId: task.id,
+            body: `Post-merge verification failed for ${task.id}: ${failureTail(v.output, "")}`
+          });
+          continue;
+        }
       }
       addEvent(ctx.boardDir, {
         ts: nowIso(),
@@ -666,8 +1201,15 @@ async function reviewPass(
         taskId: task.id,
         body: `Task ${task.id} (${task.title}) accepted and complete.${mergeNote}`
       });
+      accepted += 1;
+      state.repeatFailures = 0;
+      state.lastFailureSummary = undefined;
+      state.lastFailureSignature = undefined;
+      state.lastGreenCommit = headSha(ctx.cwd) ?? state.lastGreenCommit;
     } else {
       const reasons = verdict.reasons.length ? verdict.reasons.join("; ") : "did not meet acceptance criteria";
+      const summary = `Rejected by review: ${reasons}`;
+      noteLoopFailure(ctx, state, summary, reviewerRole.name, task.id, "review_reject");
       addEvent(ctx.boardDir, {
         ts: nowIso(),
         role: reviewerRole.name,
@@ -685,6 +1227,8 @@ async function reviewPass(
       });
     }
   }
+
+  return { accepted };
 }
 
 /** Pick an independent reviewer: prefer the configured reviewer role, else any role whose
@@ -776,7 +1320,8 @@ export function parseVerdict(raw: string): Verdict {
 }
 
 /** #2 Tasks that have exhausted their repair budget are escalated (terminal), not stranded. */
-function escalateExhausted(ctx: RunContext): void {
+function escalateExhausted(ctx: RunContext, state: LoopRunState): number {
+  let escalations = 0;
   for (const task of foldBoard(ctx.boardDir)) {
     if ((task.status === "blocked" || task.status === "rejected") && task.attempts >= ctx.loop.maxRepairs) {
       addEvent(ctx.boardDir, {
@@ -786,8 +1331,12 @@ function escalateExhausted(ctx: RunContext): void {
         status: "escalated",
         summary: `Escalated to human after ${task.attempts} failed attempts: ${task.lastSummary ?? ""}`.slice(0, 240)
       });
+      escalations += 1;
+      state.lastFailureSummary = `Escalated ${task.id} after ${task.attempts} failed attempts`;
+      state.lastFailureSignature = signatureFromText(task.id, state.lastFailureSummary);
     }
   }
+  return escalations;
 }
 
 function detectVerifyCommand(ctx: RunContext): string | undefined {

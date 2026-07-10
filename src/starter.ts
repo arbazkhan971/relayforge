@@ -74,7 +74,7 @@ projects:
         title: Security Engineer
         provider: impl-claude
         sme: security
-    loops:
+      loops:
       - name: delivery-loop
         cadenceMinutes: 30
         maxIterations: 6
@@ -83,6 +83,10 @@ projects:
         orchestrator: pm
         reviewer: qa          # independent critic that reviews diffs and can reject
         maxRepairs: 2          # failed tasks are retried with error context before escalating
+        verifyStabilityRuns: 3  # run verifier this many times before trusting green
+        maxSameFailureCount: 2  # stop when same failure repeats this many times
+        contextTokenBudget: 16000 # per-iteration context snapshot budget (characters)
+        postMergeVerify: true   # rerun verifier after each accepted merge
         maxParallel: 2         # SMEs work concurrently (each in its own git worktree)
         isolate: true          # git-worktree isolation so parallel edits never collide
         budgetUsd: 0           # set a USD cap to bound autonomous spend (0 = unlimited)

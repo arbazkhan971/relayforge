@@ -18,7 +18,14 @@ import { isGitRepo } from "./git.js";
  * a no-op and every role shares the main cwd (parallelism must then stay disabled).
  */
 
-export type Worktree = { role: string; path: string; branch: string };
+export type Worktree = {
+  role: string;
+  path: string;
+  branch: string;
+  /** false means fallback to `mainCwd` because isolation is not possible this run */
+  isolated: boolean;
+  reason?: string;
+};
 
 function git(cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
   const r = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -52,10 +59,10 @@ export function ensureWorktree(mainCwd: string, runId: string, role: string): Wo
   const path = resolve(worktreeRoot(mainCwd, runId), role);
 
   if (!worktreesSupported(mainCwd)) {
-    return { role, path: mainCwd, branch };
+    return { role, path: mainCwd, branch, isolated: false, reason: "worktrees unsupported" };
   }
   if (existsSync(resolve(path, ".git"))) {
-    return { role, path, branch };
+    return { role, path, branch, isolated: true };
   }
 
   mkdirSync(worktreeRoot(mainCwd, runId), { recursive: true });
@@ -69,11 +76,17 @@ export function ensureWorktree(mainCwd: string, runId: string, role: string): Wo
   }
   if (!res.ok) {
     // Could not isolate — degrade to the main cwd so the run still proceeds.
-    return { role, path: mainCwd, branch };
+    return {
+      role,
+      path: mainCwd,
+      branch,
+      isolated: false,
+      reason: res.err || "git worktree add failed"
+    };
   }
 
   linkSharedDirs(mainCwd, path);
-  return { role, path, branch };
+  return { role, path, branch, isolated: true };
 }
 
 /**
@@ -102,7 +115,7 @@ function linkSharedDirs(mainCwd: string, worktreePath: string): void {
  * than leaving the tree half-merged.
  */
 export function mergeWorktree(mainCwd: string, wt: Worktree): { ok: boolean; reason?: string } {
-  if (!worktreesSupported(mainCwd) || wt.path === mainCwd) return { ok: true };
+  if (!worktreesSupported(mainCwd) || !wt.isolated || wt.path === mainCwd) return { ok: true };
   // Commit any pending work in the worktree first (agents may not have committed).
   git(wt.path, ["add", "-A"]);
   const pending = git(wt.path, ["status", "--porcelain"]).out;

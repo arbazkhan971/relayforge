@@ -160,6 +160,13 @@ All coordination flows through an append-only **blackboard** (`src/board.ts`) un
   `blocked` / `done` / `rejected`).
 - `messages.jsonl` — free-form hand-off notes between roles.
 
+Additional run artifacts live alongside the board for loop engineering controls:
+
+- `.loop_context.md` — current run context fed into each task dispatch
+- `.loop_state.json` — machine state persisted across iterations and restarts
+- `.loop_log.jsonl` — structured observability events (`loop_start`, `tests_not_stable`, `stuck`, `stopped`, etc.)
+- `.loop_heartbeat` — heartbeat timestamp for liveness monitoring
+
 Append-only JSONL is the safest cross-process format with tmux as the only IPC: every
 writer only ever appends a single line (`O_APPEND`), so concurrent single-line writes do
 not interleave on local filesystems. History is never rewritten — the **current state of a
@@ -221,16 +228,17 @@ The lifecycle of one task dispatch:
    verification failed). Completion therefore requires **exit code + structured output +
    the verification gate** to all line up.
 
-After dispatching across all roles in an iteration, the orchestrator runs a **review pass**
-(the role named by `loop.orchestrator`, default `pm`): it accepts `needs-review` tasks and
-marks them `done` so the board converges. (A real PM-agent prompt can replace this with
-criteria-based accept/reject.)
+After dispatching across all roles in an iteration, the orchestrator runs a **review pass** using
+the configured reviewer role (`loop.reviewer`, default `qa`, or a fallback independent role when needed).
+The reviewer reads the actual git diff and returns an accept/reject verdict against acceptance criteria
+before any merge happens.
 
-The loop stops when `isComplete()` is true (all tasks `done`/`rejected`), when no task was
-dispatched (nothing left to do), or at `loop.maxIterations`. Between iterations it sleeps
-`loop.pollSeconds`. In dry-run (no `--execute`), each task is simply claimed and marked
-`needs-review` so the board still advances and the monitor is fully observable without
-spend.
+The loop stop condition is controlled by `loop.stopWhen` (defaults: `tests pass`, `all tasks done`,
+`review complete`) and also bounded by `loop.maxIterations` and `loop.budgetUsd`. It logs a stop reason for
+stability failures, repeated failures, and budget/dispatch limits for post-mortem debugging.
+Between iterations it sleeps `loop.pollSeconds`. In dry-run (no `--execute`), each task is simply
+claimed and marked `needs-review` so the board still advances and the monitor is fully observable
+without spend.
 
 ---
 
@@ -334,8 +342,16 @@ projects:
         pollSeconds: 8            # sleep between iterations
         idleSeconds: 20           # output quiescence before a pane's turn ends
         orchestrator: pm          # role that decomposes the goal + runs review
+        reviewer: qa              # independent reviewer role
+        verifyStabilityRuns: 3    # require stable verifier before dispatch/stop
+        maxSameFailureCount: 2    # stop when same failure signature repeats
+        contextTokenBudget: 16000 # cap for per-iteration context snapshot
+        postMergeVerify: true     # rerun verify after every accepted merge
+        maxParallel: 2            # SMEs in parallel; each gets own branch/worktree
+        isolate: true             # isolate worktrees for every role
         stopWhen:
           - all tasks done
+          - tests pass
 ```
 
 Run it:
@@ -362,6 +378,13 @@ the project's test command gates each completion, and you watch all of it on one
 | `loop.cadenceMinutes` | Per-task headless timeout (a runaway agent is killed after this). |
 | `loop.pollSeconds` | Sleep between iterations. |
 | `loop.idleSeconds` | Output quiescence before a pane's turn is considered finished. |
+| `loop.reviewer` | Independent reviewer role name that judges `needs-review` work. |
+| `loop.verifyStabilityRuns` | Number of consecutive stable verifier runs required before trusting green. |
+| `loop.maxSameFailureCount` | Repeat-failure threshold before auto-stop. |
+| `loop.contextTokenBudget` | Approximate max budget (characters) for each iteration context snapshot. |
+| `loop.postMergeVerify` | Re-run verifier after accepted merge before keeping a change. |
+| `loop.maxParallel` | Max number of roles dispatched per iteration. |
+| `loop.isolate` | Enable per-role git worktrees for collision-free parallel execution. |
 
 ---
 

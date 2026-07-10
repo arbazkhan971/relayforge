@@ -92,7 +92,7 @@ export const LoopSchema = z.object({
   name: z.string().min(1),
   cadenceMinutes: z.number().int().positive().default(30),
   maxIterations: z.number().int().positive().default(8),
-  stopWhen: z.array(z.string()).default(["tests pass", "pull request opened", "review complete"]),
+  stopWhen: z.array(z.string()).default(["tests pass", "all tasks done", "review complete"]),
   /** Seconds of output quiescence before a pane's turn is considered finished. */
   idleSeconds: z.number().int().positive().default(20),
   /** Poll interval (seconds) the autonomy loop uses to read panes / the board. */
@@ -105,6 +105,14 @@ export const LoopSchema = z.object({
   reviewer: z.string().default("qa"),
   /** Stop the run once cumulative agent spend exceeds this many USD (0 = unlimited). */
   budgetUsd: z.number().nonnegative().default(0),
+  /** How many consecutive verifier runs are required to prove stability before dispatching. */
+  verifyStabilityRuns: z.number().int().nonnegative().default(3),
+  /** If the same failure signature repeats this many times, the run is considered stuck. */
+  maxSameFailureCount: z.number().int().nonnegative().default(2),
+  /** Per-iteration context budget (approximate chars) when building the agent-facing context snapshot. */
+  contextTokenBudget: z.number().int().positive().default(16000),
+  /** Re-run verify after merge for each accepted task to catch cross-cutting regressions. */
+  postMergeVerify: z.boolean().default(true),
   /** Max SMEs working concurrently. >1 requires git-worktree isolation (auto-enabled). */
   maxParallel: z.number().int().positive().default(1),
   /** Run each role in an isolated git worktree so parallel edits don't collide. */

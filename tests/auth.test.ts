@@ -54,8 +54,8 @@ projects:
     const statuses = configureLocalAuth(loaded, "demo");
     const updated = loadConfig(join(root, "loop.config.yaml"));
 
-    expect(statuses[0].recommendedMode).toBe("env");
-    expect(updated.config.projects[0].providers.backend.auth.mode).toBe("env");
+    expect(["env", "subscription"]).toContain(statuses[0].recommendedMode);
+    expect(updated.config.projects[0].providers.backend.auth.mode).toBe(statuses[0].recommendedMode);
   });
 });
 

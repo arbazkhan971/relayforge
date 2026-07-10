@@ -121,6 +121,10 @@ program
         project: project.name,
         session: ctx.session,
         tasks: tasks.length,
+        stateFile: ctx.statePath,
+        contextFile: ctx.contextPath,
+        logFile: ctx.runLog,
+        heartbeat: ctx.heartbeatPath,
         iterations: reports.length,
         final: reports[reports.length - 1]?.summary ?? null,
         monitor: `loop monitor --run ${ctx.runId}`

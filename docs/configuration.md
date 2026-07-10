@@ -79,3 +79,47 @@ roles:
       - Implement accessible responsive UI changes.
       - Run browser smoke tests and capture screenshots.
 ```
+
+## Loops
+
+Loop controls live on each project's `loops` entry and are the heart of autonomous execution.
+
+```yaml
+loops:
+  - name: delivery-loop
+    cadenceMinutes: 30
+    maxIterations: 8
+    stopWhen:
+      - all tasks done
+      - tests pass
+    idleSeconds: 20
+    pollSeconds: 8
+    orchestrator: pm
+    reviewer: qa
+    maxRepairs: 2
+    verifyStabilityRuns: 3
+    maxSameFailureCount: 2
+    contextTokenBudget: 16000
+    postMergeVerify: true
+    maxParallel: 2
+    isolate: true
+    budgetUsd: 0
+```
+
+Field reference:
+
+- `cadenceMinutes`: per-task headless timeout
+- `maxIterations`: hard cap on loop rounds
+- `stopWhen`: accepted stop conditions (`all tasks done`, `tests pass`, `review complete`, `pull request opened`)
+- `idleSeconds`: quiescence timeout used by the monitor
+- `pollSeconds`: delay between iterations
+- `orchestrator`: role used for decomposition and orchestrator duties
+- `reviewer`: role used as independent reviewer
+- `maxRepairs`: max failed attempts before escalation
+- `verifyStabilityRuns`: repeat verifier runs required to confirm stable green state
+- `maxSameFailureCount`: stop when the same failure signature repeats this many times
+- `contextTokenBudget`: budget for each iteration's context snapshot (characters)
+- `postMergeVerify`: re-run verifier immediately after accepted merge
+- `maxParallel`: max simultaneous role dispatches per round
+- `isolate`: enable per-role git worktrees for collision-free parallelism
+- `budgetUsd`: stop if total estimated USD spend reaches this limit (0 = unlimited)

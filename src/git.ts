@@ -17,6 +17,15 @@ function git(cwd: string, args: string[]): { ok: boolean; out: string } {
   return { ok: result.status === 0, out: (result.stdout ?? "").trim() };
 }
 
+function gitWithErr(cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  return {
+    ok: result.status === 0,
+    out: (result.stdout ?? "").trim(),
+    err: (result.stderr ?? "").trim()
+  };
+}
+
 export function isGitRepo(cwd: string): boolean {
   return git(cwd, ["rev-parse", "--is-inside-work-tree"]).out === "true";
 }
@@ -35,6 +44,35 @@ export function workingDiff(cwd: string, baseSha: string | undefined, maxChars =
   let diff = r.out;
   if (untracked) diff += `\n\n# New untracked files:\n${untracked}`;
   return diff.length > maxChars ? `${diff.slice(0, maxChars)}\n…(diff truncated)…` : diff;
+}
+
+/** List changed files (tracked and untracked) in porcelain format. */
+export function changedFiles(cwd: string, baseSha?: string): string[] {
+  const status = git(cwd, baseSha ? ["diff", "--name-only", baseSha, "--"] : ["status", "--porcelain"]);
+  if (!status.out) return [];
+
+  if (!baseSha) {
+    return status.out
+      .split("\n")
+      .map((line) => line.trim())
+      .map((line) => line.replace(/^\s*[MADRCU?]{1,2}\s+/, ""))
+      .filter((line) => line.length > 0)
+      .map((line) => line.split(" -> ")[1] ?? line)
+      .filter(Boolean);
+  }
+
+  return status.out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/** Reset working tree hard to a known commit and wipe untracked files in that state. */
+export function resetHard(cwd: string, ref: string): boolean {
+  const safeRef = /^([0-9a-f]{7,40}|HEAD|HEAD~\d+|origin\/.+)$/i.test(ref) ? ref : "HEAD";
+  const done = gitWithErr(cwd, ["reset", "--hard", safeRef]).ok;
+  gitWithErr(cwd, ["clean", "-fd"]);
+  return done;
 }
 
 /** Revert all working-tree changes back to the snapshot (used on regression). */
