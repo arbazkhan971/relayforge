@@ -3,34 +3,39 @@ defaults:
   namespace: loop
   dashboardPort: 4318
 
+# The minimal, safe shape: one provider, a lean planner/implementer/reviewer team, no pinned
+# models and no unsafe flags. Execution runs in an isolated git worktree (your checkout is
+# never touched) and untrusted verifier commands run in a separate OS sandbox, so the config
+# itself needs nothing dangerous.
 projects:
   - name: basic-demo
     brief: brief.md
     workingDir: .
+    safetyMode: workspace-write
     providers:
-      planner:
+      agent:
         type: claude
-        model: claude-opus-4-8
         auth:
           mode: auto
-        dangerouslySkipPermissions: false
-        args: []
-      executor:
-        type: codex
-        model: gpt-5.4
-        effort: medium
-        auth:
-          mode: auto
-        yolo: false
-        args: []
     roles:
-      - name: pm
-        title: Product planner
-        provider: planner
-        responsibilities:
-          - Convert issues into clear implementation plans.
-      - name: dev
-        title: Software engineer
-        provider: executor
-        responsibilities:
-          - Implement the task and run tests.
+      - name: planner
+        title: Planner / Orchestrator
+        provider: agent
+        sme: architect
+      - name: implementer
+        title: Implementer
+        provider: agent
+        sme: fullstack
+      - name: reviewer
+        title: Independent Reviewer
+        provider: agent
+        sme: code-reviewer
+    loops:
+      - name: delivery-loop
+        maxIterations: 6
+        orchestrator: planner
+        reviewer: reviewer
+        maxRepairs: 2
+        stopWhen:
+          - all tasks done
+          - tests pass

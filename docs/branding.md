@@ -8,7 +8,7 @@ Open-source tmux AI agent teams for Claude Code, Codex, Gemini CLI, and custom t
 
 ## Short Description
 
-Loop Orchestrator runs configurable AI software engineering teams inside tmux: planner, frontend, backend, QA, scout, and release roles with local auth detection, prompt generation, and a dashboard.
+Loop Orchestrator runs configurable, headless AI software engineering teams — planner, implementer, and independent reviewer roles — that deliver work in isolated git worktrees and leave it on a run branch for human review, with local auth detection, prompt generation, an optional tmux viewport, and a dashboard.
 
 ## Search Terms
 

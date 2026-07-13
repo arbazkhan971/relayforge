@@ -1,12 +1,17 @@
 import {
   appendFileSync,
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  chmodSync,
+  lstatSync,
   mkdirSync,
-  readFileSync,
+  openSync,
   renameSync,
   writeFileSync
 } from "node:fs";
 import { resolve } from "node:path";
+import { readStateFile } from "./runtime.js";
 
 /**
  * Shared blackboard for the autonomous SME team.
@@ -93,18 +98,40 @@ export function boardPaths(boardDir: string): BoardPaths {
 }
 
 export function initBoard(boardDir: string): BoardPaths {
-  mkdirSync(boardDir, { recursive: true });
+  // PRIVATE (0700), explicitly — not "whatever the ambient umask gives us". The board holds the run's
+  // money ledger, and a group/other-writable directory lets another account swap the ledger leaf out
+  // from under an open transaction. A umask of 002 (common on shared/CI hosts) would otherwise produce
+  // a 0775 board, and the ledger rightly refuses to keep accounting there.
+  mkdirSync(boardDir, { recursive: true, mode: 0o700 });
+  // VERIFY the directory we just "created" is actually ours. `mkdirSync(…, {recursive:true})` succeeds
+  // silently when the path already exists — including when it is a SYMLINK to somewhere else, in which
+  // case the chmod below would have re-permissioned the attacker's target and every board journal (and
+  // the ledger beside them) would have been created inside it.
+  const st = lstatSync(boardDir);
+  if (st.isSymbolicLink()) throw new Error(`refusing to use board ${boardDir}: it is a symlink`);
+  if (!st.isDirectory()) throw new Error(`refusing to use board ${boardDir}: it is not a directory`);
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (uid !== undefined && st.uid !== uid) throw new Error(`refusing to use board ${boardDir}: it is owned by uid ${st.uid}, not ${uid}`);
+  chmodSync(boardDir, 0o700); // …and tighten a board an earlier version (or a loose umask) left open
   const paths = boardPaths(boardDir);
   for (const file of [paths.tasks, paths.events, paths.messages]) {
-    if (!existsSync(file)) writeFileSync(file, "");
+    // `existsSync` FOLLOWS a symlink, so a planted `tasks.jsonl -> /elsewhere` looked "already there"
+    // and every later append/read went straight through it. `readStateFile` refuses a symlink, a
+    // non-regular file, a hardlink alias, a permissive mode, another uid's file, and an unreadable one
+    // — and only a genuinely ABSENT journal is created (exclusively, 0600).
+    if (readStateFile(file).kind === "absent") {
+      const fd = openSync(file, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+      closeSync(fd);
+    }
   }
   return paths;
 }
 
 function readJsonl<T>(file: string): T[] {
-  if (!existsSync(file)) return [];
+  const read = readStateFile(file); // absent → empty board; unsafe → fail closed (never read through it)
+  if (read.kind === "absent") return [];
   const out: T[] = [];
-  for (const line of readFileSync(file, "utf8").split("\n")) {
+  for (const line of read.data.toString("utf8").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
@@ -199,11 +226,15 @@ export function openTasksFor(boardDir: string, role: string): TaskView[] {
  * stranding blocked/rejected work.
  */
 export function retryableTasksFor(boardDir: string, role: string, maxRepairs: number): TaskView[] {
+  // `maxRepairs` is the number of REPAIRS allowed AFTER the initial attempt, so a task may be
+  // dispatched up to `1 + maxRepairs` times. `attempts` already counts the initial attempt, so a
+  // task is retryable while the repairs used so far (`attempts - 1`) is below `maxRepairs`, i.e.
+  // while `attempts <= maxRepairs`.
   return foldBoard(boardDir).filter(
     (task) =>
       task.assignee === role &&
       (task.status === "blocked" || task.status === "rejected") &&
-      task.attempts < maxRepairs
+      task.attempts <= maxRepairs
   );
 }
 

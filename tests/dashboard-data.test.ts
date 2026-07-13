@@ -25,7 +25,7 @@ const project = {
     { name: "be", title: "Backend", provider: "codex", sme: "backend", repositories: [], responsibilities: [], guardrails: [], autoStart: true },
     { name: "qa", title: "QA", provider: "claude", sme: "qa", repositories: [], responsibilities: [], guardrails: [], autoStart: true }
   ],
-  loops: [{ name: "l", cadenceMinutes: 30, maxIterations: 8, stopWhen: [], idleSeconds: 20, pollSeconds: 8, orchestrator: "pm", maxRepairs: 2, reviewer: "qa", budgetUsd: 1, maxParallel: 2, isolate: true }]
+  loops: [{ name: "l", cadenceMinutes: 30, maxIterations: 8, stopWhen: [], pollSeconds: 8, orchestrator: "pm", maxRepairs: 2, reviewer: "qa", budgetUsd: 1, maxParallel: 2 }]
 } as unknown as ProjectConfig;
 
 describe("dashboard overview", () => {

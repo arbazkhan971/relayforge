@@ -9,22 +9,24 @@ function readIfExists(path: string): string | undefined {
 }
 
 /**
- * The coordination protocol every SME shares. This is what makes the team a team:
- * the shared blackboard contract for claiming work, handing off, and signaling done.
- * The autonomy loop detects completion from the `events.jsonl` lines described here.
+ * The reporting protocol every SME shares.
+ *
+ * Authoritative coordination state (the board, the run state, and the cost ledger) is owned
+ * exclusively by the PARENT orchestrator — agents never write it. An agent's job is to make
+ * the code change for its task and then REPORT the outcome in its final message. The parent
+ * decides accept/reject from an independent review plus a deterministic verifier; it does not
+ * trust the agent's self-report. This keeps a worker from marking its own work done or
+ * tampering with the run's state.
  */
 export function boardProtocol(runId: string): string {
   return [
-    `## Shared Blackboard Protocol`,
-    `The team coordinates through append-only logs under \`.loop/board/\`. Never edit these files in place — only append one JSON object per line.`,
+    `## How you report (the parent owns all coordination state)`,
+    `You do NOT manage the task board. Do not create, edit, or append to anything under \`.loop/\` — that directory is the parent orchestrator's private state and is off-limits. The parent detects what you did from your git changes, an independent review, and a deterministic verifier; it does not take your word for it.`,
     ``,
-    `- **Read work:** the open tasks assigned to you live in \`.loop/board/tasks.jsonl\` (objects with \`assignee\` = your role key).`,
-    `- **Claim a task:** append to \`.loop/board/events.jsonl\`:`,
-    `  \`{"ts":"<iso>","role":"<your-role>","taskId":"<id>","status":"claimed"}\``,
-    `- **Hand off / request work** from another SME: append a task to \`.loop/board/tasks.jsonl\` with that SME's role key as \`assignee\`, plus a note in \`.loop/board/messages.jsonl\`.`,
-    `- **Signal completion** (the orchestrator polls this to advance the run): append to \`.loop/board/events.jsonl\`:`,
-    `  \`{"ts":"<iso>","role":"<your-role>","taskId":"<id>","status":"done|blocked|needs-review","summary":"<one line>"}\``,
-    `- A task is only \`done\` when its acceptance criteria are met AND the project's test/build commands pass.`,
+    `- **Do the work** for the single task you were given, editing only the source files it requires.`,
+    `- **Do NOT modify test files or CI configuration** to make checks pass — that is tampering and will be rejected.`,
+    `- **When finished**, end with a short final message: what you changed, which files, and how you verified it. That message is your entire report.`,
+    `- A task is only accepted when its acceptance criteria are met, an independent reviewer approves the diff, AND the project's verifier commands pass. Optimize for that, not for declaring yourself done.`,
     `- Run ID for this session is \`${runId}\`. Include it in commit messages where helpful.`,
     ``
   ].join("\n");

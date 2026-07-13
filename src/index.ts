@@ -4,6 +4,7 @@ export * from "./auth.js";
 export * from "./providers.js";
 export * from "./prompts.js";
 export * from "./tmux.js";
+export * from "./tmux-workflow.js";
 export * from "./board.js";
 export * from "./intelligence.js";
 export * from "./sme.js";

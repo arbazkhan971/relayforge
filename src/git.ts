@@ -12,19 +12,65 @@ import { resolve } from "node:path";
  * pass). All commands degrade to no-ops when the working dir is not a git repo.
  */
 
-function git(cwd: string, args: string[]): { ok: boolean; out: string } {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-  return { ok: result.status === 0, out: (result.stdout ?? "").trim() };
+/**
+ * Git is a CONFIGURABLE CODE EXECUTOR, and the parent runs it on the host, OUTSIDE the sandbox that
+ * contains the agents — so every parent git call is hardened against config-driven execution.
+ *
+ * The attack this closes: an agent turn is sandboxed, but a sandbox only says WHERE it may write.
+ * Give it a writable `~/.gitconfig` (we used to) and it needs no escape at all — it just writes
+ *
+ *     [core] hooksPath = /path/inside/its/own/worktree
+ *
+ * and waits. The parent later runs `git merge --no-ff` / `git checkout` / `git worktree add` in the
+ * integration worktree ON THE HOST, git dutifully executes the agent's "hook", and the agent is now
+ * running uncontained with the parent's full environment — every secret the provider env-scrub was
+ * built to withhold. `git diff` (which we run to build the reviewer's patch) is the same story via
+ * `diff.external`, and `core.fsmonitor` is a third.
+ *
+ * Two independent defences, either of which alone closes it:
+ *   1. agents cannot write git configuration at all (see `providerWritableRoots`), and
+ *   2. these flags — the parent neutralizes every config knob that can name a program to run, so a
+ *      hostile git config is inert even if one arrives some other way (a pre-existing global config,
+ *      a future regression in (1), a repo the user cloned).
+ *
+ * `-c` beats every config file, so this cannot be overridden by global/system/repo config. We do NOT
+ * null the global config wholesale: a real user's `user.name`/`user.email` live there, and commits
+ * made in loop-owned worktrees must keep working.
+ */
+const HARDENED_CONFIG = [
+  "-c", "core.hooksPath=/dev/null",   // no hook may ever run — repo, global, or planted
+  "-c", "core.fsmonitor=false",       // fsmonitor names a program to exec
+  "-c", "diff.external=",             // `git diff` must not shell out to an external differ
+  "-c", "credential.helper=",         // no credential helper may exec on our behalf
+  "-c", "core.pager=cat"              // never hand output to a pager program
+];
+
+/** The environment for a parent git call: the env knobs that mirror the config knobs above. */
+function gitEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: "0", // never block waiting on a terminal prompt
+    GIT_EXTERNAL_DIFF: "",    // env twin of diff.external
+    GIT_PAGER: "cat"
+  };
 }
 
-function gitWithErr(cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+/** Run a hardened parent git command. Every parent git call in the product goes through here or
+ *  its worktree.ts twin — never a bare `spawnSync("git", …)`. */
+export function runGit(cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
+  const result = spawnSync("git", [...HARDENED_CONFIG, ...args], { cwd, encoding: "utf8", env: gitEnv() });
   return {
     ok: result.status === 0,
     out: (result.stdout ?? "").trim(),
     err: (result.stderr ?? "").trim()
   };
 }
+
+function git(cwd: string, args: string[]): { ok: boolean; out: string } {
+  const r = runGit(cwd, args);
+  return { ok: r.ok, out: r.out };
+}
+
 
 export function isGitRepo(cwd: string): boolean {
   return git(cwd, ["rev-parse", "--is-inside-work-tree"]).out === "true";
@@ -33,6 +79,19 @@ export function isGitRepo(cwd: string): boolean {
 export function headSha(cwd: string): string | undefined {
   const r = git(cwd, ["rev-parse", "HEAD"]);
   return r.ok ? r.out : undefined;
+}
+
+/** The canonical top-level of the working tree (its absolute path), for repo identity. */
+export function gitTopLevel(cwd: string): string | undefined {
+  const r = git(cwd, ["rev-parse", "--show-toplevel"]);
+  return r.ok && r.out ? r.out : undefined;
+}
+
+/** The repository's root (parentless) commit — a stable identity that survives branch/HEAD moves. */
+export function repoRootCommit(cwd: string): string | undefined {
+  const r = git(cwd, ["rev-list", "--max-parents=0", "HEAD"]);
+  if (!r.ok || !r.out) return undefined;
+  return r.out.split("\n").map((l) => l.trim()).filter(Boolean).sort()[0];
 }
 
 /** Diff of the working tree (staged + unstaged) since a base sha, capped for prompt size. */
@@ -67,21 +126,18 @@ export function changedFiles(cwd: string, baseSha?: string): string[] {
     .filter(Boolean);
 }
 
-/** Reset working tree hard to a known commit and wipe untracked files in that state. */
-export function resetHard(cwd: string, ref: string): boolean {
-  const safeRef = /^([0-9a-f]{7,40}|HEAD|HEAD~\d+|origin\/.+)$/i.test(ref) ? ref : "HEAD";
-  const done = gitWithErr(cwd, ["reset", "--hard", safeRef]).ok;
-  gitWithErr(cwd, ["clean", "-fd"]);
-  return done;
-}
-
-/** Revert all working-tree changes back to the snapshot (used on regression). */
-export function revertWorkingTree(cwd: string): boolean {
-  const clean = git(cwd, ["checkout", "--", "."]).ok;
-  // Also drop untracked files the agent created during a failed attempt.
-  git(cwd, ["clean", "-fd"]);
-  return clean;
-}
+// REMOVED: `resetHard(cwd, ref)` and `revertWorkingTree(cwd)`.
+//
+// Both ran `git reset --hard` / `git checkout -- .` + `git clean -fd` against an ARBITRARY caller-
+// supplied cwd. They had zero callers in the product — the regression gate never reverts anything;
+// it declines to PUBLISH a bad candidate, which is strictly stronger (the branch never moves). But
+// `src/index.ts` re-exports this module, so they shipped in the package's public API: two functions
+// whose whole job is to irrecoverably destroy uncommitted work, one import away from a user's
+// checkout, in a product whose central promise is "we never touch your working tree".
+//
+// The safest destructive primitive is the one that does not exist. If a future feature genuinely
+// needs to reset a LOOP-OWNED worktree, it should take a Worktree (an ownership-proving type), not a
+// bare path.
 
 /** Has the working tree changed since the snapshot? (Did the agent actually do anything?) */
 export function hasChanges(cwd: string): boolean {

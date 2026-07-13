@@ -1,7 +1,7 @@
 {
   "name": "loop-orchestrator",
   "version": "0.4.0",
-  "description": "Open-source tmux AI agent team orchestrator for Claude Code, Codex, Gemini CLI, and custom terminal coding agents.",
+  "description": "Safe, headless AI agent team orchestrator for Claude Code, Codex, Gemini CLI, and custom terminal coding agents — isolated git worktrees, independent review, deterministic verification, optional tmux viewport.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/arbazkhan971/loop-orchestrator#readme",
@@ -14,6 +14,21 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js",
+      "default": "./dist/cli.js"
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
     "loop": "./dist/cli.js",
@@ -32,6 +47,8 @@
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke": "node scripts/smoke.mjs",
+    "prepack": "npm run build",
     "validate": "npm run typecheck && npm run test && npm run build"
   },
   "keywords": [

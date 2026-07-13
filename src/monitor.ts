@@ -1,6 +1,5 @@
 import { boardSummary, TaskView } from "./board.js";
-import { capturePaneById, listSessions } from "./tmux.js";
-import { spawnSync } from "node:child_process";
+import { capturePaneById, isSafeTmuxName, tmuxAvailable, tmuxClient } from "./tmux.js";
 
 /**
  * Unified terminal "mission control" — render the whole AI team on ONE screen:
@@ -148,25 +147,14 @@ export function startMonitor(opts: MonitorOptions): void {
   process.on("SIGTERM", cleanup);
 }
 
-/** Discover live panes for a session (role inferred from pane title) when not provided. */
+/**
+ * Discover live panes for a session (role inferred from pane title). Metadata-gated: a session that is
+ * not a Loop-OWNED viewport is never listed and never scraped, so `loop monitor` cannot be pointed at a
+ * human's own tmux session by a crafted name.
+ */
 export function discoverPanes(session: string): Record<string, string> {
-  if (!listSessions().some((s) => s === session) && !sessionExists(session)) return {};
-  const result = spawnSync(
-    "tmux",
-    ["list-panes", "-t", session, "-F", "#{pane_id}\t#{pane_title}"],
-    { encoding: "utf8" }
-  );
-  if (result.status !== 0) return {};
-  const map: Record<string, string> = {};
-  for (const line of result.stdout.split("\n")) {
-    const [paneId, title] = line.split("\t");
-    if (!paneId) continue;
-    const role = (title ?? "").split("·")[0].trim() || paneId;
-    map[role] = paneId;
-  }
-  return map;
-}
-
-function sessionExists(session: string): boolean {
-  return spawnSync("tmux", ["has-session", "-t", session], { stdio: "ignore" }).status === 0;
+  if (!isSafeTmuxName(session) || !tmuxAvailable()) return {};
+  const client = tmuxClient();
+  if (!client.identityOf(session)) return {};
+  return client.panesByRole(session);
 }

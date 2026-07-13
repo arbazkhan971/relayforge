@@ -11,9 +11,10 @@ loop monitor               # single-screen mission control
 
 `loop learn` scans the project and writes a `PROJECT-INTELLIGENCE.md` that grounds every
 expert. `loop run` decomposes your goal into board tasks, fields the subject-matter
-experts (SMEs) your config asks for, and runs each task as a headless agent inside its
-own tmux pane. `loop monitor` redraws the shared blackboard plus a live tail of every
-agent pane in place, so you never attach to tmux or juggle windows.
+experts (SMEs) your config asks for, and runs each task as a headless agent in an isolated
+git worktree — mirrored into a tmux pane when tmux is available (tmux is an optional
+viewport, never the runtime). `loop monitor` redraws the shared blackboard plus a live tail
+of every agent pane in place, so you never attach to tmux or juggle windows.
 
 ---
 
@@ -36,10 +37,14 @@ loop monitor
 loop run "Add a dark-mode toggle to the settings page" --execute
 ```
 
-By default `loop run` is a **safe dry-run**: it decomposes the goal, writes role prompts,
-and drives the board forward (claim -> needs-review -> accepted) *without* launching any
-agent CLI or spending tokens. Pass `--execute` to actually run the headless agents and the
+By default `loop run` is a **true dry-run**: it decomposes the goal, writes role prompts,
+and drives the board forward (claim -> needs-review -> accepted) while launching **no**
+provider process at all — not even the planner — and **never touching git**. Pass
+`--execute` to actually run the headless agents, the isolated worktrees, and the
 verification gate. This lets you inspect the plan and the monitor before committing spend.
+
+`loop doctor` checks your environment (Node >= 20, git, tmux, a clean git target, config,
+and provider readiness) with actionable fixes before you execute.
 
 ---
 
@@ -71,9 +76,9 @@ It detects:
 The rendered file tells every agent to treat the detected commands as the source of truth
 and **not** to invent build/test commands.
 
-`loop run` regenerates intelligence automatically before planning, so you do not strictly
-have to run `loop learn` first — but doing so lets you review what the team learned and
-re-run it after a big stack change.
+`loop learn` is the **only** command that writes `PROJECT-INTELLIGENCE.md`. `loop run` reads
+it but never writes project intelligence into your checkout, so run `loop learn` first (and
+re-run it after a big stack change) to give the team an up-to-date map.
 
 ---
 
@@ -153,12 +158,15 @@ The orchestrator can field more specialists on demand; this is the sensible star
 ## The shared blackboard
 
 All coordination flows through an append-only **blackboard** (`src/board.ts`) under
-`.loop/runs/<run-id>/board/`, in three JSONL logs:
+`.loop/runs/<project>/<run-id>/board/`, in three JSONL logs. Crucially, the **parent orchestrator is
+the only writer** — agents never write coordination state themselves. An SME just makes its
+code change and reports in its final message; the parent records the outcome on the board
+and decides via independent review plus the verifier.
 
 - `tasks.jsonl` — work items the orchestrator/PM decomposes the goal into.
-- `events.jsonl` — status updates SMEs emit (`claimed` / `in-progress` / `needs-review` /
-  `blocked` / `done` / `rejected`).
-- `messages.jsonl` — free-form hand-off notes between roles.
+- `events.jsonl` — status transitions the parent records for each task (`claimed` /
+  `in-progress` / `needs-review` / `blocked` / `done` / `rejected`).
+- `messages.jsonl` — hand-off notes the parent records between roles.
 
 Additional run artifacts live alongside the board for loop engineering controls:
 
@@ -167,10 +175,11 @@ Additional run artifacts live alongside the board for loop engineering controls:
 - `.loop_log.jsonl` — structured observability events (`loop_start`, `tests_not_stable`, `stuck`, `stopped`, etc.)
 - `.loop_heartbeat` — heartbeat timestamp for liveness monitoring
 
-Append-only JSONL is the safest cross-process format with tmux as the only IPC: every
-writer only ever appends a single line (`O_APPEND`), so concurrent single-line writes do
-not interleave on local filesystems. History is never rewritten — the **current state of a
-task is the reduction (fold) of its event stream**.
+Append-only JSONL is the safest durable format: the parent only ever appends a single line
+(`O_APPEND`), so writes never interleave and survive restarts. History is never rewritten —
+the **current state of a task is the reduction (fold) of its event stream**. The board,
+run state, and cost ledger live under `.loop/` and are never reachable from an agent's
+worktree, so an agent cannot forge its own acceptance.
 
 ### How status is folded
 
@@ -213,16 +222,27 @@ The lifecycle of one task dispatch:
 
 1. **Claim** — append a `claimed` event for `(role, taskId)`.
 2. **Run headless** — spawn the provider's headless command (built per provider type) with
-   the task text + acceptance criteria, in the project working dir. A trimmed tail of
-   stdout is mirrored into the role's tmux pane via `tmux display-message` (non-destructive
-   — it never interferes with the running viewport).
-3. **Detect completion** — the child is considered successful only when it **exits 0 AND
-   produces structured output** (a `"result"` payload, `"is_error":false`, or any non-empty
-   stdout). A per-task timeout (the loop's `cadenceMinutes`) kills runaways.
-4. **Verification gate** — if the agent succeeded *and* a verify command exists, the loop
-   runs the **project's own test command** (falling back to build) — re-derived from the
-   live project intelligence, so it is authoritative, not guessed. The verify runs through
-   the shell with its own timeout.
+   the task text + acceptance criteria, inside an **isolated throwaway git worktree** created
+   outside your repo (never your checkout). The worktree isolates the branch and working tree,
+   not the host — so the provider runs without a permission bypass (Claude `--permission-mode
+   acceptEdits`, Codex `--sandbox workspace-write`), and untrusted verifier commands run in a
+   separate OS sandbox. A trimmed tail of stdout is mirrored into the role's tmux pane via `tmux
+   display-message` (non-destructive — it never interferes with the running viewport).
+3. **Detect completion** — the child is considered successful only when it **exits 0 AND** its
+   output normalizes to a strict terminal success. For **Claude** that is a top-level stream-JSON
+   `result` record with `subtype:"success"` and `is_error:false`; for **Codex** the full pinned
+   `turn.completed` lifecycle must validate; any protocol drift, torn stream, or missing terminal is
+   treated as **UNCERTAIN** (never an implicit success). Only `gemini`/`custom` adapters, which have
+   no structured protocol, fall back to "exit 0 with non-empty stdout". A per-task timeout (the
+   loop's `cadenceMinutes`) kills runaways.
+4. **Verification gate** — if the agent succeeded, the loop runs the verifier commands in an
+   explicit **order** (the loop's `verify:` list, else the auto-detected test then build
+   command re-derived from the live project intelligence, so it is authoritative, not
+   guessed). The verify runs inside an **OS sandbox** (Linux `bwrap` or macOS `sandbox-exec`)
+   with no network, no inherited secrets, and no host writes outside the disposable checkout,
+   with its own timeout, and timing text in its output is normalized so a passing run never
+   looks flaky. If no launchable sandbox is available the whole `--execute` run **fails closed
+   before the planner** (ends `blocked`, never `done`); there is no unsandboxed override.
 5. **Emit outcome** — append `needs-review` if implementation **and** verification passed,
    otherwise `blocked` (with a summary saying whether the agent exited non-zero or
    verification failed). Completion therefore requires **exit code + structured output +
@@ -230,15 +250,28 @@ The lifecycle of one task dispatch:
 
 After dispatching across all roles in an iteration, the orchestrator runs a **review pass** using
 the configured reviewer role (`loop.reviewer`, default `qa`, or a fallback independent role when needed).
-The reviewer reads the actual git diff and returns an accept/reject verdict against acceptance criteria
-before any merge happens.
+The reviewer runs **read-only** over the attempt's **complete base-SHA patch** (committed, staged,
+unstaged, and untracked content) and returns a **strict structured** accept/reject verdict against the
+acceptance criteria — malformed reviewer output **fails closed** (rejected), so no heuristic can turn it
+into an accept. On accept, the attempt branch is merged into the run's **integration branch**
+(`loop/<project>/<run-id>/integration`) and re-verified; on reject, the throwaway worktree is discarded and the task
+is repaired or escalated. Accepted work is **left on the integration branch** at the end for a human to
+review and merge — nothing is auto-merged to `main`.
 
-The loop stop condition is controlled by `loop.stopWhen` (defaults: `tests pass`, `all tasks done`,
-`review complete`) and also bounded by `loop.maxIterations` and `loop.budgetUsd`. It logs a stop reason for
-stability failures, repeated failures, and budget/dispatch limits for post-mortem debugging.
-Between iterations it sleeps `loop.pollSeconds`. In dry-run (no `--execute`), each task is simply
-claimed and marked `needs-review` so the board still advances and the monitor is fully observable
-without spend.
+The loop runs until every task reaches a terminal state (accepted, or escalated after exhausting
+`loop.maxRepairs`) and is bounded by `loop.maxIterations` and `loop.budgetUsd`. `loop.stopWhen` is
+**advisory only** — free-text "done" hints surfaced to the planner, never a loop gate; completion is
+decided by independent review plus the deterministic verifier. Budgets are checked
+before every planner/worker/reviewer call, and when a provider reports no cost the spend is recorded as
+**unknown**, never silently zero; under a positive `budgetUsd` the run fails closed once providers report
+unknown cost more than `allowUnknownCostCalls` times (default 0). A real `--execute` run is **done** (exit 0)
+only when every task is accepted *and* the final ordered verifier is green; all tasks accepted with no green
+verifier is **unverified** (exit non-zero), and a successful dry-run ends **planned** (exit 0) — rejected,
+escalated, cancelled, stopped, unverified, or budget-exhausted runs all exit non-zero. It
+logs a stop reason for stability failures, repeated failures, and budget/dispatch limits for post-mortem
+debugging. Between iterations it sleeps `loop.pollSeconds`. In dry-run (no `--execute`), **no provider
+process is launched and git is never touched** — each task is simply claimed and marked `needs-review` so
+the board still advances and the monitor is fully observable without spend.
 
 ---
 
@@ -259,13 +292,30 @@ A frame has three sections:
   `…idle…`.
 
 The monitor discovers panes for the run's session automatically (`discoverPanes`, role
-inferred from the pane title), so you only pass `--run <id>`. It needs no write access to
-the board — it is a pure read view that polls `boardSummary` plus the panes.
+inferred from the pane title). `--run` defaults to the **most recent run** when omitted. It
+needs no write access to the board — it is a pure read view that polls `boardSummary` plus
+the panes.
 
 ```bash
-loop monitor --run <run-id>          # live, redraws in place; Ctrl-C to exit
+loop monitor                         # live view of the latest run, redraws in place
+loop monitor --run <run-id>          # a specific run; Ctrl-C to exit
 loop monitor --run <run-id> --once   # one frame, then exit
 ```
+
+To drive the tmux viewport directly instead of the in-place monitor, use `loop tmux` (defaulting to
+the latest run):
+
+```bash
+loop tmux pre     # pre-flight — exactly what `new` would do; changes nothing
+loop tmux new     # create-or-attach the viewport (idempotent; switch-client when already inside tmux)
+loop tmux show    # owned sessions: liveness, panes, recent output
+loop tmux kill    # kill only this run's Loop-owned sessions
+loop tmux prune   # reap stale viewports (all panes dead, or the run is gone)
+```
+
+Loop only ever touches sessions it created (they carry `@loop-*` ownership metadata); a session you
+opened yourself is never adopted, captured, or killed. `loop attach` remains for attaching to an
+existing session by name.
 
 ---
 
@@ -288,22 +338,22 @@ projects:
     intelligence: PROJECT-INTELLIGENCE.md   # loop learn writes here
     safetyMode: workspace-write
     providers:
+      # Codex/Gemini models are unpinned by default (the CLI uses its own default); a Claude
+      # provider defaults to the `opus` alias. `model:` overrides any provider.
+      # No unsafe flags are needed: Claude runs `--permission-mode
+      # acceptEdits` (reviewers `plan`), Codex `exec --sandbox workspace-write` (reviewers
+      # `read-only`), and untrusted verifier commands run in a separate OS sandbox.
       anthropic:
         type: claude
-        model: claude-opus-4-8
         auth: { mode: auto }
-        dangerouslySkipPermissions: true
         promptMode: stdin
       openai:
         type: codex
-        model: gpt-5.4
         effort: medium
         auth: { mode: auto }
-        yolo: true
         promptMode: stdin
       google:
         type: gemini
-        model: gemini-3.5-flash
         auth: { mode: auto }
         promptMode: stdin
     roles:
@@ -340,15 +390,13 @@ projects:
         cadenceMinutes: 30        # also the per-task headless timeout
         maxIterations: 8
         pollSeconds: 8            # sleep between iterations
-        idleSeconds: 20           # output quiescence before a pane's turn ends
         orchestrator: pm          # role that decomposes the goal + runs review
         reviewer: qa              # independent reviewer role
         verifyStabilityRuns: 3    # require stable verifier before dispatch/stop
         maxSameFailureCount: 2    # stop when same failure signature repeats
         contextTokenBudget: 16000 # cap for per-iteration context snapshot
         postMergeVerify: true     # rerun verify after every accepted merge
-        maxParallel: 2            # SMEs in parallel; each gets own branch/worktree
-        isolate: true             # isolate worktrees for every role
+        maxParallel: 2            # SMEs in parallel; each always gets its own branch/worktree (isolation is mandatory)
         stopWhen:
           - all tasks done
           - tests pass
@@ -370,26 +418,25 @@ the project's test command gates each completion, and you watch all of it on one
 
 | Field | Purpose |
 |---|---|
-| `project.intelligence` | Path `loop learn` writes (and `loop run` regenerates) PROJECT-INTELLIGENCE.md to. |
+| `project.intelligence` | Path `loop learn` writes PROJECT-INTELLIGENCE.md to (and `loop run` reads; `loop run` never writes it). |
 | `role.sme` | SME discipline that seeds this role's expert system prompt. Optional; omit for a hand-written role. |
 | `role.provider` | Provider key this role's agent runs under — overrides the discipline's `preferredProvider`. |
 | `loop.orchestrator` | Role that decomposes the goal and runs the review pass (default `pm`). |
 | `loop.maxIterations` | Hard cap on autonomy-loop iterations. |
 | `loop.cadenceMinutes` | Per-task headless timeout (a runaway agent is killed after this). |
 | `loop.pollSeconds` | Sleep between iterations. |
-| `loop.idleSeconds` | Output quiescence before a pane's turn is considered finished. |
 | `loop.reviewer` | Independent reviewer role name that judges `needs-review` work. |
 | `loop.verifyStabilityRuns` | Number of consecutive stable verifier runs required before trusting green. |
 | `loop.maxSameFailureCount` | Repeat-failure threshold before auto-stop. |
 | `loop.contextTokenBudget` | Approximate max budget (characters) for each iteration context snapshot. |
 | `loop.postMergeVerify` | Re-run verifier after accepted merge before keeping a change. |
-| `loop.maxParallel` | Max number of roles dispatched per iteration. |
-| `loop.isolate` | Enable per-role git worktrees for collision-free parallel execution. |
+| `loop.maxParallel` | Max number of roles dispatched per iteration. Each task always runs in its own git worktree; isolation is mandatory. |
+| `loop.allowUnknownCostCalls` | Under a positive `budgetUsd`, fail closed after this many unknown-cost provider calls (default 0). |
 
 ---
 
 ## See also
 
-- `docs/configuration.md` — providers, auth modes, repositories, roles.
+- `docs/configuration.md` — providers, auth modes, roles, loops, and budgets.
 - `docs/architecture.md` — how the pieces fit together.
 - `docs/safety.md` — safety modes and execution switches.

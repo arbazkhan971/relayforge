@@ -10,7 +10,10 @@ describe("dashboard server", () => {
       project: sampleProject(),
       namespace: "loop",
       port: 0,
-      listSessions: () => ["loop-demo-run-1-dev", "loop-other-run-1-dev"],
+      listSessions: () => [
+        { name: "loop-demo-run-1-dev", project: "demo", run: "run-1", role: "dev" },
+        { name: "loop-other-run-1-dev", project: "other", run: "run-1", role: "dev" }
+      ],
       capturePane: (session, lines) => `${session}:${lines}`
     });
     const port = await listen(server);
@@ -38,7 +41,7 @@ describe("dashboard server", () => {
       project: sampleProject(),
       namespace: "loop",
       port: 0,
-      listSessions: () => [],
+      listSessions: (): never[] => [],
       capturePane: () => ""
     });
     const port = await listen(server);
