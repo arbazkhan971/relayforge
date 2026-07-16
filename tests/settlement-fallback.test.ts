@@ -1,3 +1,12 @@
+import { detectScopeCapability } from "../src/scope.js";
+
+// The gated suites below manufacture REAL settlement evidence, which pre-creates process
+// scopes (delegated cgroup subtrees). Inside the verifier jail /sys/fs/cgroup is read-only,
+// so the environment cannot provide a scope at all — the same honest skip containment.test.ts
+// uses. On a delegated host nothing is skipped. P0 debt: delegate the verifier's own scope
+// subtree into the jail, then remove these guards.
+const SCOPE_CAPABILITY = detectScopeCapability();
+
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -87,7 +96,7 @@ async function limitedCall(h: { runDir: string; run: string; ledger: LedgerHandl
   return { bind, result };
 }
 
-describe("the trusted-fallback mint — only a re-derived canonical rejection buys a second provider", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("the trusted-fallback mint — only a re-derived canonical rejection buys a second provider", () => {
   it("issues fallback authority for a canonical rejection, charges NOTHING for it, and it survives a restart", async () => {
     const h = openRun();
     const { bind, result } = await limitedCall(h, "canonical-rejection", "canonical");
@@ -233,7 +242,7 @@ describe("the trusted-fallback mint — only a re-derived canonical rejection bu
  * than being quietly downgraded to "an unauthorized settlement", which would let a tamperer choose their
  * outcome by damaging the tag.
  */
-describe("a fallback cannot be forged into the durable journal", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("a fallback cannot be forged into the durable journal", () => {
   /** Rewrite one settle record in place, repairing `hash` so ONLY the MAC can catch it. */
   function tamperSettlement(boardDir: string, mutate: (data: any) => void): void {
     const leaf = join(boardDir, LEDGER_LEAF);

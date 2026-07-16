@@ -1,3 +1,12 @@
+import { detectScopeCapability } from "../src/scope.js";
+
+// The gated suites below manufacture REAL settlement evidence, which pre-creates process
+// scopes (delegated cgroup subtrees). Inside the verifier jail /sys/fs/cgroup is read-only,
+// so the environment cannot provide a scope at all — the same honest skip containment.test.ts
+// uses. On a delegated host nothing is skipped. P0 debt: delegate the verifier's own scope
+// subtree into the jail, then remove these guards.
+const SCOPE_CAPABILITY = detectScopeCapability();
+
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -82,7 +91,7 @@ function refolds(h: GenuineRun): { spend: number } | "refused" {
   }
 }
 
-describe("the durable attestation's SCOPE evidence must be exact — the fold re-derives it, never trusts it", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("the durable attestation's SCOPE evidence must be exact — the fold re-derives it, never trusts it", () => {
   // Each of these is a reap "proof" the old shape-validator existed to reject. They are now attacks on the
   // JOURNAL, and they must fail there: an ESRCH proof the ledger did not generate from its own probe of its
   // own pgid can never authorize a settlement, however well-formed it looks.
@@ -126,7 +135,7 @@ describe("the durable attestation's SCOPE evidence must be exact — the fold re
   }
 });
 
-describe("the durable attestation's TERMINAL evidence must be LOCATABLE in the transcript it pins", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("the durable attestation's TERMINAL evidence must be LOCATABLE in the transcript it pins", () => {
   for (const [name, mutate] of [
     ["terminal evidence entirely MISSING", (p: any) => ((p.terminalBytes = undefined), (p.terminalOffset = undefined))],
     ["a ZERO-length terminal frame", (p: any) => (p.terminalBytes = 0)],
@@ -148,7 +157,7 @@ describe("the durable attestation's TERMINAL evidence must be LOCATABLE in the t
   }
 });
 
-describe("fold-time derivation: owning the disk does not buy a cheaper spend or a second provider", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("fold-time derivation: owning the disk does not buy a cheaper spend or a second provider", () => {
   it("a hand-chained UNCERTAIN settlement cannot be upgraded by inventing an attestation", async () => {
     const h = openRun();
     const { bind, result } = await reserveAndRun(h, "c", { worstCase: 0.5, budget: 10, spec: { noCost: true } });

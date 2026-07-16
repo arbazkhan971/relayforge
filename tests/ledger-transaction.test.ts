@@ -1,3 +1,12 @@
+import { detectScopeCapability } from "../src/scope.js";
+
+// The gated suites below manufacture REAL settlement evidence, which pre-creates process
+// scopes (delegated cgroup subtrees). Inside the verifier jail /sys/fs/cgroup is read-only,
+// so the environment cannot provide a scope at all — the same honest skip containment.test.ts
+// uses. On a delegated host nothing is skipped. P0 debt: delegate the verifier's own scope
+// subtree into the jail, then remove these guards.
+const SCOPE_CAPABILITY = detectScopeCapability();
+
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -305,7 +314,7 @@ describe("Priority B2 — the ledger has a durable GENERATION; replacement is re
   });
 });
 
-describe("Priority B3 — settlements are ATTESTED, not asserted", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("Priority B3 — settlements are ATTESTED, not asserted", () => {
   it("an UNCERTAIN settlement records the terminal but RETAINS the worst case", () => {
     const dir = board();
     const run = nonce();
@@ -460,7 +469,7 @@ describe("Priority B3 — settlements are ATTESTED, not asserted", () => {
   });
 });
 
-describe("Priority B4 — unproven durability is NEVER laundered into trust", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("Priority B4 — unproven durability is NEVER laundered into trust", () => {
   // The audit: inject file-fsync EIO during settle → settle throws, but complete bytes remain. Reset the
   // hook and a path read reports callSettled:true, releasing the worst case to the unproven cost.
   it("a file-fsync EIO during settle poisons the ledger — a later read cannot fold the bytes", async () => {
@@ -629,7 +638,7 @@ describe("Priority B5 — the lock is a KERNEL lock: a crashed holder can never 
   });
 });
 
-describe("Priority B6 — money is exact fixed point, validated before any mutation", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("Priority B6 — money is exact fixed point, validated before any mutation", () => {
   it("ten $0.01 settlements under a $0.10 budget sum EXACTLY to $0.10 and stop the 11th", async () => {
     const h = openRun();
     // Ten REAL turns, each reporting $0.01 on the wire and each attested by the kernel.
@@ -690,7 +699,7 @@ describe("Priority B6 — money is exact fixed point, validated before any mutat
   });
 });
 
-describe("Priority B — budget semantics (preserved from the cost-ledger suite, now on the handle)", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("Priority B — budget semantics (preserved from the cost-ledger suite, now on the handle)", () => {
   it("a PROVEN low cost frees budget for the next call; an unproven one keeps the worst case", async () => {
     const h = openRun();
     const { bind: a, result } = await reserveAndRun(h, "a", { worstCase: 0.75, budget: 1, spec: { cost: 0.05 } });

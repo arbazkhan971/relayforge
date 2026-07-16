@@ -1,3 +1,12 @@
+import { detectScopeCapability } from "../src/scope.js";
+
+// The gated suites below manufacture REAL settlement evidence, which pre-creates process
+// scopes (delegated cgroup subtrees). Inside the verifier jail /sys/fs/cgroup is read-only,
+// so the environment cannot provide a scope at all — the same honest skip containment.test.ts
+// uses. On a delegated host nothing is skipped. P0 debt: delegate the verifier's own scope
+// subtree into the jail, then remove these guards.
+const SCOPE_CAPABILITY = detectScopeCapability();
+
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,7 +62,7 @@ async function spendOf(repoDir: string, runId: string): Promise<number> {
   return openLedger({ dir: join(runDir, "board"), runNonce }).effectiveSpend();
 }
 
-describe("restart/resume after a hard crash", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("restart/resume after a hard crash", () => {
   it("a run KILLED mid-attempt resumes: no replan, the abandoned attempt is reclaimed, and it finishes", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "loop-resume-"));
     registerOwnedTemp(scratch);

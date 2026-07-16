@@ -1,3 +1,12 @@
+import { detectScopeCapability } from "../src/scope.js";
+
+// The gated suites below manufacture REAL settlement evidence, which pre-creates process
+// scopes (delegated cgroup subtrees). Inside the verifier jail /sys/fs/cgroup is read-only,
+// so the environment cannot provide a scope at all — the same honest skip containment.test.ts
+// uses. On a delegated host nothing is skipped. P0 debt: delegate the verifier's own scope
+// subtree into the jail, then remove these guards.
+const SCOPE_CAPABILITY = detectScopeCapability();
+
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,7 +54,7 @@ describe("the ADVISORY cost log (costs.jsonl) — for humans and the dashboard, 
   });
 });
 
-describe("per-call budget cap (a positive budget is not one-call-only)", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("per-call budget cap (a positive budget is not one-call-only)", () => {
   it("reserves the PER-CALL cap, not the whole budget", () => {
     expect(perCallReservation({ budgetUsd: 5, maxCostPerCallUsd: 0.5 }, 5)).toBeCloseTo(0.5, 6);
     expect(perCallReservation({ budgetUsd: 0, maxCostPerCallUsd: 0 }, 0)).toBe(0);

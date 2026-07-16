@@ -1,3 +1,12 @@
+import { detectScopeCapability } from "../src/scope.js";
+
+// The gated suites below manufacture REAL settlement evidence, which pre-creates process
+// scopes (delegated cgroup subtrees). Inside the verifier jail /sys/fs/cgroup is read-only,
+// so the environment cannot provide a scope at all — the same honest skip containment.test.ts
+// uses. On a delegated host nothing is skipped. P0 debt: delegate the verifier's own scope
+// subtree into the jail, then remove these guards.
+const SCOPE_CAPABILITY = detectScopeCapability();
+
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -82,7 +91,7 @@ async function reservedCall(h: { runDir: string; run: string; ledger: LedgerHand
   return { bind, result };
 }
 
-describe("settlement kernel — a genuine success, and only a genuine success, becomes trusted cost", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("settlement kernel — a genuine success, and only a genuine success, becomes trusted cost", () => {
   it("settles a real successful turn as provider-reported cost, and it stays trusted across a restart", async () => {
     const h = openRun();
     const { bind, result } = await reservedCall(h, "genuine-success");

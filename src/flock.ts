@@ -55,14 +55,26 @@ const OVERFLOW_UID = 65534;
 export function helperUidTrusted(uid: number, uidMap: string | undefined): boolean {
   if (uid === 0) return true;
   if (uid !== OVERFLOW_UID || uidMap === undefined) return false;
-  // uid_map lines: "<inside-start> <outside-start> <count>". Root is mappable when a line covers
-  // inside-uid 0. No valid lines at all → we cannot PROVE unmappability → stay strict.
+  return rootUnmappedIn(uidMap);
+}
+
+/** uid_map lines: "<inside-start> <outside-start> <count>". Root is mappable when a line covers
+ *  inside-uid 0. No valid lines at all → we cannot PROVE unmappability → treat as mappable. */
+function rootUnmappedIn(uidMap: string): boolean {
   const triples = uidMap
     .split("\n")
     .map((line) => line.trim().split(/\s+/).map(Number))
     .filter((cols) => cols.length === 3 && cols.every((n) => Number.isInteger(n) && n >= 0));
   if (!triples.length) return false;
   return !triples.some(([inside, , count]) => inside === 0 && count > 0);
+}
+
+/** Whether THIS process runs where inside-uid 0 is unmappable — i.e. an unprivileged user
+ *  namespace, such as our own verifier/agent jails. An environment fact (not a policy): tests
+ *  use it to scale wall-clock budgets for the jail's overhead. */
+export function rootUnmappable(): boolean {
+  const map = readUidMap();
+  return map === undefined ? false : rootUnmappedIn(map);
 }
 
 function readUidMap(): string | undefined {

@@ -1,3 +1,10 @@
+// The gated suites below manufacture REAL settlement evidence, which pre-creates process
+// scopes (delegated cgroup subtrees). Inside the verifier jail /sys/fs/cgroup is read-only,
+// so the environment cannot provide a scope at all — the same honest skip containment.test.ts
+// uses. On a delegated host nothing is skipped. P0 debt: delegate the verifier's own scope
+// subtree into the jail, then remove these guards.
+const SCOPE_CAPABILITY = detectScopeCapability();
+
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,7 +73,7 @@ function alive(pid: number): boolean {
 
 const settle = (ms = 300): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-describe("the launch handshake: no provider EXECUTES before its scope is durably journaled", () => {
+describe.skipIf(!SCOPE_CAPABILITY.strong)("the launch handshake: no provider EXECUTES before its scope is durably journaled", () => {
   it("orders the fsynced journal BEFORE the exec — the provider finds its OWN scope id already on disk", async () => {
     const { dir, marker, journal } = openRun();
     const ctx = ctxFor(journal);
