@@ -37,7 +37,7 @@ export type AgentRequest = {
 /** Claude Code's flag that loads a system prompt from a file (headless). */
 export const CLAUDE_SYSTEM_PROMPT_FILE_FLAG = "--append-system-prompt-file";
 
-const VALID_EFFORTS = new Set(["minimal", "low", "medium", "high"]);
+const VALID_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 
 /**
  * Codex reads reasoning effort from a TOML config override passed as `-c <key=value>`. TOML string

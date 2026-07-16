@@ -58,6 +58,14 @@ describe("provider commands (safe contract)", () => {
     expect(() => assertSafeArgs(provider("codex", { effort: "ultra" }))).toThrow(/Invalid effort/);
   });
 
+  it("accepts xhigh effort and emits it as quoted TOML", () => {
+    const p = provider("codex", { model: "gpt-5.6-luna", effort: "xhigh" });
+    expect(() => assertSafeArgs(p)).not.toThrow();
+    const command = buildProviderCommand(p, "/tmp/prompt.md");
+    const ci = command.args.indexOf("-c");
+    expect(command.args[ci + 1]).toBe('model_reasoning_effort="xhigh"');
+  });
+
   it("rejects equals-form control flags that try to bypass the deterministic contract", () => {
     for (const arg of ["--permission-mode=plan", "--model=evil", "--output-format=text", "--fallback-model=gemini", "--append-system-prompt=x"]) {
       expect(() => assertSafeArgs(provider("claude", { args: [arg] }))).toThrow(/conflicts/);

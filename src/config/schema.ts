@@ -28,7 +28,7 @@ export const ProviderSchema = z
     command: z.string().optional(),
     args: z.array(z.string()).default([]),
     model: z.string().optional(),
-    /** Reasoning effort (Codex: minimal|low|medium|high). */
+    /** Reasoning effort (Codex: minimal|low|medium|high|xhigh). */
     effort: z.string().optional(),
     /** Override the flag Claude uses to load a system prompt from a file (headless). */
     systemPromptFlag: z.string().optional(),
