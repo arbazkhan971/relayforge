@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { closeSync, constants as fsConstants, lstatSync, openSync, realpathSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, constants as fsConstants, lstatSync, openSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 
 /**
  * A KERNEL lock on the exact ledger file description (wave-8d independent audit, B5).
@@ -35,10 +35,49 @@ export class FlockError extends Error {
 
 let verifiedHelper: string | undefined;
 
+/** The kernel's overflow uid: what a file owner is REPORTED as when its true uid has no mapping
+ *  in the reader's user namespace. */
+const OVERFLOW_UID = 65534;
+
+/**
+ * Decide whether the helper's REPORTED owner uid is consistent with "owned by root".
+ *
+ * On a plain host that is exactly `uid === 0`. Inside an unprivileged user namespace — which is
+ * where our own verifier/agent jails run this very code against the read-only-bound host `/` —
+ * uid 0 usually has NO mapping, so the kernel reports a host-root-owned file with the overflow
+ * uid. Accepting overflow unconditionally would be unsound on a host (a real `nobody`-owned
+ * helper must stay refused), so overflow is trusted ONLY when `/proc/self/uid_map` proves uid 0
+ * is unmappable here: then EVERY host-root file reports as overflow, the reported owner is a view
+ * artifact, and the unchanged mode checks (no group/other write) on a read-only bind still
+ * guarantee no other account can rewrite the helper. A missing or unparseable map proves nothing
+ * and keeps the strict host semantics. Exported for deterministic fixture tests.
+ */
+export function helperUidTrusted(uid: number, uidMap: string | undefined): boolean {
+  if (uid === 0) return true;
+  if (uid !== OVERFLOW_UID || uidMap === undefined) return false;
+  // uid_map lines: "<inside-start> <outside-start> <count>". Root is mappable when a line covers
+  // inside-uid 0. No valid lines at all → we cannot PROVE unmappability → stay strict.
+  const triples = uidMap
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/).map(Number))
+    .filter((cols) => cols.length === 3 && cols.every((n) => Number.isInteger(n) && n >= 0));
+  if (!triples.length) return false;
+  return !triples.some(([inside, , count]) => inside === 0 && count > 0);
+}
+
+function readUidMap(): string | undefined {
+  try {
+    return readFileSync("/proc/self/uid_map", "utf8");
+  } catch {
+    return undefined; // no /proc view → assume host semantics (strict)
+  }
+}
+
 /**
  * Verify the helper binary itself: an ABSOLUTE path with no symlinked component, a regular file, owned
- * by root, not writable by group/other, executable, and identifying as util-linux. A helper another
- * account can rewrite is a helper that can hand out a lock it never took.
+ * by root (or reported as overflow inside a user namespace that provably cannot map root — see
+ * `helperUidTrusted`), not writable by group/other, executable, and identifying as util-linux. A helper
+ * another account can rewrite is a helper that can hand out a lock it never took.
  */
 function verifyHelper(): string {
   if (verifiedHelper !== undefined) return verifiedHelper;
@@ -51,7 +90,9 @@ function verifyHelper(): string {
   if (real !== HELPER) throw new FlockError(`${HELPER} resolves to ${real} (a symlinked helper is not trusted)`);
   const st = lstatSync(real);
   if (!st.isFile()) throw new FlockError(`${HELPER} is not a regular file`);
-  if (st.uid !== 0) throw new FlockError(`${HELPER} is owned by uid ${st.uid}, not root (refusing an untrusted lock helper)`);
+  if (!helperUidTrusted(st.uid, readUidMap())) {
+    throw new FlockError(`${HELPER} is owned by uid ${st.uid}, not root (refusing an untrusted lock helper)`);
+  }
   if ((st.mode & 0o022) !== 0) throw new FlockError(`${HELPER} is group/other writable (mode ${(st.mode & 0o777).toString(8)}; refusing)`);
   if ((st.mode & 0o111) === 0) throw new FlockError(`${HELPER} is not executable`);
   const v = spawnSync(HELPER, ["--version"], { encoding: "utf8", timeout: 5_000 });

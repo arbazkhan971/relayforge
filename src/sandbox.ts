@@ -156,12 +156,17 @@ export type ContainOutcome =
  *  - else THROW (fail closed). Untrusted execution never proceeds without a boundary.
  */
 export function containCommand(command: string, args: string[], policy: SandboxPolicy): ContainOutcome {
+  // The injected trusted runner WINS over a launchable sandbox. It is an import-only test seam
+  // (production code never calls setTrustedRunner), and its entire purpose is host-independent
+  // determinism: the same test must take the same path on a bwrap-capable host as on one where
+  // bwrap cannot launch. Probing first would jail the tests' own fixtures on capable hosts, whose
+  // private /tmp then swallows the TMPDIR side-channels the fixtures coordinate through.
+  if (trustedRunnerInjected) return { kind: "trusted", command, args };
   const mech = detectSandbox();
   if (mech !== "none") {
     const wrapped = wrapCommand(command, args, policy);
     return { kind: "wrapped", command: wrapped.command, args: wrapped.args };
   }
-  if (trustedRunnerInjected) return { kind: "trusted", command, args };
   throw new Error(
     "No OS sandbox available (need a launchable Linux `bwrap` or macOS `sandbox-exec`). " +
       "Refusing to run a provider/verifier command unsandboxed — failing closed."
