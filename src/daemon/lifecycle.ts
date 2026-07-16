@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
+import { resolve } from "node:path";
+import { ghAvailable } from "./github.js";
+import { startFeedbackPolling } from "./poller.js";
 import { createDaemonServer } from "./server.js";
 import { daemonPaths, initDaemonState, readToken } from "./state.js";
 
@@ -87,6 +90,14 @@ export function runDaemonForeground(stateDir: string, port: number): Server {
 
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+
+  // Feedback router: only poll GitHub when `gh` is installed and authenticated.
+  if (ghAvailable()) {
+    startFeedbackPolling({ stateDir, runsDir: resolve(stateDir, "..", "runs") });
+    console.log("feedback router: polling PR/CI/review state via gh");
+  } else {
+    console.log("feedback router: disabled (gh CLI not available/authenticated)");
+  }
 
   server.listen(port, "127.0.0.1", () => {
     writeFileSync(
