@@ -137,11 +137,13 @@ export const RootConfigSchema = z.object({
   defaults: z.object({
     namespace: z.string().default("loop"),
     dashboardPort: z.number().int().positive().default(4318),
+    daemonPort: z.number().int().positive().default(4319),
     promptDir: z.string().default(".loop/prompts"),
     runDir: z.string().default(".loop/runs")
   }).default({
     namespace: "loop",
     dashboardPort: 4318,
+    daemonPort: 4319,
     promptDir: ".loop/prompts",
     runDir: ".loop/runs"
   }),
