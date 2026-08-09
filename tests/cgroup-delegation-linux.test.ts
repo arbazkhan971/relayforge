@@ -1,7 +1,21 @@
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  constants as fsConstants,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   VERIFIER_CGROUP_BWRAP_FRAGMENT,
   VERIFIER_CGROUP_UNAVAILABLE_REASONS,
@@ -33,9 +47,42 @@ import {
   type LinuxCgroupPayloadResult,
   type ParentNamespaceSet
 } from "../src/cgroup-delegation-linux.js";
+import { flockExclusive } from "../src/flock.js";
 import { runHeadlessChild, runOrderedVerify } from "../src/orchestrator.js";
 
 const temporary: string[] = [];
+let hostCgroupTestLock: number | undefined;
+
+/*
+ * The delegated cgroup root is a host-wide test resource. Two independent
+ * `vitest` processes used to mistake each other's temporary `loop-*` scopes for
+ * leaks while both complete suites were running. Serialize this one host
+ * characterization file with a crash-released kernel lock; product cgroup
+ * names remain random and every assertion below still checks only the scope it
+ * owns. Never unlink this stable lock inode while another process may wait.
+ */
+beforeAll(() => {
+  const uid = process.getuid?.() ?? 0;
+  const path = resolve(tmpdir(), `relayforge-cgroup-host-tests-${uid}.lock`);
+  hostCgroupTestLock = openSync(
+    path,
+    fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
+    0o600
+  );
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || stat.uid !== uid) {
+    closeSync(hostCgroupTestLock);
+    hostCgroupTestLock = undefined;
+    throw new Error(`unsafe shared cgroup-test lock leaf: ${path}`);
+  }
+  flockExclusive(hostCgroupTestLock, 120_000);
+});
+
+afterAll(() => {
+  if (hostCgroupTestLock !== undefined) closeSync(hostCgroupTestLock);
+  hostCgroupTestLock = undefined;
+});
+
 afterEach(() => {
   for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true });
 });
@@ -447,7 +494,6 @@ describe("production verifier session through the shared transport", () => {
       ownedGroups: new Set<number>(),
       ownedScopes: new Set<any>()
     } as any;
-    const before = new Set(readdirSync(runtime.collected.outerScopeRoot!));
     const timeoutBackend = linuxVerifierCgroupBackend(runtime, { runId: ctx.runId, attemptId: "timeout", leaseId: "lease-test" }, root);
     const timed = await runHeadlessChild(
       ctx, "/bin/sh", ["-c", "sleep 60"], { PATH: "/usr/bin:/bin", HOME: "/tmp" }, "", root,
@@ -470,8 +516,15 @@ describe("production verifier session through the shared transport", () => {
     const stopped = await pending;
     expect(stopped.ok).toBe(false);
     expect(stopped.uncertainReason).toContain("cancelled");
-    const after = readdirSync(runtime.collected.outerScopeRoot!).filter((name) => !before.has(name));
-    expect(after.filter((name) => /^loop-[0-9a-f]{16}$/.test(name))).toEqual([]);
+    const ownedNames = readFileSync(ctx.scopesPath, "utf8")
+      .split("\n")
+      .map((line) => parseVerifierCgroupJournalLine(line))
+      .filter((record) => record.kind === "v2")
+      .map((record) => record.identity.name);
+    expect(ownedNames).toHaveLength(2);
+    for (const name of ownedNames) {
+      expect(readdirSync(runtime.collected.outerScopeRoot!)).not.toContain(name);
+    }
   }, 60_000);
 
   it("refuses before verifier exec when the v2 journal fsync fails", async () => {
@@ -549,7 +602,7 @@ describe("actual-host characterization (never skipped and never downgraded)", ()
   it("either proves the complete real composition or returns one exact closed reason and leaves no probe scope", async () => {
     const before = collectLinuxCgroupEvidence();
     const beforeNames = before.outerScopeRoot
-      ? new Set(readdirSync(before.outerScopeRoot).filter((name) => /^rf-probe-sibling-|^loop-[0-9a-f]{16}$/.test(name)))
+      ? new Set(readdirSync(before.outerScopeRoot).filter((name) => /^rf-probe-sibling-/.test(name)))
       : new Set<string>();
 
     const capability = await probeVerifierCgroupJailLinux();
@@ -571,11 +624,12 @@ describe("actual-host characterization (never skipped and never downgraded)", ()
     } else {
       expect(VERIFIER_CGROUP_UNAVAILABLE_REASONS).toContain(capability.reasonCode);
       expect(capability.detail.length).toBeGreaterThan(0);
+      expect(capability.detail).not.toMatch(/could not be proven settled/i);
     }
 
     const after = collectLinuxCgroupEvidence();
     if (before.outerScopeRoot && after.outerScopeRoot === before.outerScopeRoot) {
-      const afterNames = new Set(readdirSync(after.outerScopeRoot).filter((name) => /^rf-probe-sibling-|^loop-[0-9a-f]{16}$/.test(name)));
+      const afterNames = new Set(readdirSync(after.outerScopeRoot).filter((name) => /^rf-probe-sibling-/.test(name)));
       expect(afterNames).toEqual(beforeNames);
     }
   }, 30_000);
