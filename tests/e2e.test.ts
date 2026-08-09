@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config/load.js";
 import { runSucceeded } from "../src/cli/support.js";
-import { normalizeVerifyOutput, prepareRun, runAutonomyLoop, runOrderedVerify, writeRolePrompts } from "../src/orchestrator.js";
+import { finalLoopState, normalizeVerifyOutput, prepareRun, runAutonomyLoop, runOrderedVerify, writeRolePrompts } from "../src/orchestrator.js";
 import { tmpdir } from "node:os";
 import { requestCancel } from "../src/runtime.js";
 import { setTrustedRunner } from "../src/sandbox.js";
@@ -357,7 +357,7 @@ describe("end-to-end (fake provider)", () => {
     const timer = setTimeout(() => requestCancel(ctx.runDir, "test cancel"), 2500);
     const reports = await runAutonomyLoop(ctx, {}, { execute: true });
     clearTimeout(timer);
-    const state = JSON.parse(readFileSync(ctx.statePath, "utf8"));
+    const state = finalLoopState(ctx);
     expect(state.status).toBe("cancelled");
     void reports;
   }, 60000);

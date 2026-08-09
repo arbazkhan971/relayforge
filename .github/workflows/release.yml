@@ -2,51 +2,181 @@ name: release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 permissions:
   contents: read
 
 jobs:
   gate:
-    name: pre-release gate
+    name: committed source gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: node scripts/release-policy.mjs gate
       - run: npm run validate
-      - run: npm pack --dry-run
+      - run: npm run smoke
 
-  npm-publish:
+  required-cgroup:
+    name: required Linux verifier-cgroup gate
     needs: gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, relayforge-cgroup]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          registry-url: "https://registry.npmjs.org"
           cache: npm
-
       - run: npm ci
-      - run: npm run build
+      - run: RELAYFORGE_TEST_REQUIRE_CGROUP=1 npx vitest run tests/cgroup-delegation-linux.test.ts
 
-      - name: Verify package version matches tag
+  artifact:
+    name: exact packed artifact with contained native evidence
+    needs: [gate, required-cgroup]
+    runs-on: [self-hosted, linux, relayforge-adapters, relayforge-cgroup]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Force every validation suite through the real cgroup backend
+        run: RELAYFORGE_TEST_REQUIRE_CGROUP=1 npm run validate
+      - name: Re-prove the real operator-to-provider steering journey on the artifact runner
+        run: RELAYFORGE_TEST_REQUIRE_CGROUP=1 npx vitest run tests/steering-cli-run-e2e.test.ts
+      - name: Require the contained-success product smoke branch
+        shell: bash
         run: |
-          PKG_VERSION="$(node -p "require('./package.json').version")"
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION)"
-            exit 1
-          fi
-          echo "Publishing loop-orchestrator@$PKG_VERSION"
+          set -euo pipefail
+          smoke_log="$RUNNER_TEMP/relayforge-contained-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+          trap 'rm -f -- "$smoke_log"' EXIT HUP INT TERM
+          npm run smoke | tee "$smoke_log"
+          grep -Fqx -- 'SMOKE PASS (contained host — verified delivery on the run branch):' "$smoke_log"
+      - name: Prepare private native-evidence workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          private_root="$RUNNER_TEMP/relayforge-native-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 -- "$private_root"
+          node -e 'const fs=require("node:fs"),crypto=require("node:crypto"),p=process.argv[1],v=crypto.randomBytes(32).toString("hex")+"\n"; const fd=fs.openSync(p,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600); try { fs.writeFileSync(fd,v); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }' "$private_root/job-nonce"
+      - name: Collect and consume private OpenCode evidence
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          private_root="$RUNNER_TEMP/relayforge-native-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          job_nonce="$(<"$private_root/job-nonce")"
+          [[ "$job_nonce" =~ ^[a-f0-9]{64}$ ]]
+          evidence="$private_root/opencode.json"
+          receipt="$private_root/opencode-receipt.json"
+          trap 'status=$?; rm -f -- "$evidence"; if [ "$status" -ne 0 ]; then rm -f -- "$private_root/job-nonce" "$private_root"/*-receipt.json; rmdir -- "$private_root" 2>/dev/null || true; fi; exit "$status"' EXIT HUP INT TERM
+          RUNNER_TEMP="$private_root" node scripts/collect-contained-adapter-evidence.mjs --authorize-paid-probe --adapter opencode --output "$evidence" --commit-sha "$GITHUB_SHA" --job-nonce "$job_nonce"
+          RUNNER_TEMP="$private_root" RELAYFORGE_TEST_REQUIRE_OPENCODE=1 RELAYFORGE_TEST_OPENCODE_CONTAINED_EVIDENCE_FILE="$evidence" RELAYFORGE_TEST_EVIDENCE_JOB_NONCE="$job_nonce" npx vitest run tests/adapter-opencode.test.ts
+          RUNNER_TEMP="$private_root" node scripts/create-native-adapter-receipt-bundle.mjs --extract --adapter opencode --evidence-file "$evidence" --receipt-output "$receipt" --commit-sha "$GITHUB_SHA" --job-nonce "$job_nonce"
+      - name: Collect and consume private Pi evidence
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          private_root="$RUNNER_TEMP/relayforge-native-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          job_nonce="$(<"$private_root/job-nonce")"
+          [[ "$job_nonce" =~ ^[a-f0-9]{64}$ ]]
+          evidence="$private_root/pi.json"
+          receipt="$private_root/pi-receipt.json"
+          trap 'status=$?; rm -f -- "$evidence"; if [ "$status" -ne 0 ]; then rm -f -- "$private_root/job-nonce" "$private_root"/*-receipt.json; rmdir -- "$private_root" 2>/dev/null || true; fi; exit "$status"' EXIT HUP INT TERM
+          RUNNER_TEMP="$private_root" node scripts/collect-contained-adapter-evidence.mjs --authorize-paid-probe --adapter pi --output "$evidence" --commit-sha "$GITHUB_SHA" --job-nonce "$job_nonce"
+          RUNNER_TEMP="$private_root" RELAYFORGE_TEST_REQUIRE_PI=1 RELAYFORGE_TEST_PI_CONTAINED_EVIDENCE_FILE="$evidence" RELAYFORGE_TEST_EVIDENCE_JOB_NONCE="$job_nonce" npx vitest run tests/adapter-pi.test.ts
+          RUNNER_TEMP="$private_root" node scripts/create-native-adapter-receipt-bundle.mjs --extract --adapter pi --evidence-file "$evidence" --receipt-output "$receipt" --commit-sha "$GITHUB_SHA" --job-nonce "$job_nonce"
+      - name: Collect and consume private Grok evidence
+        env:
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          private_root="$RUNNER_TEMP/relayforge-native-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          job_nonce="$(<"$private_root/job-nonce")"
+          [[ "$job_nonce" =~ ^[a-f0-9]{64}$ ]]
+          evidence="$private_root/grok.json"
+          receipt="$private_root/grok-receipt.json"
+          trap 'status=$?; rm -f -- "$evidence"; if [ "$status" -ne 0 ]; then rm -f -- "$private_root/job-nonce" "$private_root"/*-receipt.json; rmdir -- "$private_root" 2>/dev/null || true; fi; exit "$status"' EXIT HUP INT TERM
+          RUNNER_TEMP="$private_root" node scripts/collect-contained-adapter-evidence.mjs --authorize-paid-probe --adapter grok --output "$evidence" --commit-sha "$GITHUB_SHA" --job-nonce "$job_nonce"
+          RUNNER_TEMP="$private_root" RELAYFORGE_TEST_REQUIRE_GROK=1 RELAYFORGE_TEST_GROK_CONTAINED_EVIDENCE_FILE="$evidence" RELAYFORGE_TEST_EVIDENCE_JOB_NONCE="$job_nonce" npx vitest run tests/adapter-grok.test.ts
+          RUNNER_TEMP="$private_root" node scripts/create-native-adapter-receipt-bundle.mjs --extract --adapter grok --evidence-file "$evidence" --receipt-output "$receipt" --commit-sha "$GITHUB_SHA" --job-nonce "$job_nonce"
+      - name: Bind receipt digests and build exact publishable artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          private_root="$RUNNER_TEMP/relayforge-native-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          receipt_bundle="$private_root/receipts.json"
+          trap 'rm -f -- "$private_root/job-nonce" "$private_root"/*-receipt.json "$receipt_bundle"; rmdir -- "$private_root" 2>/dev/null || true' EXIT HUP INT TERM
+          RUNNER_TEMP="$private_root" node scripts/create-native-adapter-receipt-bundle.mjs --output "$receipt_bundle" --commit-sha "$GITHUB_SHA" --opencode-receipt "$private_root/opencode-receipt.json" --pi-receipt "$private_root/pi-receipt.json" --grok-receipt "$private_root/grok-receipt.json"
+          RELAYFORGE_RELEASE_SOURCE_GATE=passed RELAYFORGE_RELEASE_CGROUP_GATE=passed node scripts/release-artifact.mjs --output .release --native-adapter-receipts "$receipt_bundle"
+      - name: Remove private native-evidence workspace
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +x
+          private_root="$RUNNER_TEMP/relayforge-native-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -f -- "$private_root/job-nonce" "$private_root/opencode.json" "$private_root/pi.json" "$private_root/grok.json" "$private_root/opencode-receipt.json" "$private_root/pi-receipt.json" "$private_root/grok-receipt.json" "$private_root/receipts.json"
+          rmdir -- "$private_root" 2>/dev/null || true
+      - name: Drive the exact packed dashboard through Chrome degradation and recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(node -p "require('./.release/release-manifest.json').tarball.path")"
+          node scripts/smoke-packed-dashboard.mjs --tarball "$tarball"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relayforge-npm-${{ github.ref_name }}
+          path: .release/
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Publish to npm
+  publish:
+    name: npm publish and convergence
+    needs: [artifact, required-cgroup]
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: relayforge-npm-${{ github.ref_name }}
+          path: .release
+      - id: preflight
+        run: node scripts/release-policy.mjs preflight .release/release-manifest.json
+      - name: Publish exact tested tarball
+        if: steps.preflight.outputs.publish_required == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: npm publish "$(node -p "require('./.release/release-manifest.json').tarball.path")" --access public --tag "${{ steps.preflight.outputs.dist_tag }}" --provenance
+      - run: node scripts/release-policy.mjs converge .release/release-manifest.json
+      - run: node scripts/release-artifact.mjs --verify-registry .release/release-manifest.json

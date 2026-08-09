@@ -2,13 +2,13 @@
 
 Audited 2026-08-09. All reference trees remained unmodified.
 
-## Reference matrix
+## Reference Matrix
 
-| Repository | Audited commit | Best contribution | Important weakness | License | Reuse |
-| --- | --- | --- | --- | --- | --- |
-| `johannesjo/parallel-code` | `d000fff6` | Lightweight worktree/import UX, Git-ignore discovery, retryable cleanup UI | Symlinks mutable dependencies and potentially secrets; no durable reconciliation or operation lease | MIT | `ARCHITECTURAL_INSPIRATION` |
-| `daintreehq/daintree` | `eb989c76` | Strongest local creation serialization/coalescing, lifecycle tests, topology monitoring and retry UX | Announces creation before setup completes; hooks unsandboxed; teardown failures can permit deletion; coupled service | Apache-2.0 plus NOTICE/trademark terms | `ARCHITECTURAL_INSPIRATION`; narrow ports only with attribution |
-| `GoogleCloudPlatform/scion` | `91c26b34` | Strongest shared/container provisioning, advisory locks, sentinels, layered context and doctor | Provision/delete race, weak readiness sentinel validation, unsandboxed hooks, less local recovery UX | Apache-2.0 with Google file headers | `ARCHITECTURAL_INSPIRATION` |
+| Repository | Relevant implementation | Strength | Weakness | License | Reuse decision |
+|---|---|---|---|---|---|
+| `johannesjo/parallel-code` `d000fff6` | Worktree creation/import, ignore discovery, selected links, ownership-aware cleanup, and focused ignore/link tests | Lightweight operator UX and a clear imported/user-owned distinction | Shares mutable dependencies and potentially secrets; lacks durable reconciliation and an operation lease | MIT | `ARCHITECTURAL_INSPIRATION` |
+| `daintreehq/daintree` `eb989c76` | Serialized/coalesced worktree creation, topology monitoring, lifecycle service, retry UI, context injection, and broad lifecycle tests | Strongest inspected local lifecycle and race characterization | Announces creation before setup finishes; hooks are unsandboxed; teardown failures can permit deletion; tightly coupled service | Apache-2.0 plus NOTICE/trademark terms | `ARCHITECTURAL_INSPIRATION`; no source or tests copied |
+| `GoogleCloudPlatform/scion` `91c26b34` | Shared/container provisioning, advisory locks, sentinels, layered context, recovery, doctor, and design/test corpus | Strongest shared-provisioning and diagnostic model | Provision/delete race, weak sentinel validation, unsandboxed hooks, and weaker local recovery UX | Apache-2.0 with Google file headers | `ARCHITECTURAL_INSPIRATION` |
 
 ## parallel-code evidence
 
@@ -74,7 +74,35 @@ Scion's lock/idempotency/diagnostic ideas are valuable, but a sentinel alone is
 not proof of readiness. RelayForge must validate remote/HEAD/configuration and
 serialize provision with deletion under the same lease domain.
 
-## Chosen synthesis
+## Chosen design
+
+### Best implementation discovered
+
+Daintree is strongest for local lifecycle serialization and recovery UX;
+Scion is strongest for shared provisioning, locking, layered context, and
+doctor; Parallel Code is strongest for lightweight imported-worktree ergonomics.
+
+### Why
+
+Their source and tests solve complementary parts of the problem. None combines
+readiness gating, durable intent, cross-process ownership, isolated dependency
+provisioning, and repairable cleanup, so no single implementation is suitable
+as the Phase 00 design.
+
+### What RelayForge will reuse
+
+Only `ARCHITECTURAL_INSPIRATION`: Parallel Code's user-owned distinction,
+Daintree's coalescing/serialization and retry characterization, and Scion's
+lock, topology, context, and doctor concepts. No code or tests were copied.
+
+### What RelayForge will change
+
+Setup becomes a blocking readiness state; dependency material is copied rather
+than linked; hooks require a separate trusted bounded policy; cleanup retains
+durable repair state; and cross-process leases complement in-process
+serialization.
+
+### How RelayForge will improve it
 
 1. Persist a mutation ID and lifecycle intent, then combine Daintree-style
    in-process coalescing/serialization with a cross-process lock and RelayForge

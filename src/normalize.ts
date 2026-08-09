@@ -14,8 +14,9 @@
  */
 
 import { createHash } from "node:crypto";
+import { getBuiltinAdapterDescriptor, type BuiltinProviderKind } from "./providers.js";
 
-export type ProviderKind = "claude" | "codex" | "gemini" | "custom";
+export type ProviderKind = BuiltinProviderKind;
 
 /**
  * One accepted frame's EXACT wire bytes, as framed by the single bounded stdout pipeline (streaming.ts).
@@ -767,9 +768,13 @@ function normalizeCodex(stdout: string): NormalizedTurn {
  * and defers to the batch shape at `finish()` (they never authorize fallback).
  */
 export function createStreamingNormalizer(provider: ProviderKind): StreamingNormalizer {
-  if (provider === "claude") return new StreamingClaudeNormalizer();
-  if (provider === "codex") return new StreamingCodexNormalizer();
-  return new StreamingRawNormalizer(provider);
+  const descriptor = getBuiltinAdapterDescriptor(provider);
+  if (descriptor.normalizer.id === "claude-stream-json-2.1.207") return new StreamingClaudeNormalizer();
+  if (descriptor.normalizer.id === "codex-json-0.144.0") return new StreamingCodexNormalizer();
+  if (descriptor.normalizer.id === "gemini-raw-v1" || descriptor.normalizer.id === "custom-raw-v1") {
+    return new StreamingRawNormalizer(provider);
+  }
+  throw new Error(`Unsupported built-in normalizer contract: ${JSON.stringify(descriptor.normalizer.id)}.`);
 }
 
 /**
@@ -803,9 +808,13 @@ class StreamingRawNormalizer implements StreamingNormalizer {
  * final text with an UNKNOWN cost and no limit signal (they never fall back).
  */
 export function normalizeTurn(provider: ProviderKind, stdout: string): NormalizedTurn {
-  if (provider === "claude") return normalizeClaude(stdout);
-  if (provider === "codex") return normalizeCodex(stdout);
-  return normalizeRaw(provider, stdout);
+  const descriptor = getBuiltinAdapterDescriptor(provider);
+  if (descriptor.normalizer.id === "claude-stream-json-2.1.207") return normalizeClaude(stdout);
+  if (descriptor.normalizer.id === "codex-json-0.144.0") return normalizeCodex(stdout);
+  if (descriptor.normalizer.id === "gemini-raw-v1" || descriptor.normalizer.id === "custom-raw-v1") {
+    return normalizeRaw(provider, stdout);
+  }
+  throw new Error(`Unsupported built-in normalizer contract: ${JSON.stringify(descriptor.normalizer.id)}.`);
 }
 
 function normalizeRaw(provider: ProviderKind, stdout: string): NormalizedTurn {

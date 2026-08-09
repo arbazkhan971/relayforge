@@ -6,8 +6,30 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   validate:
+    name: Node ${{ matrix.node }} validation
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  product-smoke:
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -16,4 +38,33 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run validate
+      - run: npm run smoke
+      - run: npm pack --dry-run
+
+  preview-artifact:
+    name: packed pull-request preview artifact
+    if: github.event_name == 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/release-artifact.mjs --preview --output .preview
+      - name: Drive the exact preview tarball through the real browser dashboard smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(node -p "require('./.preview/release-manifest.json').tarball.path")"
+          node scripts/smoke-packed-dashboard.mjs --tarball "$tarball"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relayforge-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+          path: .preview/
+          if-no-files-found: error
+          retention-days: 7

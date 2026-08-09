@@ -1,19 +1,22 @@
 import { ChildProcess, spawn, spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, writeSync } from "node:fs";
-import { createHash, randomBytes } from "node:crypto";
-import { basename, dirname, resolve } from "node:path";
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fsyncSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmdirSync, writeFileSync, writeSync } from "node:fs";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import {
   addEvent,
   addMessage,
   addTask,
   BoardTask,
+  boardPaths,
   boardSummary,
+  type ControlAuthorityMarker,
   foldBoard,
-  gatherContext,
   initBoard,
   isComplete,
   openTasksFor,
+  readControlAuthorityMarker,
   retryableTasksFor,
   TaskView
 } from "./board.js";
@@ -23,11 +26,37 @@ import { assertBudgetContract, initCostLedger, perCallReservation, recordCost, t
 import { CallBinding, LedgerHandle, openLedger } from "./ledger.js";
 import type { SettlementOutcome } from "./settlement-kernel.js";
 import { createStreamingNormalizer, NormalizedTurn, ProviderKind } from "./normalize.js";
-import { FrameFatal, MAX_FRAME_BYTES, StdoutStream } from "./streaming.js";
-import { changedFiles, discoverTestFiles, gitTopLevel, hashFiles, headSha, repoRootCommit } from "./git.js";
+import {
+  FrameFatal,
+  MAX_FRAME_BYTES,
+  MAX_STREAM_BYTES,
+  StdoutStream,
+  createAdapterCallIdentity,
+  type AdapterCallIdentity
+} from "./streaming.js";
+import { serializeAcpInitialize, serializeAcpNewSession } from "./adapters/acp-v1.js";
+import { grokInitializeMeta, grokSessionMeta } from "./adapters/grok-acp.js";
+import { createGrokEgressProxy, type GrokEgressProxy } from "./adapters/grok-egress.js";
+import { buildGrokEgressProviderCommand, grokEgressRelayPath } from "./adapters/grok-egress-probe.js";
+import {
+  GROK_EGRESS_POLICY_SHA256,
+  type GrokEgressEvidenceBinding
+} from "./adapters/grok-egress-contract.js";
+import { serializePiGetSessionStats, serializePiGetState, serializePiPrompt } from "./adapters/pi-rpc.js";
+import {
+  selectShippedAdapter,
+  type ShippedAdapterId
+} from "./adapters/bootstrap.js";
+import { inspectAdapterRuntimeFile, sameRuntimeFileEvidence } from "./adapters/runtime.js";
+import type { AdapterAvailability } from "./adapters/types.js";
+import {
+  containedAdapterProbeConfigurationSha256,
+  containedAdapterRuntimeIdentitySha256
+} from "./adapters/contained-evidence.js";
+import { changedFiles, discoverTestFiles, gitTopLevel, hashFiles, headSha, repoRootCommit, runGit } from "./git.js";
 import { analyzeProject } from "./intelligence.js";
 import { assertId, containedJoin, containsSymlink } from "./ids.js";
-import { AgentRole, buildHeadlessCommand } from "./providers.js";
+import { AgentRole, buildHeadlessCommand, getBuiltinAdapterDescriptor } from "./providers.js";
 import { provisionWorktree, type ProvisionResult } from "./provision.js";
 import {
   buildProviderChain,
@@ -54,7 +83,25 @@ import {
   terminateScope,
   writeStateFileDurable
 } from "./runtime.js";
-import { containCommand, containmentAvailable, trustedRunnerActive, verifierNetworkIsolationAvailable } from "./sandbox.js";
+import type { RunLease } from "./runtime.js";
+import { parseControlEvent, type ControlEvent } from "./control/events.js";
+import { assertActiveRunLease, cutoverControlAuthority, type ControlAuthorityHandle } from "./control/cutover.js";
+import type { LoopCheckpointFact } from "./control/reducer.js";
+import {
+  acquireControlServiceOwnership,
+  type ControlServiceOwnership
+} from "./control/service.js";
+import {
+  containCommand,
+  containmentAvailable,
+  assertSandboxSocketIdentity,
+  pinSandboxSocket,
+  providerPrivateReadableRoots,
+  providerPrivateWritableRoots,
+  trustedRunnerActive,
+  verifierNetworkIsolationAvailable,
+  type SandboxFilesystemAllowlist
+} from "./sandbox.js";
 import {
   getCachedLinuxVerifierCgroupRuntime,
   linuxVerifierCgroupBackend,
@@ -62,6 +109,25 @@ import {
   type LinuxVerifierCgroupRuntime
 } from "./cgroup-delegation-linux.js";
 import { parseVerifierCgroupJournalLine } from "./cgroup-delegation.js";
+import { parseProcStatStartTicks } from "./cgroup-delegation.js";
+import {
+  internalSteeringCommandId,
+  markDispatchStarted,
+  planDispatchLaunch,
+  prepareDispatchAttempt,
+  settleDispatchAttempt
+} from "./steering/integration.js";
+import { SteeringRepository } from "./steering/repository.js";
+import {
+  planSteeringRecovery,
+  STEERING_SETTLEMENT_CONSUMER_ID,
+  type LaunchInspection
+} from "./steering/recovery.js";
+import {
+  completeExitedSettlement,
+  reconcileAttemptRecovery,
+  reconcileTerminalPendingCommands
+} from "./steering/reconcile.js";
 import {
   closeLaunchGate,
   reapAbandonedScope,
@@ -93,6 +159,23 @@ import {
   worktreeRoot,
   worktreesSupported
 } from "./worktree.js";
+import type { MultiRepositoryRunOutcomeV1 } from "./multirepo/orchestration.js";
+import { multiRepositoryWorkerCallId } from "./multirepo/worker-recovery.js";
+
+export type RunTranscriptObservationTarget = Readonly<{
+  taskId: string;
+  taskGeneration: number;
+  sessionId: string;
+  sessionGeneration: number;
+  attemptGeneration: number;
+}>;
+
+export type RunTranscriptObservationHandle = Readonly<{
+  /** Non-blocking progress hint. The parent serializes canonical ingestion internally. */
+  progress(): void;
+  /** Drains queued progress and, only for a durable transcript, commits its quiescent tail. */
+  finalize(input: Readonly<{ transcriptDurable: boolean }>): Promise<void>;
+}>;
 
 export type RunContext = {
   loaded: LoadedConfig;
@@ -143,8 +226,30 @@ export type RunContext = {
   scopeBackend?: ScopeBackend;
   /** Active exclusive run lease. Verifier v2 journal records bind every launch to this nonce. */
   activeLeaseId?: string;
+  /** Acquired before prepareRun creates or adopts any legacy/canonical authority. */
+  runLease?: RunLease;
+  /** Stable configuration-wide writer mutex. Always acquired before runLease. */
+  controlOwnership?: ControlServiceOwnership;
+  /** One-way ControlStore authority, established only after abandoned writers are proven gone. */
+  controlAuthority?: ControlAuthorityHandle;
+  /** Durable terminal projection captured before canonical authority is closed. */
+  finalState?: LoopRunState;
   /** Runtime-identity-keyed behavioral capability reused by all verifiers in this run. */
   verifierCgroupRuntime?: LinuxVerifierCgroupRuntime;
+  /** Parent-produced contained behavioral evidence. Native adapters are unavailable when absent. */
+  adapterAvailability?: Readonly<Record<string, AdapterAvailability>>;
+  /**
+   * Exact parent-controlled environment used by a native adapter probe and every later launch that
+   * consumes that probe. This is provider-keyed so no structured adapter can inherit a sibling's
+   * credential or configuration. Absence preserves the ordinary process-environment configuration.
+   */
+  adapterEnvironment?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  /** Borrowed P5 parent capability. It owns no store and is removed before parent-authority drain. */
+  openTranscriptObservation?: (input: Readonly<{
+    target: RunTranscriptObservationTarget;
+    transcriptPath: string;
+    sourceGeneration: number;
+  }>) => RunTranscriptObservationHandle;
   /** The dedicated integration worktree, populated under --execute. */
   target?: ExecutionTarget;
   /** Injectable monotonic wall clock (ms). Defaults to `Date.now`. Provider cooldowns are marked at
@@ -215,10 +320,13 @@ export function nowIso(): string {
 }
 
 function defaultLoopState(ctx: RunContext): LoopRunState {
-  const now = nowIso();
+  return initialLoopState(ctx.runId, ctx.project.name);
+}
+
+function initialLoopState(runId: string, project: string, now = nowIso()): LoopRunState {
   return {
-    runId: ctx.runId,
-    project: ctx.project.name,
+    runId,
+    project,
     phase: "init",
     status: "running",
     iteration: 0,
@@ -233,32 +341,275 @@ function defaultLoopState(ctx: RunContext): LoopRunState {
   };
 }
 
-function loadLoopState(ctx: RunContext): LoopRunState {
-  if (!existsSync(ctx.statePath)) {
-    const initial = defaultLoopState(ctx);
-    atomicWrite(ctx.statePath, JSON.stringify(initial, null, 2));
-    return initial;
+const LOOP_PHASES = new Set<LoopRunState["phase"]>(["init", "verify-preflight", "dispatch", "review", "post-check", "stopped", "cancelled", "complete"]);
+const LOOP_STATUSES = new Set<LoopRunState["status"]>(["running", "planned", "blocked", "done", "unverified", "stopped", "cancelled"]);
+const LOOP_OPTIONAL_STRINGS = ["runBranch", "lastGreenCommit", "lastFailureSignature", "lastFailureSummary", "lastStopReason", "verifyFingerprint"] as const;
+const LOOP_COUNTERS = ["iteration", "dispatched", "accepted", "rejected", "escalations", "repeatFailures", "unknownCostCalls"] as const;
+
+function parseLoopState(value: unknown, ctx: RunContext): LoopRunState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("loop state is not an object");
+  const input = value as Record<string, unknown>;
+  const allowed = new Set(["runId", "project", "phase", "status", ...LOOP_COUNTERS, ...LOOP_OPTIONAL_STRINGS, "startedAt", "updatedAt"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) throw new Error(`loop state contains unknown fields: ${unknown.join(", ")}`);
+  if (input.runId !== ctx.runId || input.project !== ctx.project.name) throw new Error("loop state belongs to a different run/project identity");
+  if (!LOOP_PHASES.has(input.phase as LoopRunState["phase"]) || !LOOP_STATUSES.has(input.status as LoopRunState["status"])) {
+    throw new Error("loop state phase/status is invalid");
   }
+  for (const key of LOOP_COUNTERS) {
+    if (!Number.isSafeInteger(input[key]) || (input[key] as number) < 0) throw new Error(`loop state ${key} is invalid`);
+  }
+  for (const key of LOOP_OPTIONAL_STRINGS) {
+    if (input[key] !== undefined && (typeof input[key] !== "string" || !(input[key] as string).length)) {
+      throw new Error(`loop state ${key} is invalid`);
+    }
+  }
+  for (const key of ["startedAt", "updatedAt"] as const) {
+    const timestamp = input[key];
+    if (typeof timestamp !== "string" || !timestamp.endsWith("Z") || Number.isNaN(Date.parse(timestamp)) || new Date(timestamp).toISOString() !== timestamp) {
+      throw new Error(`loop state ${key} is invalid`);
+    }
+  }
+  if ((input.accepted as number) > (input.dispatched as number) || (input.escalations as number) > (input.dispatched as number)) {
+    throw new Error("loop state counters contradict dispatched work");
+  }
+  return structuredClone(input) as LoopRunState;
+}
+
+function checkpointToLoopState(ctx: RunContext, checkpoint: LoopCheckpointFact): LoopRunState {
+  return parseLoopState({ runId: ctx.runId, ...checkpoint }, ctx);
+}
+
+function loopStateCheckpoint(state: LoopRunState): LoopCheckpointFact {
+  const { runId: _runId, ...checkpoint } = state;
+  return checkpoint;
+}
+
+function loadLoopState(ctx: RunContext): LoopRunState {
+  if (ctx.controlAuthority) {
+    const projection = ctx.controlAuthority.store.getProjection();
+    const checkpoint = projection.run?.checkpoint;
+    if (!checkpoint) throw new Error("canonical control authority has no run.checkpointed fact");
+    return checkpointToLoopState(ctx, checkpoint);
+  }
+  if (readControlAuthorityMarker(ctx.boardDir)) throw new Error("canonical loop-state authority is not bound to this parent");
+  const read = readStateFile(ctx.statePath);
+  if (read.kind === "absent") throw new Error("loop state is missing; refusing to manufacture defaults over an existing run");
   try {
-    const parsed = JSON.parse(readFileSync(ctx.statePath, "utf8"));
-    if (!parsed || typeof parsed !== "object") return defaultLoopState(ctx);
-    return { ...defaultLoopState(ctx), ...parsed };
-  } catch {
-    const reset = defaultLoopState(ctx);
-    atomicWrite(ctx.statePath, JSON.stringify(reset, null, 2));
-    return reset;
+    return parseLoopState(JSON.parse(read.data.toString("utf8")), ctx);
+  } catch (error) {
+    throw new Error(`loop state requires recovery and was not reset: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
+/**
+ * Return the durable final loop projection captured while the run still held its canonical store.
+ * This deliberately never reopens ControlStore after the lifetime leases have been released.
+ */
+export function finalLoopState(ctx: RunContext): LoopRunState {
+  if (!ctx.finalState) throw new Error("final loop state is unavailable until runAutonomyLoop has finalized");
+  return structuredClone(ctx.finalState);
+}
+
 function saveLoopState(ctx: RunContext, state: LoopRunState): LoopRunState {
-  state.updatedAt = nowIso();
-  atomicWrite(ctx.statePath, JSON.stringify({ ...state }, null, 2));
+  if (!ctx.controlAuthority) {
+    if (readControlAuthorityMarker(ctx.boardDir)) throw new Error("legacy .loop_state writes are permanently disabled after control-store cutover");
+    state.updatedAt = nowIso();
+    writeStateFileDurable(ctx.statePath, JSON.stringify({ ...state }, null, 2));
+    return state;
+  }
+  const store = ctx.controlAuthority.store;
+  const projection = store.getProjection();
+  const run = projection.run;
+  if (!run) throw new Error("canonical run lifecycle is missing");
+  const lifecycle = state.status === "cancelled"
+    ? "cancelled"
+    : state.status === "done" || state.status === "planned"
+      ? "completed"
+      : state.status === "running"
+        ? "started"
+        : "failed";
+  if (run.status !== "started") {
+    if (run.status !== lifecycle || !run.checkpoint) throw new Error("terminal canonical loop state cannot be changed or resurrected");
+    const canonical = checkpointToLoopState(ctx, run.checkpoint);
+    Object.assign(state, canonical);
+    return state;
+  }
+
+  const next = { ...state, updatedAt: nowIso() } satisfies LoopRunState;
+  const checkpoint = loopStateCheckpoint(next);
+  const actorId = ctx.loop.orchestrator;
+  const checkpointEvent = {
+    schemaVersion: 1 as const,
+    eventId: `loop.checkpoint.${randomUUID()}`,
+    runId: ctx.runId,
+    runEpoch: ctx.runNonce,
+    taskId: null,
+    taskGeneration: null,
+    expectedVersion: run.version,
+    occurredAt: next.updatedAt,
+    actorKind: "control-plane" as const,
+    actorId,
+    sourceKind: null,
+    sourceId: null,
+    sourceGeneration: null,
+    sourceEventId: null,
+    type: "run.checkpointed" as const,
+    payload: checkpoint
+  };
+  const events: unknown[] = [checkpointEvent];
+  if (lifecycle !== "started") {
+    const common = {
+      schemaVersion: 1 as const,
+      eventId: `loop.terminal.${randomUUID()}`,
+      runId: ctx.runId,
+      runEpoch: ctx.runNonce,
+      taskId: null,
+      taskGeneration: null,
+      expectedVersion: run.version + 1,
+      occurredAt: next.updatedAt,
+      actorKind: "control-plane" as const,
+      actorId,
+      sourceKind: null,
+      sourceId: null,
+      sourceGeneration: null,
+      sourceEventId: null
+    };
+    if (lifecycle === "completed") {
+      events.push({ ...common, type: "run.completed", payload: { summary: next.status === "planned" ? "dry-run plan completed" : next.lastStopReason } });
+    } else if (lifecycle === "cancelled") {
+      events.push({ ...common, type: "run.cancelled", payload: { cancelledBy: actorId, ...(next.lastStopReason ? { reason: next.lastStopReason } : {}) } });
+    } else {
+      events.push({ ...common, type: "run.failed", payload: { reasonCode: `loop_${next.status}`, ...(next.lastStopReason ? { summary: next.lastStopReason } : {}) } });
+    }
+  }
+  store.appendBatch(events);
+  Object.assign(state, next);
   return state;
 }
 
 function logLoopEvent(ctx: RunContext, event: Omit<LoopLogEvent, "ts" | "runId">): void {
   const entry = { ts: nowIso(), runId: ctx.runId, ...event } as LoopLogEvent;
   appendFileSync(ctx.runLog, `${JSON.stringify(entry)}\n`);
+}
+
+/**
+ * Reconcile P2 prompt/launch facts only after the predecessor-scope gate has proven every old
+ * provider gone. An exact PID/start-ticks match at this point is a contradiction and blocks; a
+ * missing PID is authoritative evidence that the recorded incarnation exited. Prepared attempts
+ * are explicitly abandoned, never silently replayed into a second provider process.
+ */
+function reconcileSteeringAfterCrash(ctx: RunContext): void {
+  const store = ctx.controlAuthority?.store;
+  if (!store) throw new Error("canonical control authority is unavailable during steering recovery");
+  const repository = new SteeringRepository(store);
+  const inspectLaunch = (request: {
+    launchId?: string;
+    pid?: number;
+    processStartToken?: string;
+  }): LaunchInspection => {
+    if (request.pid === undefined || request.processStartToken === undefined || request.launchId === undefined) {
+      return { state: "absent-proven", detail: "predecessor scope gate proved no provider survives" };
+    }
+    try {
+      const observed = parseProcStatStartTicks(readFileSync(`/proc/${request.pid}/stat`, "utf8"), request.pid);
+      if (observed === request.processStartToken) {
+        return { state: "identity-mismatch", detail: `recorded provider ${request.pid}/${observed} still exists after the predecessor-scope gate` };
+      }
+      return { state: "identity-mismatch", detail: `PID ${request.pid} was reused by another process incarnation` };
+    } catch {
+      return {
+        state: "exited-match",
+        launchId: request.launchId,
+        pid: request.pid,
+        processStartToken: request.processStartToken,
+        outcome: "uncertain",
+        summary: "provider incarnation was absent after predecessor-scope recovery"
+      };
+    }
+  };
+
+  for (let pass = 0; pass < 10_000; pass += 1) {
+    const cursor = store.readConsumerCursor(STEERING_SETTLEMENT_CONSUMER_ID);
+    const plan = planSteeringRecovery({
+      repository,
+      runDir: ctx.runDir,
+      inspectLaunch,
+      decidePrepared: () => "abandon",
+      settledThroughSeq: cursor?.lastSeq ?? 0
+    });
+    const blocked = plan.attempts.find((attempt) =>
+      attempt.kind === "blocked_artifact" || attempt.kind === "blocked_identity" || attempt.kind === "blocked_schema"
+    );
+    if (blocked) {
+      throw new Error(`steering recovery blocked for ${blocked.attemptId}: ${blocked.detail}`);
+    }
+    const mutable = plan.attempts.find((attempt) =>
+      attempt.kind === "abandon_prepared" ||
+      attempt.kind === "record_started" ||
+      attempt.kind === "record_start_and_exit" ||
+      attempt.kind === "record_active_exit"
+    );
+    if (mutable) {
+      reconcileAttemptRecovery({ repository, runDir: ctx.runDir, plan: mutable, actorId: ctx.loop.orchestrator });
+      continue;
+    }
+    const settlement = plan.attempts
+      .filter((attempt): attempt is Extract<typeof attempt, { kind: "settle_exited" }> => attempt.kind === "settle_exited")
+      .sort((left, right) => left.exitedSeq - right.exitedSeq)[0];
+    if (settlement) {
+      const projection = store.getProjection();
+      const attempt = projection.attempts[settlement.attemptId];
+      const task = attempt ? projection.tasks[attempt.taskId] : undefined;
+      const effects: ControlEvent[] = [];
+      // A hard crash can leave the board claim between provider exit and parent reconciliation.
+      // Commit the conservative repairable task outcome in the SAME transaction as the settlement
+      // cursor, so no cursor can acknowledge output whose canonical consequence is still missing.
+      if (attempt && task?.status === "claimed" && task.generation === attempt.taskGeneration) {
+        const aggregate = projection.aggregateVersions[`task:${task.id}:${task.generation}`];
+        if (!aggregate) throw new Error(`task aggregate is missing while settling attempt ${attempt.attemptId}`);
+        effects.push(parseControlEvent({
+          schemaVersion: 1,
+          eventId: `attempt.settle.${sha256Hex(attempt.attemptId).slice(0, 32)}`,
+          runId: store.runId,
+          runEpoch: store.runEpoch,
+          taskId: task.id,
+          taskGeneration: task.generation,
+          expectedVersion: aggregate.version,
+          occurredAt: nowIso(),
+          actorKind: "system",
+          actorId: ctx.loop.orchestrator,
+          sourceKind: null,
+          sourceId: null,
+          sourceGeneration: null,
+          sourceEventId: null,
+          type: "task.status_changed",
+          payload: {
+            role: task.claimedBy ?? task.assignee,
+            status: "blocked",
+            summary: "Attempt ended during an interrupted parent run; exact provider outcome is uncertain and the task is reopened for repair."
+          }
+        }));
+      }
+      completeExitedSettlement({ store, plan: settlement, events: effects });
+      if (effects.length && attempt && task) {
+        logLoopEvent(ctx, {
+          iter: 0,
+          event: "attempt_reclaimed",
+          role: task.claimedBy ?? task.assignee,
+          taskId: task.id,
+          detail: `attempt ${attempt.attemptId} reconciled atomically with settlement cursor`
+        });
+      }
+      continue;
+    }
+    if (plan.terminalPendingCommands.length) {
+      reconcileTerminalPendingCommands({ repository, plan, actorId: ctx.loop.orchestrator });
+      continue;
+    }
+    return;
+  }
+  throw new Error("steering recovery did not converge within 10000 canonical transitions");
 }
 
 /** A provisioning refusal is already recorded by the readiness gate. Callers distinguish it from
@@ -485,44 +836,119 @@ export function prepareRun(
   const contextPath = resolve(runDir, ".loop_context.md");
   const heartbeatPath = resolve(runDir, ".loop_heartbeat");
   const scopesPath = resolve(runDir, ".loop_scopes");
+  // The stable configuration mutex is the outermost ownership boundary shared with `loop serve`.
+  // Acquire it before even creating the run directory, then take the narrower run lease. This total
+  // lock order prevents a standalone service and a run parent from opening the same writable store.
+  const controlOwnership = acquireControlServiceOwnership(loaded);
+  let runLease: RunLease | undefined;
+  let ledger: LedgerHandle | undefined;
+  try {
   // PRIVATE (0700) run state: it holds prompts, transcripts, the lease, and the money ledger. Under a
   // loose umask (002 on many CI/shared hosts) the default would be 0775 — group-writable state that
   // another account could swap out from under an open transaction.
   mkdirSync(runDir, { recursive: true, mode: 0o700 });
-  mkdirSync(promptDir, { recursive: true, mode: 0o700 });
-  initBoard(boardDir);
+    runLease = acquireRunLease(runDir);
+    controlOwnership.assertHeld();
+    // The exclusive run lease is active before a legacy authority leaf, run identity, or ledger can
+    // be created/adopted. A partially present legacy set is recovery-required, never completed with
+    // empty files that would make missing history look legitimate.
+    const marker = readControlAuthorityMarker(boardDir);
+    if (!marker) {
+      const paths = boardPaths(boardDir);
+      const boardPresence = [paths.tasks, paths.events, paths.messages].map((path) => readStateFile(path).kind === "present");
+      const statePresent = readStateFile(statePath).kind === "present";
+      const allAbsent = boardPresence.every((present) => !present) && !statePresent;
+      const allPresent = boardPresence.every(Boolean) && statePresent;
+      if (!allAbsent && !allPresent) {
+        throw new Error("legacy board/loop-state authority is partial; refusing to create missing leaves over an existing run");
+      }
+      initBoard(boardDir);
+      if (allAbsent) writeStateFileDurable(statePath, JSON.stringify(initialLoopState(runId, project.name), null, 2));
+    } else {
+      if (marker.runId !== runId || marker.runEpoch.length === 0) throw new Error("canonical control marker belongs to a different run");
+      // initBoard observes the marker and deliberately does not touch retired JSONL leaves.
+      initBoard(boardDir);
+    }
+    mkdirSync(promptDir, { recursive: true, mode: 0o700 });
 
-  const session = sessionName(loaded.config.defaults.namespace, project.name, runId, "team");
-  // The run's immutable identity comes FIRST: the ledger's generation is bound to it, so it must be
-  // durable before a single dollar can be reserved.
-  const runNonce = establishRunNonce(runDir);
-  // `transcriptRoot` is the confinement boundary for EVIDENCE: the ledger will only accept a transcript
-  // that lives strictly inside the run's private (0700) tree, reached through no symlinked component. A
-  // crafted path elsewhere on the filesystem is not evidence and can never be attested.
-  const ledger = openLedger({ dir: boardDir, runNonce, transcriptRoot: runDir });
+    const session = sessionName(loaded.config.defaults.namespace, project.name, runId, "team");
+    // The run's immutable identity comes FIRST: the ledger's generation is bound to it, so it must be
+    // durable before a single dollar can be reserved.
+    const runNonce = establishRunNonce(runDir);
+    if (marker && marker.runEpoch !== runNonce) throw new Error("canonical control marker run epoch disagrees with the durable run nonce");
+    // `transcriptRoot` is the confinement boundary for EVIDENCE: the ledger will only accept a transcript
+    // that lives strictly inside the run's private (0700) tree, reached through no symlinked component. A
+    // crafted path elsewhere on the filesystem is not evidence and can never be attested.
+    ledger = openLedger({ dir: boardDir, runNonce, transcriptRoot: runDir });
 
-  return {
-    loaded,
-    project,
-    loop,
-    runId,
-    goal,
-    cwd,
-    runDir,
-    boardDir,
-    promptDir,
-    session,
-    runLog,
-    statePath,
-    contextPath,
-    heartbeatPath,
-    scopesPath,
-    children: new Set(),
-    ownedGroups: new Set(),
-    ownedScopes: new Set(),
-    runNonce,
-    ledger
-  };
+    return {
+      loaded,
+      project,
+      loop,
+      runId,
+      goal,
+      cwd,
+      runDir,
+      boardDir,
+      promptDir,
+      session,
+      runLog,
+      statePath,
+      contextPath,
+      heartbeatPath,
+      scopesPath,
+      children: new Set(),
+      ownedGroups: new Set(),
+      ownedScopes: new Set(),
+      runNonce,
+      ledger,
+      activeLeaseId: runLease.nonce,
+      runLease,
+      controlOwnership
+    };
+  } catch (error) {
+    // Cleanup is attempt-all in reverse acquisition order. A close failure must not strand the two
+    // outer lifetime mutexes in a long-lived caller; preserve the prepare error as the diagnosis.
+    try { ledger?.close(); } catch { /* preserve prepare failure */ }
+    try { runLease?.release(); } catch { /* release is successor-safe and best effort */ }
+    try { controlOwnership.release(); } catch { /* preserve prepare failure */ }
+    throw error;
+  }
+}
+
+/**
+ * Dispose a prepared or completed run in strict reverse lock order. This is public so CLI and other
+ * diagnostic callers can unwind failures that happen after prepareRun but before runAutonomyLoop.
+ * Every underlying release is idempotent/successor-safe; the context is cleared only after release.
+ */
+export function disposePreparedRun(ctx: RunContext): void {
+  const authority = ctx.controlAuthority;
+  if (authority) {
+    try {
+      authority.close();
+      ctx.controlAuthority = undefined;
+    } catch (error) {
+      // A possibly writable canonical handle outranks cleanup convenience. Keep both lifetime
+      // leases and the handle reachable so no successor can enter an uncertain close boundary.
+      try { ctx.ledger.close(); } catch { /* LedgerHandle close is local descriptor cleanup only. */ }
+      throw error;
+    }
+  }
+  try { ctx.ledger.close(); } catch { /* LedgerHandle close is local descriptor cleanup only. */ }
+  const runLease = ctx.runLease;
+  ctx.runLease = undefined;
+  ctx.activeLeaseId = undefined;
+  runLease?.release();
+  const ownership = ctx.controlOwnership;
+  if (ownership) {
+    try {
+      ownership.release();
+    } finally {
+      // ControlLease.release closes its SQLite transaction even when its final path-identity proof
+      // reports an error; clearing prevents a stale context from releasing a successor later.
+      ctx.controlOwnership = undefined;
+    }
+  }
 }
 
 /**
@@ -566,13 +992,20 @@ function establishRunNonce(runDir: string): string {
  * (or a loose umask) left permissive, and `roleSystemPrompt` refuses to read anything less private.
  */
 export function writeRolePrompts(ctx: RunContext): Record<string, string> {
-  const files: Record<string, string> = {};
-  for (const role of ctx.project.roles) {
-    const file = assertConfinedRealPath(ctx.promptDir, resolve(ctx.promptDir, `${role.name}.md`));
-    writeStateFileDurable(file, buildRolePrompt(ctx.loaded, ctx.project, role, ctx.runId));
-    files[role.name] = file;
+  try {
+    const files: Record<string, string> = {};
+    for (const role of ctx.project.roles) {
+      const file = assertConfinedRealPath(ctx.promptDir, resolve(ctx.promptDir, `${role.name}.md`));
+      writeStateFileDurable(file, buildRolePrompt(ctx.loaded, ctx.project, role, ctx.runId));
+      files[role.name] = file;
+    }
+    return files;
+  } catch (error) {
+    // A prompt-preparation refusal occurs before the autonomy loop takes over finalization. Do not
+    // strand either lifetime mutex in a long-lived CLI process.
+    disposePreparedRun(ctx);
+    throw error;
   }
-  return files;
 }
 
 /**
@@ -707,22 +1140,16 @@ export async function decomposeGoal(ctx: RunContext, execute: boolean, plannerCw
  * parent's git calls are independently hardened against config-driven execution (see HARDENED_CONFIG
  * in src/git.ts); either defence closes the hole, and we keep both.
  */
-export function providerWritableRoots(workCwd: string): { writableRoot: string; extraWritable: string[] } {
-  const home = process.env.HOME ?? "";
-  const homeDirs = [
-    ".claude",
-    ".codex",
-    ".gemini",
-    ".cache",
-    // XDG homes for the SAME three tools — never the `.config` parent, which contains git's config.
-    ".config/claude",
-    ".config/codex",
-    ".config/gemini",
-    ".config/gcloud" // Gemini's application-default credentials
-  ]
-    .map((d) => resolve(home, d))
-    .filter((p) => home && existsSync(p));
-  return { writableRoot: workCwd, extraWritable: homeDirs };
+export function providerWritableRoots(
+  workCwd: string,
+  provider: ProviderConfig["type"]
+): { writableRoot: string; extraWritable: string[] } {
+  return {
+    writableRoot: workCwd,
+    // The selected adapter gets only its own exact private directories. In particular there is no
+    // broad ~/.cache bind and no Claude turn can observe Codex/Gemini state (or vice versa).
+    extraWritable: providerPrivateWritableRoots(provider)
+  };
 }
 
 /**
@@ -732,15 +1159,71 @@ export function providerWritableRoots(workCwd: string): { writableRoot: string; 
  * a trusted runner, or THROWS (fail closed) when neither holds. There is no production env var that
  * lifts this: a real run on a host without a working sandbox fails closed before any provider.
  */
-function sandboxProviderCommand(provider: ProviderConfig, command: string, args: string[], workCwd: string): { command: string; args: string[] } {
-  const roots = providerWritableRoots(workCwd);
+function sandboxProviderCommand(
+  provider: ProviderConfig,
+  command: string,
+  args: string[],
+  environment: Readonly<Record<string, string>>,
+  workCwd: string,
+  extraWritable: readonly string[] = [],
+  filesystem?: SandboxFilesystemAllowlist,
+  network = true,
+  readOnly = false
+): { command: string; args: string[] } {
+  // The import-only trusted runner executes no sandbox at all, so deriving host credential mounts is
+  // both meaningless and would make deterministic tests depend on an operator's real home-directory
+  // modes. Production always takes the exact provider-specific validation path below.
+  const trusted = trustedRunnerActive();
+  let roots = trusted
+    ? { writableRoot: workCwd, extraWritable: [] as string[] }
+    : providerWritableRoots(workCwd, provider.type);
+  const readableCredentials = trusted ? [] : providerPrivateReadableRoots(provider.type, environment);
+  let callExtraWritable = [...extraWritable];
+  let callFilesystem = filesystem;
+  if (!trusted && readOnly && filesystem?.mode === "allowlist") {
+    const privateStateRoot = callExtraWritable.shift();
+    if (!privateStateRoot) throw new Error("native reviewer requires one private writable state root");
+    roots = { writableRoot: privateStateRoot, extraWritable: [] };
+    callFilesystem = Object.freeze({
+      ...filesystem,
+      readableRoots: Object.freeze([...(filesystem.readableRoots ?? []), workCwd])
+    });
+  }
   const outcome = containCommand(command, args, {
     writableRoot: roots.writableRoot,
-    extraWritable: roots.extraWritable,
-    network: true,
-    cwd: workCwd
+    extraWritable: [...roots.extraWritable, ...callExtraWritable],
+    network,
+    cwd: workCwd,
+    ...(callFilesystem === undefined ? {} : {
+      filesystem: Object.freeze({
+        ...callFilesystem,
+        readableRoots: Object.freeze([
+          ...(callFilesystem.readableRoots ?? []),
+          ...readableCredentials
+        ])
+      })
+    })
   });
   return { command: outcome.command, args: outcome.args };
+}
+
+/**
+ * Resolve the exact Git metadata capability needed by an ordinary native-adapter worktree. Starting
+ * these adapters from an empty Bubblewrap root prevents sibling repositories and operator state from
+ * being readable; a linked worktree still needs its external common directory mounted explicitly.
+ */
+function ordinaryNativeGitRoots(workCwd: string): readonly string[] {
+  const result = runGit(workCwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (!result.ok || !result.out) {
+    if (trustedRunnerActive()) return Object.freeze([]);
+    throw new Error("native adapter filesystem capability cannot resolve the exact Git common directory");
+  }
+  const candidate = realpathSync.native(resolve(workCwd, result.out));
+  const stat = lstatSync(candidate);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error("native adapter Git common-directory capability is not an exact directory");
+  }
+  return Object.freeze([candidate]);
 }
 
 function parsePlanTasks(raw: string, createdBy: string, validAssignees: string[]): BoardTask[] {
@@ -834,6 +1317,13 @@ export type VerifyResult = {
   fingerprint: string;
 };
 
+type CanonicalVerifyResult = VerifyResult & Readonly<{
+  outputDigest: string;
+  outputBytes: number;
+  transportTrusted: boolean;
+  scopeTrusted: boolean;
+}>;
+
 /**
  * Normalize verifier output before fingerprinting so a passing suite whose logs contain
  * changing timing text (durations, timestamps, clock times) does not look "flaky". We fold
@@ -854,6 +1344,25 @@ export function normalizeVerifyOutput(output: string): string {
 
 function fingerprint(ok: boolean, output: string): string {
   return createHash("sha256").update(ok ? "ok" : "fail").update("\0").update(normalizeVerifyOutput(output)).digest("hex");
+}
+
+function canonicalVerifyResult(
+  ok: boolean,
+  code: number,
+  output: string,
+  transportTrusted: boolean,
+  scopeTrusted: boolean
+): CanonicalVerifyResult {
+  return {
+    ok,
+    code,
+    output,
+    fingerprint: fingerprint(ok, output),
+    outputDigest: createHash("sha256").update(output, "utf8").digest("hex"),
+    outputBytes: Buffer.byteLength(output, "utf8"),
+    transportTrusted,
+    scopeTrusted
+  };
 }
 
 function stableFingerprints(results: VerifyResult[]): boolean {
@@ -880,12 +1389,20 @@ export function verifyEnv(source: NodeJS.ProcessEnv = process.env): Record<strin
 }
 
 /**
- * Run one verifier command inside the OS sandbox (no network, no host writes outside `cwd`, no
- * inherited secrets) and fingerprint its normalized output. FAILS CLOSED: if no launchable sandbox
- * mechanism is available (and no test trusted runner is injected) the command is NOT run and the
- * result is red (`unverified`), so a missing sandbox can never be mistaken for a passing gate.
+ * Run one verifier command inside the OS sandbox (no network, no host writes outside the exact
+ * authorized workspace vector, no inherited secrets) and fingerprint its normalized output. A
+ * single-repository call authorizes only `cwd`; P6 may name additional identity-pinned candidate
+ * roots. FAILS CLOSED: if no launchable sandbox mechanism is available (and no test trusted runner is
+ * injected) the command is NOT run and the result is red (`unverified`).
  */
-async function runOneVerify(ctx: RunContext, cwd: string, verifyCmd: string, attemptId: string): Promise<VerifyResult> {
+async function runOneVerify(
+  ctx: RunContext,
+  cwd: string,
+  verifyCmd: string,
+  attemptId: string,
+  additionalEnvironment: Readonly<Record<string, string>> = Object.freeze({}),
+  additionalWorkspaceRoots: readonly string[] = Object.freeze([])
+): Promise<CanonicalVerifyResult> {
   let command = "bash";
   let args = ["-lc", verifyCmd];
   let verifierScopeBackend: ScopeBackend | undefined;
@@ -893,42 +1410,57 @@ async function runOneVerify(ctx: RunContext, cwd: string, verifyCmd: string, att
     // Import-only test seam: production can never select it. Tests still exercise the shared bounded
     // transport rather than growing a second output/timeout implementation.
     try {
-      const outcome = containCommand(command, args, { writableRoot: cwd, network: false, cwd });
+      const outcome = containCommand(command, args, {
+        writableRoot: cwd,
+        extraWritable: [...additionalWorkspaceRoots],
+        network: false,
+        cwd
+      });
       command = outcome.command;
       args = outcome.args;
     } catch (error) {
       const output = `verifier NOT run — ${error instanceof Error ? error.message : String(error)}`;
-      return { ok: false, code: -1, output, fingerprint: fingerprint(false, output) };
+      return canonicalVerifyResult(false, -1, output, false, false);
     }
   } else {
     const runtime = ctx.verifierCgroupRuntime ?? await getCachedLinuxVerifierCgroupRuntime();
     ctx.verifierCgroupRuntime = runtime;
     if (!runtime.capability.available) {
       const output = `verifier NOT run — cgroup jail unavailable [${runtime.capability.reasonCode}]: ${runtime.capability.detail}`;
-      return { ok: false, code: -1, output, fingerprint: fingerprint(false, output) };
+      return canonicalVerifyResult(false, -1, output, false, false);
     }
     if (!ctx.activeLeaseId) {
       const output = "verifier NOT run — no active run lease is bound to the verifier journal";
-      return { ok: false, code: -1, output, fingerprint: fingerprint(false, output) };
+      return canonicalVerifyResult(false, -1, output, false, false);
     }
     try {
       verifierScopeBackend = linuxVerifierCgroupBackend(runtime, {
         runId: ctx.runId,
         attemptId,
         leaseId: ctx.activeLeaseId
-      }, cwd);
+      }, cwd, additionalWorkspaceRoots);
     } catch (error) {
       const output = `verifier NOT run — ${error instanceof Error ? error.message : String(error)}`;
-      return { ok: false, code: -1, output, fingerprint: fingerprint(false, output) };
+      return canonicalVerifyResult(false, -1, output, false, false);
     }
   }
+  const environment = verifyEnv();
+  const entries = Object.entries(additionalEnvironment);
+  if (
+    entries.length > 128 ||
+    entries.some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(key) || Buffer.byteLength(value, "utf8") > 16 * 1024 || value.includes("\0"))
+  ) {
+    const output = "verifier NOT run — additional environment violates the closed name/value bound";
+    return canonicalVerifyResult(false, -1, output, false, false);
+  }
+  Object.assign(environment, additionalEnvironment);
   const transcriptDir = resolve(ctx.runDir, "verifier-transcripts");
   mkdirSync(transcriptDir, { recursive: true, mode: 0o700 });
   const result = await runHeadlessChild(
     ctx,
     command,
     args,
-    verifyEnv(),
+    environment,
     "",
     cwd,
     undefined,
@@ -942,8 +1474,75 @@ async function runOneVerify(ctx: RunContext, cwd: string, verifyCmd: string, att
     }
   );
   const output = `${result.stdout}\n${result.stderr}${result.uncertainReason ? `\n[verifier transport refused: ${result.uncertainReason}]` : ""}`;
-  const ok = result.ok && result.transportOk && result.scopeTrusted;
-  return { ok, code: ok ? 0 : result.code ?? -1, output, fingerprint: fingerprint(ok, output) };
+  const transportTrusted = result.transportOk && result.transcriptDurable === true;
+  const scopeTrusted = result.scopeTrusted && result.scopeReaped === true;
+  const ok = result.ok && transportTrusted && scopeTrusted;
+  return canonicalVerifyResult(ok, ok ? 0 : result.code ?? -1, output, transportTrusted, scopeTrusted);
+}
+
+export type MultiRepositoryVerificationRequest = Readonly<{
+  transactionId: string;
+  commandIndex: number;
+  command: string;
+  workCwd: string;
+  workspaceRoots: readonly string[];
+  environment: Readonly<Record<string, string>>;
+}>;
+
+export type MultiRepositoryVerificationResult = Readonly<{
+  ok: boolean;
+  code: number;
+  outputDigest: string;
+  outputBytes: number;
+  fingerprint: string;
+  transportTrusted: boolean;
+  scopeTrusted: boolean;
+}>;
+
+/**
+ * P6 verifier bridge into the one production verifier authority. It deliberately exposes neither
+ * argv nor scope selection: runOneVerify owns the cgroup capability, v2 launch journal, cancellation
+ * and exact reap proof, and this bridge returns only its closed evidence result.
+ */
+export async function runMultiRepositoryVerification(
+  ctx: RunContext,
+  request: MultiRepositoryVerificationRequest
+): Promise<MultiRepositoryVerificationResult> {
+  if (!Number.isSafeInteger(request.commandIndex) || request.commandIndex < 0 || request.commandIndex > 63) {
+    throw new Error("multi-repository verification command index is invalid");
+  }
+  if (
+    request.workspaceRoots.length < 1 || request.workspaceRoots.length > 32 ||
+    request.workspaceRoots[0] !== request.workCwd || new Set(request.workspaceRoots).size !== request.workspaceRoots.length ||
+    request.workspaceRoots.some((root) => !root.startsWith("/") || root.includes("\0"))
+  ) {
+    throw new Error("multi-repository verification workspace vector is invalid");
+  }
+  const attemptId = `verify-mr-${createHash("sha256")
+    .update(request.transactionId)
+    .update("\0")
+    .update(String(request.commandIndex))
+    .update("\0")
+    .update(request.command)
+    .digest("hex")
+    .slice(0, 32)}`;
+  const result = await runOneVerify(
+    ctx,
+    request.workCwd,
+    request.command,
+    attemptId,
+    request.environment,
+    request.workspaceRoots.slice(1)
+  );
+  return Object.freeze({
+    ok: result.ok,
+    code: result.code,
+    outputDigest: result.outputDigest,
+    outputBytes: result.outputBytes,
+    fingerprint: result.fingerprint,
+    transportTrusted: result.transportTrusted,
+    scopeTrusted: result.scopeTrusted
+  });
 }
 
 /**
@@ -1085,6 +1684,14 @@ export type ChildResult = {
    *  success, explicit-limit, cost, or fallback authority, and reparsing `stdout` to recover one is
    *  exactly the bug this closes. */
   streamedVerdict?: NormalizedTurn;
+  /** Exact shipped parser grammar selected before reservation and used live. */
+  adapterIdentity?: AdapterCallIdentity;
+  /** Structured ACP/Pi terminal result; legacy one-shot adapters use streamedVerdict. */
+  adapterResult?: import("./adapters/codec.js").AdapterTerminalResult;
+  /** Exact Grok parent-proxy evidence, present only after the socket was re-statted and drained. */
+  grokEgressEvidence?: GrokEgressEvidenceBinding;
+  /** Content digest of the exact private native state topology and scrubbed environment key set. */
+  nativeConfigurationEvidenceSha256?: string;
   /** Set when stdout could not be FRAMED (a record exceeded the byte ceiling). Typed fatal uncertainty:
    *  `transportOk` is false, `streamedVerdict` is absent, and no consumer may derive acceptance,
    *  cost, or fallback from this turn. */
@@ -1152,7 +1759,7 @@ const LAUNCH_ABORT_GRACE_MS = 2000;
 /** Absolute quota on TOTAL stdout bytes streamed from one child. Past this a broken/hostile provider
  *  is trying to exhaust disk/CPU; we stop writing the transcript, tear the child down, and fail the
  *  turn UNCERTAIN rather than streaming without bound. Well above any legitimate transcript. */
-const MAX_TOTAL_STDOUT_BYTES = 512 * 1024 * 1024;
+const MAX_TOTAL_STDOUT_BYTES = MAX_STREAM_BYTES;
 
 /**
  * A byte-accurate, UTF-8-safe, bounded tail accumulator. Chunks arrive as raw Buffers; we decode
@@ -1256,7 +1863,7 @@ export function runHeadlessChild(
   env: Record<string, string>,
   paneId: string,
   cwd: string,
-  stdin?: string,
+  stdin?: string | Uint8Array,
   /** A PRIVATE (0700) directory. The transport creates an UNPREDICTABLE O_EXCL|O_NOFOLLOW 0600
    *  file inside it — never a caller-predictable path that could be pre-created/symlinked. */
   transcriptDir?: string,
@@ -1268,7 +1875,23 @@ export function runHeadlessChild(
    *  and the streaming authority. Overridable so the adversarial suite can drive the COMPLETE real-child
    *  transport at an exact `cap`/`cap + 1` boundary instead of only unit-testing the helper classes. */
   maxLineBytes = MAX_TERMINAL_RECORD,
-  transportOptions?: { scopeBackend?: ScopeBackend; cancelled?: () => boolean }
+  transportOptions?: {
+    scopeBackend?: ScopeBackend;
+    cancelled?: () => boolean;
+    /** Selected before reservation; this is parser identity, never launch authority. */
+    adapterIdentity?: AdapterCallIdentity;
+    /** Streaming observation only. Settlement is still the separate durable result. */
+    onAdapterEvent?: (event: import("./adapters/codec.js").NormalizedAdapterEvent) => void;
+    /** Native ACP/Pi request data. The same bounded stdout framer drives every subsequent write. */
+    protocolRequest?: import("./streaming.js").AdapterProtocolDriver["request"];
+    /** Runs synchronously while the spawned launcher is still blocked at the authenticated gate.
+     * Throwing refuses the launch, so the provider cannot exec without a durable incarnation fact. */
+    beforeProviderExec?: (identity: { pid: number; processStartToken: string }) => void;
+    /** Called after the unpredictable private transcript file exists and before provider spawn. */
+    onTranscriptOpened?: (path: string) => void;
+    /** Non-blocking hint emitted after each accepted raw stdout chunk is persisted. */
+    onTranscriptProgress?: () => void;
+  }
 ): Promise<ChildResult> {
   return new Promise((resolvePromise) => {
     // Open the evidentiary transcript BEFORE spawning. If a transcript was requested but cannot be
@@ -1281,7 +1904,12 @@ export function runHeadlessChild(
         const opened = openTranscript(transcriptDir);
         transcriptFd = opened.fd;
         transcriptPath = opened.path;
+        transportOptions?.onTranscriptOpened?.(opened.path);
       } catch (error) {
+        if (transcriptFd !== undefined) {
+          try { closeSync(transcriptFd); } catch { /* the turn is already refused */ }
+          transcriptFd = undefined;
+        }
         transcriptError = `transcript open failed: ${(error as Error).message}`;
       }
     }
@@ -1324,7 +1952,10 @@ export function runHeadlessChild(
       for (const a of args) if (a.includes("\0")) return "argument";
       if (cwd.includes("\0")) return "cwd";
       for (const [k, v] of Object.entries(env)) if (k.includes("\0") || v.includes("\0")) return `env:${k}`;
-      if (stdin !== undefined && stdin.includes("\0")) return "stdin";
+      if (
+        stdin !== undefined &&
+        (typeof stdin === "string" ? stdin.includes("\0") : Buffer.from(stdin).includes(0))
+      ) return "stdin";
       return undefined;
     })();
     if (nulOffender) {
@@ -1442,10 +2073,12 @@ export function runHeadlessChild(
      */
     let launchRefused = false;
     let timeout: NodeJS.Timeout | undefined;
+    let adapterCancelPoll: NodeJS.Timeout | undefined;
     const refuseLaunch = async (why: string): Promise<void> => {
       if (launchRefused) return;
       launchRefused = true;
       if (timeout) clearTimeout(timeout);
+      if (adapterCancelPoll) clearInterval(adapterCancelPoll);
       const reaped = await scope.reap(LAUNCH_ABORT_GRACE_MS);
       ctx.children.delete(child);
       if (reaped) {
@@ -1525,6 +2158,26 @@ export function runHeadlessChild(
         void refuseLaunch(journalFailure);
         return;
       }
+      if (transportOptions?.beforeProviderExec) {
+        let processStartToken: string | undefined;
+        try {
+          processStartToken = parseProcStatStartTicks(readFileSync(`/proc/${child.pid}/stat`, "utf8"), child.pid);
+        } catch {
+          processStartToken = undefined;
+        }
+        if (!processStartToken) {
+          closeLaunchGate(gate);
+          void refuseLaunch("spawned launcher process incarnation could not be proven");
+          return;
+        }
+        try {
+          transportOptions.beforeProviderExec({ pid: child.pid, processStartToken });
+        } catch (error) {
+          closeLaunchGate(gate);
+          void refuseLaunch(`canonical attempt-start fact failed: ${error instanceof Error ? error.message : String(error)}`);
+          return;
+        }
+      }
       releaseLaunchGate(gate, launch.gateToken); // authenticated + on disk — the provider may now exec
     };
     if (requiresAuthenticatedStatus && statusStream) {
@@ -1546,9 +2199,13 @@ export function runHeadlessChild(
     // Success requires the full prompt to reach the child. An early close / EPIPE / partial write
     // (e.g. a child that reads 64 KiB of an 8 MiB prompt then exits) is a transport FAILURE.
     const stdinStream = child.stdin;
-    let stdinComplete = stdin === undefined; // nothing to deliver = trivially complete
+    const protocolRequest = transportOptions?.protocolRequest;
+    let stdinComplete = stdin === undefined && protocolRequest === undefined; // nothing to deliver = trivially complete
     let stdinFlushed = false;
-    let stdinSettled = stdin === undefined || !stdinStream;
+    let stdinSettled = (stdin === undefined && protocolRequest === undefined) || !stdinStream;
+    let protocolClosing = false;
+    let protocolWriteFailed = false;
+    let protocolPendingWrites = 0;
     stdinStream?.on("error", () => {
       // EPIPE / ECONNRESET: the child exited before consuming the prompt. Delivery is INCOMPLETE.
       // Destroy the stream so a half-open pipe fd is not leaked.
@@ -1560,36 +2217,79 @@ export function runHeadlessChild(
       stdinSettled = true;
       maybeFinish();
     });
-    if (stdinStream && stdin !== undefined) {
-      stdinStream.write(stdin, (err) => {
-        if (!err) stdinFlushed = true;
-      });
-      stdinStream.end(() => {
-        // 'finish': all buffered bytes were flushed to the kernel pipe. Complete only if the write
-        // itself did not error.
-        if (stdinFlushed) stdinComplete = true;
-        stdinSettled = true;
-        maybeFinish();
-      });
-    } else if (stdinStream) {
-      // NO prompt to deliver: still CLOSE stdin so the child sees EOF instead of blocking forever on a
-      // read (a hung child would otherwise only die at the timeout). end() sends EOF with no data.
-      stdinStream.end();
-    }
 
     // ONE stdout pipeline: every raw byte is framed ONCE, each accepted frame is decoded ONCE, and the
     // SAME frame reaches the bounded display tail and the protocol normalizer — so the verdict never
     // depends on the lossy tail and the two can never disagree about what was framed. It frames (and so
     // bounds memory) even with no normalizer attached. An oversized record is a TYPED FATAL: no bytes of
     // it reach the normalizer and NO verdict is produced (wave-8d audit A1).
+    const writeProtocol = (bytes: Buffer): void => {
+      if (!stdinStream || protocolClosing || stdinSettled || protocolWriteFailed) {
+        protocolWriteFailed = true;
+        return;
+      }
+      protocolPendingWrites += 1;
+      stdinStream.write(bytes, (error) => {
+        protocolPendingWrites -= 1;
+        if (error) protocolWriteFailed = true;
+      });
+    };
+    const closeProtocol = (): void => {
+      if (!stdinStream || protocolClosing || stdinSettled) return;
+      protocolClosing = true;
+      stdinStream.end(() => {
+        stdinComplete = !protocolWriteFailed && protocolPendingWrites === 0;
+        stdinSettled = true;
+        maybeFinish();
+      });
+    };
     const out = new StdoutStream({
       maxFrameBytes: maxLineBytes,
       tailCap: MAX_CHILD_TAIL,
-      normalizer: providerKind ? createStreamingNormalizer(providerKind) : undefined
+      ...(transportOptions?.adapterIdentity
+        ? {
+            adapter: transportOptions.adapterIdentity,
+            onAdapterEvent: transportOptions.onAdapterEvent,
+            ...(protocolRequest
+              ? { protocolDriver: { request: protocolRequest, write: writeProtocol, close: closeProtocol } }
+              : {})
+          }
+        : { normalizer: providerKind ? createStreamingNormalizer(providerKind) : undefined })
     });
+    if (protocolRequest && transportOptions?.cancelled) {
+      adapterCancelPoll = setInterval(() => {
+        if (!transportOptions.cancelled?.()) return;
+        out.requestCancel();
+        if (adapterCancelPoll) clearInterval(adapterCancelPoll);
+        adapterCancelPoll = undefined;
+      }, 100);
+      adapterCancelPoll.unref?.();
+    }
+    if (stdinStream && stdin !== undefined) {
+      if (protocolRequest) {
+        writeProtocol(Buffer.from(stdin));
+      } else {
+        stdinStream.write(stdin, (err) => {
+          if (!err) stdinFlushed = true;
+        });
+        stdinStream.end(() => {
+          // 'finish': all buffered bytes were flushed to the kernel pipe. Complete only if the write
+          // itself did not error.
+          if (stdinFlushed) stdinComplete = true;
+          stdinSettled = true;
+          maybeFinish();
+        });
+      }
+    } else if (stdinStream && !protocolRequest) {
+      // NO prompt to deliver: still CLOSE stdin so the child sees EOF instead of blocking forever on a
+      // read (a hung child would otherwise only die at the timeout). end() sends EOF with no data.
+      stdinStream.end();
+    } else if (protocolRequest) {
+      protocolWriteFailed = true;
+    }
     const outDisplay = new StringDecoder("utf8"); // pane echo only — retains nothing, decides nothing
     const errTail = new TailBuffer();
-    let singleLineReaped = false; // a single over-ceiling record has already triggered a prompt reap
+    let framingFailureReaped = false; // a frame/total/count fatal has already triggered a prompt reap
     let settled = false;
     let timedOut = false;
     let childClosed = false;
@@ -1608,6 +2308,7 @@ export function runHeadlessChild(
       if (settled || launchRefused) return;
       settled = true;
       if (timeout) clearTimeout(timeout);
+      if (adapterCancelPoll) clearInterval(adapterCancelPoll);
       if (stdinGraceTimer) clearTimeout(stdinGraceTimer);
       ctx.children.delete(child);
       // Reconcile SCOPE and process-group OWNERSHIP on EVERY completion path. A group PROVEN gone (ESRCH)
@@ -1749,6 +2450,8 @@ export function runHeadlessChild(
         // The WHOLE-STREAM verdict over every frame seen in order — never a reparse of the lossy tail,
         // and never present at all when framing failed.
         streamedVerdict: outcome.verdict,
+        adapterIdentity: outcome.adapterIdentity,
+        adapterResult: outcome.adapterResult,
         framingFatal,
         scopeId,
         scopeReaped,
@@ -1862,16 +2565,23 @@ export function runHeadlessChild(
           transcriptWriteFailed = true;
         }
       }
+      try { transportOptions?.onTranscriptProgress?.(); }
+      catch {
+        // A synchronous observer defect cannot be silently detached from a provider call whose
+        // progress it was entrusted to ingest. Stop accepting a durable transcript; finalization
+        // will mark the turn uncertain through the ordinary verification path.
+        transcriptWriteFailed = true;
+      }
       // The ONE pipeline: frame the raw bytes once (bounded, copied slabs) and fan each accepted frame
       // to the tail and the normalizer together.
       out.push(buf);
       const text = outDisplay.write(buf);
       if (text) displayInPane(paneId, text);
-      // A record that hit the hard ceiling is FATAL: nothing more can be interpreted, so fail closed
+      // A frame/total/count ceiling is FATAL: nothing more can be interpreted, so fail closed
       // PROMPTLY by reaping the group NOW rather than waiting out the cadence timeout. The pipeline has
       // already dropped everything it retained, so the abandoned rest of the stream costs nothing.
-      if (!singleLineReaped && out.fatal() !== undefined) {
-        singleLineReaped = true;
+      if (!framingFailureReaped && out.fatal() !== undefined) {
+        framingFailureReaped = true;
         void scope.reap();
       }
     });
@@ -2041,6 +2751,115 @@ function turnOutcome(result: ChildResult): "ok" | "limit" | "error" {
   return "error";
 }
 
+function isStructuredProvider(provider: ProviderKind): provider is Extract<ProviderKind, "opencode" | "pi" | "grok"> {
+  return provider === "opencode" || provider === "pi" || provider === "grok";
+}
+
+function normalizedAdapterTurn(provider: Extract<ProviderKind, "opencode" | "pi" | "grok">, result: NonNullable<ChildResult["adapterResult"]>): NormalizedTurn {
+  const usage = result.status === "uncertain" ? undefined : result.usage;
+  const terminalFrame = result.status === "uncertain" ? undefined : {
+    sha256: result.terminalFrame.sha256,
+    bytes: result.terminalFrame.bytes,
+    offset: result.terminalFrame.offset,
+    index: result.terminalFrame.index
+  };
+  return {
+    provider,
+    finalText: result.finalText,
+    hasTerminal: result.status !== "uncertain",
+    success: result.status === "success",
+    subtype: result.status,
+    explicitLimit: false,
+    usd: usage?.costUsd ?? 0,
+    costReported: usage?.costUsd !== undefined,
+    ...(usage?.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
+    ...(usage?.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
+    ...(terminalFrame === undefined ? {} : { terminalFrame })
+  };
+}
+
+function exactNativeAvailability(
+  ctx: RunContext,
+  providerKey: string,
+  provider: ProviderConfig,
+  role: "worker" | "reviewer"
+): NativeRuntimeSelection & Readonly<{ availability: Extract<AdapterAvailability, { status: "available" }> }> {
+  const supplied = ctx.adapterAvailability?.[providerKey];
+  if (!supplied) {
+    throw new Error(`adapter ${provider.type} unavailable before reservation: no parent-contained compatibility evidence for provider ${providerKey}`);
+  }
+  const selected = selectShippedAdapter({ adapterId: provider.type, availability: supplied, role });
+  if (selected.availability.status !== "available") {
+    throw new Error(`adapter ${provider.type} unavailable before reservation [${selected.availability.reason.code}]: ${selected.availability.reason.detail}`);
+  }
+  if (selected.role.status !== "eligible") {
+    throw new Error(`adapter ${provider.type} unavailable for ${role} before reservation [${selected.role.refusal.code}]: ${selected.role.refusal.detail}`);
+  }
+  const configSha256 = containedAdapterProbeConfigurationSha256(
+    provider.type as Extract<ShippedAdapterId, "opencode" | "pi" | "grok">,
+    ctx.adapterEnvironment?.[providerKey] ?? process.env,
+    provider.model
+  );
+  if (selected.availability.consultedConfigSha256 !== configSha256) {
+    throw new Error(`adapter ${provider.type} unavailable before reservation: compatibility evidence was produced for different controlled configuration`);
+  }
+  let executable;
+  try {
+    executable = inspectAdapterRuntimeFile(
+      selected.descriptor.runtimeIdentity.executable,
+      selected.availability.executable.canonicalPath,
+      true
+    );
+  } catch (error) {
+    throw new Error(`adapter ${provider.type} unavailable before reservation [executable-identity-changed]: ${(error as Error).message}`);
+  }
+  if (!sameRuntimeFileEvidence(executable, selected.availability.executable)) {
+    throw new Error(`adapter ${provider.type} unavailable before reservation [executable-identity-changed]: canonical executable changed after its behavioral probe`);
+  }
+  let helperPath: string | undefined;
+  if ((provider.type === "pi" && role === "reviewer") || provider.type === "grok") {
+    const helper = selected.availability.trustedHelpers[0];
+    if (!helper) throw new Error(`adapter ${provider.type} unavailable before reservation: trusted helper evidence is missing`);
+    let current;
+    try {
+      current = inspectAdapterRuntimeFile(helper.runtimeName, helper.canonicalPath, false);
+    } catch (error) {
+      throw new Error(`adapter ${provider.type} unavailable before reservation [executable-identity-changed]: ${(error as Error).message}`);
+    }
+    if (!sameRuntimeFileEvidence(current, helper)) {
+      throw new Error(`adapter ${provider.type} unavailable before reservation [executable-identity-changed]: trusted helper changed after its behavioral probe`);
+    }
+    helperPath = helper.canonicalPath;
+    if (provider.type === "grok" && realpathSync.native(grokEgressRelayPath()) !== helperPath) {
+      throw new Error("adapter grok unavailable before reservation: evidence does not name the shipped egress relay");
+    }
+  }
+  return {
+    availability: selected.availability,
+    executablePath: executable.canonicalPath,
+    wireVersion: selected.availability.wireVersion,
+    ...(provider.type === "grok" ? {
+      grokProbeReceiptSha256: selected.availability.behavioralChecks.find(
+        (check) => check.check === "network-tool-policy"
+      )?.evidenceSha256
+    } : {}),
+    ...(helperPath ? { helperPath } : {})
+  };
+}
+
+type NativeRuntimeSelection = Readonly<{
+  executablePath: string;
+  helperPath?: string;
+  wireVersion: string;
+  grokProbeReceiptSha256?: string;
+}>;
+
+type ContainedNativeCharacterization = Readonly<{
+  providerKey: string;
+  runtime: NativeRuntimeSelection;
+  onAdapterEvent?: (event: import("./adapters/codec.js").NormalizedAdapterEvent) => void;
+}>;
+
 /** What the LEDGER concluded about a completed call, as a run-log event. Three outcomes, three events:
  *  money was proven, a rejection was proven (which buys a route, not a discount), or nothing was. */
 function settlementEvent(
@@ -2068,18 +2887,37 @@ function settlementEvent(
  * repair. Generic/auth/model/test failures never fall back. Cooldown health is persisted so a
  * later turn returns to Opus once it expires.
  */
-export async function runRoutedTurn(
+async function runRoutedTurnCore(
   ctx: RunContext,
   role: RoleConfig,
   kind: AgentRole,
-  taskText: string,
+  taskText: string | Uint8Array,
   sys: { file: string; text: string },
   workCwd: string,
   paneId: string,
   state: LoopRunState,
   taskId: string,
-  attemptN: number
+  attemptN: number,
+  lifecycle?: {
+    readonly launchId: string;
+    readonly plan: () => void;
+    readonly started: (identity: { pid: number; processStartToken: string }) => void;
+    /** Stable P6 call identity derived from the exact canonical attempt/repository lease. */
+    readonly recoveryCallId?: (providerKey: string, routeTag: "primary" | "fallback") => string;
+    /** Exact P2 attempt target for P5 transcript ingestion. */
+    readonly observationTarget?: RunTranscriptObservationTarget;
+    /** Additional exact worktree roots authorized for one multi-repository worker turn. */
+    readonly additionalWritableRoots?: readonly string[];
+    /** Empty-root filesystem visibility used only by an explicit multi-repository worker turn. */
+    readonly filesystem?: SandboxFilesystemAllowlist;
+  },
+  characterization?: ContainedNativeCharacterization
 ): Promise<ChildResult> {
+  const taskBytes = typeof taskText === "string" ? Buffer.from(taskText, "utf8") : Buffer.from(taskText);
+  const taskPrompt = new TextDecoder("utf-8", { fatal: true }).decode(taskBytes);
+  if (!Buffer.from(taskPrompt, "utf8").equals(taskBytes)) {
+    throw new Error("attempt prompt is not canonical UTF-8; refusing provider launch");
+  }
   const chain = buildProviderChain(ctx.project, role.provider);
   let health = loadHealth(ctx.runDir);
   const clock = ctx.clock ?? Date.now;
@@ -2096,23 +2934,364 @@ export async function runRoutedTurn(
   // `assertBudgetEnforceable`), so `perCallReservation` returns a real cap here.
   const budget = ctx.loop.budgetUsd ?? 0;
   const worstCase = perCallReservation(ctx.loop, budget);
+  let transcriptSourceGeneration = 0;
 
-  const runWith = async (key: string, attemptTag: string): Promise<ChildResult | "budget-denied"> => {
-    // Unique physical call id — a monotonic counter guarantees uniqueness even if two turns share
-    // role/task/attempt/key (so a deterministic id can never fold two distinct calls into one).
-    const callId = `${role.name}-${taskId}-a${attemptN}-${key}-${attemptTag}-${nextCallSeq()}`;
+  const runWith = async (
+    key: string,
+    attemptTag: "primary" | "fallback",
+    bindLifecycle: boolean
+  ): Promise<ChildResult | "budget-denied"> => {
+    const sourceGeneration = ++transcriptSourceGeneration;
+    // Ordinary turns retain the monotonic physical-call identity. P6 supplies an exact deterministic
+    // call ID bound to its durable run/task/generation/attempt/lease/repository-set key so a restarted
+    // parent can locate the already-fsynced settlement without reserving or launching a second call.
+    const callId = lifecycle?.recoveryCallId?.(key, attemptTag) ??
+      `${role.name}-${taskId}-a${attemptN}-${key}-${attemptTag}-${nextCallSeq()}`;
+    if (!callId || Buffer.byteLength(callId, "utf8") > 512 || /[\u0000\r\n]/u.test(callId)) {
+      throw new Error("provider call ID is empty, oversized, or contains a forbidden control character");
+    }
     const provider = ctx.project.providers[key];
+    const providerKind = (provider.type as ProviderKind) ?? "custom";
+    const structured = isStructuredProvider(providerKind);
+    // Descriptor and exact wire grammar are selected BEFORE command construction and reservation.
+    // Existing one-shot adapters have no live negotiation, so ambiguity is a refusal rather than a
+    // caller-selected guess. Structured adapters bind their negotiated wire in their own driver.
+    const descriptor = getBuiltinAdapterDescriptor(providerKind);
+    if (descriptor.compatibility.wireVersions.length !== 1) {
+      throw new Error(`adapter ${descriptor.id} has no unique characterized wire version; refusing reservation`);
+    }
+    const nativeRole = readOnly ? "reviewer" : "worker";
+    const native = structured
+      ? characterization?.providerKey === key
+        ? characterization.runtime
+        : exactNativeAvailability(ctx, key, provider, nativeRole)
+      : undefined;
+    const requestPrefix = `rf-${sha256Hex(callId).slice(0, 24)}`;
+    // Re-stat the selected native executable/helper immediately before reservation and bind both
+    // runtime identity and controlled configuration into the durable call identity. Substitution
+    // between probe and launch fails closed here rather than at settlement.
+    let runtimeIdentitySha256: string | undefined;
+    if (native) {
+      let executableEvidence;
+      try {
+        executableEvidence = inspectAdapterRuntimeFile(
+          descriptor.runtimeIdentity.executable,
+          native.executablePath,
+          true
+        );
+      } catch (error) {
+        throw new Error(`adapter ${providerKind} unavailable before reservation [executable-identity-changed]: ${(error as Error).message}`);
+      }
+      const helperEvidence: import("./adapters/types.js").RuntimeFileEvidence[] = [];
+      if (native.helperPath) {
+        const helperName = providerKind === "pi"
+          ? "pi-relayforge-reviewer.mjs"
+          : providerKind === "grok"
+            ? "grok-egress-relay.mjs"
+            : descriptor.runtimeIdentity.trustedHelpers[0];
+        if (!helperName) {
+          throw new Error(`adapter ${providerKind} unavailable before reservation: trusted helper name is missing`);
+        }
+        try {
+          helperEvidence.push(inspectAdapterRuntimeFile(helperName, native.helperPath));
+        } catch (error) {
+          throw new Error(`adapter ${providerKind} unavailable before reservation [executable-identity-changed]: ${(error as Error).message}`);
+        }
+      }
+      const configurationSha256 = providerKind === "opencode" || providerKind === "pi" || providerKind === "grok"
+        ? containedAdapterProbeConfigurationSha256(
+            providerKind,
+            ctx.adapterEnvironment?.[key] ?? process.env,
+            provider.model
+          )
+        : undefined;
+      runtimeIdentitySha256 = containedAdapterRuntimeIdentitySha256(
+        executableEvidence,
+        helperEvidence,
+        configurationSha256
+      );
+    }
+    const adapterIdentity = createAdapterCallIdentity(
+      descriptor,
+      native?.wireVersion ?? descriptor.compatibility.wireVersions[0]!,
+      providerKind === "opencode" || providerKind === "grok"
+        ? {
+            kind: "acp-v1",
+            initializeRequestId: `${requestPrefix}-initialize`,
+            newSessionRequestId: `${requestPrefix}-session`,
+            promptRequestId: `${requestPrefix}-prompt`
+          }
+        : providerKind === "pi"
+          ? {
+              kind: "pi-rpc",
+              stateRequestId: `${requestPrefix}-state`,
+              statisticsBeforeRequestId: `${requestPrefix}-stats-before`,
+              promptRequestId: `${requestPrefix}-prompt`,
+              statisticsAfterRequestId: `${requestPrefix}-stats-after`,
+              cancelRequestId: `${requestPrefix}-abort`
+            }
+          : { kind: "oneshot", providerKind },
+      runtimeIdentitySha256
+    );
+    const descriptorRole = readOnly ? descriptor.roles.reviewer : descriptor.roles.worker;
+    if (descriptorRole.status !== "enabled") {
+      throw new Error(`adapter ${descriptor.id} is unavailable for ${readOnly ? "reviewer" : "worker"}: ${descriptorRole.refusal.detail}`);
+    }
+    const requiredFilesystem = readOnly ? "read-only" : "workspace-write";
+    if (descriptorRole.outerSandbox !== "required" || descriptorRole.filesystem !== requiredFilesystem) {
+      throw new Error(`adapter ${descriptor.id} role policy contradicts the parent-owned containment mode`);
+    }
     // Build the command BEFORE reserving: the reservation is BOUND to the exact bytes this call will
     // deliver on stdin, so those bytes have to exist first. A reservation that does not pin the intent
     // and the stdin cannot prove WHICH work the money authorized (wave-8d audit B3).
-    const cmd = buildHeadlessCommand(provider, {
+    let adapterStateDir: string | undefined;
+    if (structured) {
+      const root = resolve(ctx.runDir, "adapter-state");
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      adapterStateDir = resolve(root, `${requestPrefix}-${providerKind}`);
+      mkdirSync(adapterStateDir, { mode: 0o700 });
+      adapterStateDir = assertConfinedRealPath(ctx.runDir, adapterStateDir);
+    }
+    const built = buildHeadlessCommand(provider, {
       role: kind,
-      task: taskText,
+      task: taskPrompt,
       systemPromptFile: sys.file,
       systemPromptText: sys.text,
-      readOnly
-    });
-    const stdinBytes = cmd.stdin === undefined ? Buffer.alloc(0) : Buffer.from(cmd.stdin, "utf8");
+      readOnly,
+      ...(providerKind === "pi" ? {
+        sessionDirectory: adapterStateDir,
+        ...(native?.helperPath ? { reviewerHelperPath: native.helperPath } : {})
+      } : {}),
+      ...(providerKind === "grok" ? { adapterStateDirectory: adapterStateDir } : {})
+    }, ctx.adapterEnvironment?.[key] ?? process.env);
+    const cmd = native ? {
+      ...built,
+      command: native.executablePath,
+      env: {
+        ...built.env,
+        ...(adapterStateDir ? {
+          XDG_CACHE_HOME: resolve(adapterStateDir, "cache"),
+          XDG_DATA_HOME: resolve(adapterStateDir, "data")
+        } : {})
+      }
+    } : built;
+    if (adapterStateDir) {
+      for (const path of providerKind === "grok"
+        ? [cmd.env.HOME, cmd.env.GROK_HOME, cmd.env.TMPDIR, cmd.env.XDG_CONFIG_HOME, cmd.env.XDG_CACHE_HOME, cmd.env.XDG_DATA_HOME]
+        : [cmd.env.XDG_CACHE_HOME, cmd.env.XDG_DATA_HOME]) {
+        if (!path) throw new Error(`adapter ${providerKind} did not produce its required private state path`);
+        mkdirSync(path, { recursive: true, mode: 0o700 });
+        assertConfinedRealPath(adapterStateDir, path);
+      }
+    }
+    const nativeConfigurationEvidenceSha256 = structured && adapterStateDir
+      ? sha256Hex(JSON.stringify({
+          adapterId: providerKind,
+          environmentNames: Object.keys(cmd.env).sort(),
+          readOnly,
+          state: (() => {
+            const stat = lstatSync(adapterStateDir, { bigint: true });
+            return {
+              dev: stat.dev.toString(),
+              ino: stat.ino.toString(),
+              mode: Number(stat.mode & 0o777n),
+              uid: Number(stat.uid)
+            };
+          })()
+        }))
+      : undefined;
+    const protocolRequest = providerKind === "opencode" || providerKind === "grok"
+      ? {
+          kind: "acp-v1" as const,
+          cwd: workCwd,
+          promptText: taskPrompt,
+          permissionPolicy: readOnly ? "deny" as const : "allow-once" as const,
+          ...(providerKind === "grok" ? { sessionMeta: grokSessionMeta(sys.text) } : {})
+        }
+      : providerKind === "pi"
+        ? { kind: "pi-rpc" as const, promptText: taskPrompt }
+        : undefined;
+    const transportStdin = providerKind === "opencode" || providerKind === "grok"
+      ? serializeAcpInitialize({
+          requestId: `${requestPrefix}-initialize`,
+          clientName: "relayforge",
+          clientVersion: providerKind === "grok" ? "1.0.0-rc.1" : "0.4.0",
+          ...(providerKind === "grok" ? { meta: grokInitializeMeta() } : {})
+        })
+      : providerKind === "pi"
+        ? serializePiGetState(`${requestPrefix}-state`)
+        : cmd.stdin === undefined ? undefined : Buffer.from(cmd.stdin, "utf8");
+    // Structured calls reserve a canonical aggregate of every parent-controlled request. ACP's
+    // provider-created session ID is represented by a fixed placeholder and remains correlated by
+    // the durable response transcript; no provider-selected byte can change the reserved task.
+    const stdinBytes = providerKind === "opencode" || providerKind === "grok"
+      ? Buffer.concat([
+          transportStdin!,
+          serializeAcpNewSession({
+            requestId: `${requestPrefix}-session`,
+            cwd: workCwd,
+            ...(providerKind === "grok" ? { meta: grokSessionMeta(sys.text) } : {})
+          }),
+          Buffer.from(JSON.stringify({
+            jsonrpc: "2.0",
+            id: `${requestPrefix}-prompt`,
+            method: "session/prompt",
+            params: { sessionId: "<provider-correlated-session>", prompt: [{ type: "text", text: taskPrompt }] }
+          }) + "\n")
+        ])
+      : providerKind === "pi"
+        ? Buffer.concat([
+            transportStdin!,
+            serializePiGetSessionStats(`${requestPrefix}-stats-before`),
+            serializePiPrompt({ requestId: `${requestPrefix}-prompt`, message: taskPrompt }),
+            serializePiGetSessionStats(`${requestPrefix}-stats-after`)
+          ])
+        : transportStdin ?? Buffer.alloc(0);
+    // Construct the complete filesystem/runtime boundary BEFORE reserving money or appending a
+    // provider-launch fact. Native adapters always start from an empty root, including ordinary
+    // single-repository turns: only the selected worktree, exact Git common directory, standing
+    // prompt, provider runtime and provider-private state become visible. P6 contributes its already
+    // identity-pinned multi-root/Git vector without widening it.
+    const nativeFilesystem = structured
+      ? (lifecycle?.filesystem ?? Object.freeze({
+          mode: "allowlist" as const,
+          readableRoots: ordinaryNativeGitRoots(workCwd),
+          runtimeRoots: Object.freeze([]),
+          inaccessibleRoots: Object.freeze([])
+        }))
+      : lifecycle?.filesystem;
+    let scopedFilesystem = nativeFilesystem === undefined ? undefined : Object.freeze({
+      ...nativeFilesystem,
+      readableRoots: Object.freeze([
+        ...(nativeFilesystem.readableRoots ?? []),
+        sys.file
+      ]),
+      runtimeRoots: Object.freeze([
+        ...(nativeFilesystem.runtimeRoots ?? []),
+        ...(native ? [native.executablePath] : []),
+        ...(native?.helperPath ? [native.helperPath] : [])
+      ])
+    } satisfies SandboxFilesystemAllowlist);
+    let launchCommand = cmd.command;
+    let launchArgs = cmd.args;
+    let grokProxy: GrokEgressProxy | undefined;
+    let grokSocketIdentity: ReturnType<typeof pinSandboxSocket> | undefined;
+    let grokSocketDirectory: string | undefined;
+    let grokProxyDrained = false;
+    let grokBoundaryClosed = false;
+    let grokEgressEvidence: GrokEgressEvidenceBinding | undefined;
+    /**
+     * Attempt-all Grok boundary teardown. Always reaps tunnels/server via closeAndDrain even when the
+     * path is missing or replaced; never unlinks a foreign leaf; only rmdirs the parent directory
+     * after exact empty-state proof. Idempotent and retry-safe.
+     */
+    const closeGrokBoundary = async (): Promise<void> => {
+      if (!grokProxy || grokBoundaryClosed) return;
+      if (!grokProxyDrained) {
+        // Do NOT assert socket identity before drain: identity failure must never prevent tunnel/server
+        // reaping. closeAndDrain reaps first, then identity-safe-unlinks only the pinned object.
+        try {
+          await grokProxy.closeAndDrain();
+        } finally {
+          // Drain is single-flight and reaps resources even when it later throws uncertain cleanup.
+          grokProxyDrained = true;
+        }
+        const status = grokProxy.status();
+        if (!status.closed || status.decisionLogOverflowed || status.expired || !status.cleanupSha256) {
+          throw new Error("Grok egress boundary did not close with bounded cleanup evidence");
+        }
+        if (!status.cleanupEvidence?.socketRemoved || status.cleanupEvidence.socketPreserved) {
+          throw new Error("Grok egress boundary cleanup did not prove exact socket removal");
+        }
+        if (!native?.grokProbeReceiptSha256 || !/^[a-f0-9]{64}$/u.test(native.grokProbeReceiptSha256)) {
+          throw new Error("Grok egress boundary has no exact active-probe receipt");
+        }
+        grokEgressEvidence = Object.freeze({
+          policySha256: GROK_EGRESS_POLICY_SHA256,
+          probeReceiptSha256: native.grokProbeReceiptSha256,
+          decisionLogSha256: status.decisionLogSha256,
+          socketIdentitySha256: status.socketIdentitySha256,
+          cleanupSha256: status.cleanupSha256
+        });
+      }
+      if (!grokSocketDirectory) throw new Error("Grok egress boundary lost its parent directory identity");
+      // Only remove the parent-owned directory after exact empty-state proof. Foreign debris is preserved.
+      const directory = grokSocketDirectory;
+      let entries: string[];
+      try {
+        entries = readdirSync(directory);
+      } catch (error) {
+        throw new Error(`Grok egress parent directory cannot be inspected for empty-state proof: ${(error as Error).message}`);
+      }
+      if (entries.length !== 0) {
+        throw new Error(`Grok egress parent directory retains foreign debris (${entries.join(", ")}); refusing rmdir`);
+      }
+      const dirInfo = lstatSync(directory);
+      if (
+        !dirInfo.isDirectory() ||
+        dirInfo.isSymbolicLink() ||
+        (dirInfo.mode & 0o077) !== 0 ||
+        (typeof process.getuid === "function" && dirInfo.uid !== process.getuid())
+      ) {
+        throw new Error("Grok egress parent directory is no longer a private parent-owned empty directory");
+      }
+      rmdirSync(directory);
+      grokSocketDirectory = undefined;
+      grokBoundaryClosed = true;
+    };
+    if (providerKind === "grok") {
+      if (!adapterStateDir || !native?.helperPath) throw new Error("adapter grok did not produce its private state and relay identity");
+      // Unix-domain socket paths are short and live outside every provider-readable/writable/runtime
+      // mount. Bubblewrap creates execute-only skeleton parents and mounts only the pinned socket, so
+      // the provider cannot list, unlink or replace its parent-owned egress authority.
+      grokSocketDirectory = mkdtempSync(join(tmpdir(), "rf-grok-egress-"));
+      chmodSync(grokSocketDirectory, 0o700);
+      try {
+        grokProxy = await createGrokEgressProxy(grokSocketDirectory);
+      } catch (error) {
+        rmdirSync(grokSocketDirectory);
+        throw error;
+      }
+      grokSocketIdentity = pinSandboxSocket(grokProxy.socketPath);
+      grokProxy.assertSocketIdentity();
+      assertSandboxSocketIdentity(grokSocketIdentity);
+      const wrapped = buildGrokEgressProviderCommand({
+        socketPath: grokProxy.socketPath,
+        providerCommand: cmd.command,
+        providerArgs: cmd.args
+      });
+      launchCommand = wrapped.command;
+      launchArgs = [...wrapped.args];
+      scopedFilesystem = Object.freeze({
+        ...scopedFilesystem!,
+        runtimeRoots: Object.freeze([
+          ...(scopedFilesystem?.runtimeRoots ?? []),
+          native.executablePath,
+          native.helperPath
+        ]),
+        socketRoots: Object.freeze([grokSocketIdentity])
+      });
+    }
+    let launched: { command: string; args: string[] };
+    try {
+      launched = sandboxProviderCommand(
+        provider,
+        launchCommand,
+        launchArgs,
+        cmd.env,
+        workCwd,
+        [
+          ...(adapterStateDir ? [adapterStateDir] : []),
+          ...(lifecycle?.additionalWritableRoots ?? [])
+        ],
+        scopedFilesystem,
+        providerKind !== "grok",
+        readOnly
+      );
+    } catch (error) {
+      if (grokProxy) await closeGrokBoundary();
+      throw error;
+    }
     // PRODUCTION calls are always identity-bound: run + call nonce, call id, reservation record id,
     // route epoch, provider/model/attempt, and the intent + exact stdin hashes and byte count.
     const bind: CallBinding = {
@@ -2124,11 +3303,18 @@ export async function runRoutedTurn(
       provider: key,
       model: provider.model ?? provider.type ?? key,
       attempt: attemptN,
-      intentSha256: sha256Hex(JSON.stringify([kind, role.name, taskId, taskText, sys.text])),
+      intentSha256: sha256Hex(JSON.stringify([kind, role.name, taskId, taskPrompt, sys.text])),
       stdinSha256: sha256Hex(stdinBytes),
-      stdinBytes: stdinBytes.length
+      stdinBytes: stdinBytes.length,
+      adapter: adapterIdentity,
+      ...(providerKind === "grok" && grokProxy && native?.grokProbeReceiptSha256 ? {
+        egress: Object.freeze({
+          policySha256: GROK_EGRESS_POLICY_SHA256,
+          probeReceiptSha256: native.grokProbeReceiptSha256,
+          socketIdentitySha256: grokProxy.status().socketIdentitySha256
+        })
+      } : {})
     };
-    const providerKind = (provider.type as ProviderKind) ?? "custom";
     // Atomically reserve the worst case BEFORE launching. Refused → fail closed (do not launch), so a
     // budget can never be exceeded by an in-flight or parallel call.
     //
@@ -2138,6 +3324,7 @@ export async function runRoutedTurn(
     // walk it to a receipt (tests/receipt-forgery.test.ts). Authority now comes only from the settlement
     // KERNEL, which this code cannot instruct — it can only hand it a completed call to judge.
     if (!ctx.ledger.reserve(bind, worstCase, budget)) {
+      if (grokProxy) await closeGrokBoundary();
       logLoopEvent(ctx, { iter: state.iteration, event: "budget_reservation_denied", role: role.name, taskId, detail: `cannot reserve ${worstCase} USD for ${key} (budget ${budget})` });
       return "budget-denied";
     }
@@ -2149,23 +3336,92 @@ export async function runRoutedTurn(
     let settled = false;
     const settleUncertain = (): void => {
       if (settled) return;
-      ctx.ledger.settleUncertain(bind);
+      ctx.ledger.settleUncertain(bind, grokEgressEvidence);
       settled = true;
     };
     const label = `${role.name}-${taskId}-a${attemptN}-${key}`;
+    // Retained so a cleanup failure in `finally` cannot mask a primary provider/settlement error.
+    let callError: unknown;
     try {
-      const launched = sandboxProviderCommand(provider, cmd.command, cmd.args, workCwd);
+      if (bindLifecycle && lifecycle) lifecycle.plan();
       // Transcripts live under a PRIVATE 0700 directory; the transport creates an unpredictable
       // O_EXCL|O_NOFOLLOW 0600 file inside it. We never hand it a predictable, symlinkable path. The
       // dir is confined strictly within the run directory with NO symlinked parent component (a
       // planted symlink could otherwise redirect the evidentiary transcript outside the run tree).
       const transcriptDir = assertConfinedRealPath(ctx.runDir, resolve(ctx.runDir, "transcripts"));
-      const r = await runHeadlessChild(ctx, launched.command, launched.args, cmd.env, paneId, workCwd, cmd.stdin, transcriptDir, undefined, providerKind);
+      let transcriptObservation: RunTranscriptObservationHandle | undefined;
+      let observationFinalized = false;
+      const finalizeObservation = async (transcriptDurable: boolean): Promise<void> => {
+        if (transcriptObservation === undefined || observationFinalized) return;
+        observationFinalized = true;
+        try {
+          await transcriptObservation.finalize({ transcriptDurable });
+        } catch {
+          // Observation is a derived, lossy read model. It can report its own bounded diagnostic, but
+          // may never veto or rewrite provider transport/normalization/settlement truth.
+        }
+      };
+      let r: ChildResult;
+      try {
+        if (grokProxy && grokSocketIdentity) {
+          grokProxy.assertSocketIdentity();
+          assertSandboxSocketIdentity(grokSocketIdentity);
+        }
+        r = await runHeadlessChild(
+          ctx,
+          launched.command,
+          launched.args,
+          cmd.env,
+          paneId,
+          workCwd,
+          transportStdin,
+          transcriptDir,
+          undefined,
+          structured ? undefined : providerKind,
+          undefined,
+          {
+            adapterIdentity,
+            ...(characterization?.providerKey === key && characterization.onAdapterEvent
+              ? { onAdapterEvent: characterization.onAdapterEvent }
+              : {}),
+            ...(protocolRequest ? { protocolRequest } : {}),
+            ...(structured ? { cancelled: () => isCancelled(ctx.runDir) } : {}),
+            ...(bindLifecycle && lifecycle ? { beforeProviderExec: lifecycle.started } : {}),
+            ...(lifecycle?.observationTarget !== undefined && ctx.openTranscriptObservation !== undefined ? {
+              onTranscriptOpened(path: string) {
+                try {
+                  transcriptObservation = ctx.openTranscriptObservation!({
+                    target: lifecycle.observationTarget!,
+                    transcriptPath: path,
+                    sourceGeneration
+                  });
+                } catch {
+                  transcriptObservation = undefined;
+                }
+              },
+              onTranscriptProgress() {
+                try { transcriptObservation?.progress(); } catch { /* observation cannot veto transport */ }
+              }
+            } : {})
+          }
+        );
+      } catch (error) {
+        await finalizeObservation(false);
+        throw error;
+      }
+      await finalizeObservation(r.transcriptDurable === true);
+      // The provider/relay scope is already reaped by runHeadlessChild. Drain the parent proxy and
+      // re-stat/remove its exact socket before the settlement kernel can treat the call as terminal.
+      if (grokProxy) await closeGrokBoundary();
+      if (grokEgressEvidence) r.grokEgressEvidence = grokEgressEvidence;
+      if (nativeConfigurationEvidenceSha256) r.nativeConfigurationEvidenceSha256 = nativeConfigurationEvidenceSha256;
       // The whole-stream verdict from the ONE framer is the ONLY protocol authority. There is no
       // reparse-the-tail fallback: the tail is lossy AND, after a framing fatal, reparsing it is exactly
       // how an unframed (oversized) stream smuggled `success: true` back into acceptance/cost/fallback
       // (wave-8d audit A1). No verdict ⇒ UNCERTAIN, worst case retained, no fallback.
-      const norm = r.streamedVerdict;
+      const norm = structured
+        ? (r.adapterResult ? normalizedAdapterTurn(providerKind, r.adapterResult) : undefined)
+        : r.streamedVerdict;
       if (!norm) {
         settleUncertain(); // retain the full worst case
         r.settlementCallId = callId; // the durable settlement record still exists (worst case retained)
@@ -2197,7 +3453,12 @@ export async function runRoutedTurn(
       // Fallback authority (`trusted-fallback`, the right to bill a SECOND provider) is minted on exactly
       // ONE shape: a canonical Claude usage rejection that the kernel RE-DERIVED by replaying the durable
       // transcript. It moves no money — the worst case is retained — it only unlocks the route below.
-      const settlement = ctx.ledger.settleCompleted({ bind, providerKind, stdinDelivered: stdinBytes, result: r });
+      const settlement = ctx.ledger.settleCompleted({
+        bind,
+        ...(structured ? {} : { providerKind }),
+        stdinDelivered: stdinBytes,
+        result: r
+      });
       settled = true;
       logLoopEvent(ctx, settlementEvent(settlement, state.iteration, role.name, taskId, key, worstCase));
       r.settlementCallId = callId; // durable, fsynced, hash-chained settlement record id
@@ -2215,7 +3476,16 @@ export async function runRoutedTurn(
         // advisory ledger — the reservation ledger already holds the authoritative accounting
       }
       return r;
+    } catch (error) {
+      callError = error;
+      throw error;
     } finally {
+      // Covers lifecycle.plan, launch handshake, transcript and settlement failures. Idempotence keeps
+      // the normal close above exactly-once while ensuring no parent proxy survives the call authority.
+      let grokCleanupError: unknown;
+      if (grokProxy && !grokBoundaryClosed) {
+        try { await closeGrokBoundary(); } catch (error) { grokCleanupError = error; }
+      }
       // Any escape we did not settle explicitly (launch/child/normalize throw) → UNCERTAIN: the worst
       // case is retained and no fallback is authorized. If a settle already reached the durable journal
       // it is the authoritative terminal — never append a second one. A settlement that still cannot be
@@ -2228,12 +3498,15 @@ export async function runRoutedTurn(
           // durable settlement still failing → leave outstanding, never mask it
         }
       }
+      // Retain the primary provider/settlement error. Cleanup failure is reported only when it is the
+      // sole failure; durable settlement truth must never be masked by a secondary teardown error.
+      if (grokCleanupError !== undefined && callError === undefined) throw grokCleanupError;
     }
   };
 
   const denied = (why: string): ChildResult => ({ ok: false, code: null, stdout: "", stderr: `budget reservation denied (fail closed): ${why}`, transportOk: false, stdinComplete: false, scopeTrusted: true, uncertainReason: `budget reservation denied: ${why}` });
 
-  const primaryResult = await runWith(activeKey, "primary");
+  const primaryResult = await runWith(activeKey, "primary", true);
   if (primaryResult === "budget-denied") return denied(activeKey);
   let result = primaryResult;
   const outcome = turnOutcome(result);
@@ -2270,7 +3543,7 @@ export async function runRoutedTurn(
     });
     // RECHECK the budget before the fallback: the primary was already billed, so re-reserve and
     // fail closed if the fallback would overshoot rather than launching it blindly.
-    const fb = await runWith(chain.fallback, "fallback");
+    const fb = await runWith(chain.fallback, "fallback", false);
     result = fb === "budget-denied" ? denied(`fallback ${chain.fallback}`) : fb;
   } else if (outcome === "limit" && chain.fallback && primaryIsClaude && activeKey === chain.primary && !settledReceipt) {
     // A canonical rejection with an available fallback, but the primary's settlement carries NO ledger
@@ -2283,6 +3556,122 @@ export async function runRoutedTurn(
     logLoopEvent(ctx, { iter: state.iteration, event: "provider_limit", role: role.name, taskId, detail: `${activeKey} usage/rate/quota limit; no available fallback` });
   }
   return result;
+}
+
+/** Public product route. Native adapters can enter only with parent-produced availability evidence. */
+export function runRoutedTurn(
+  ctx: RunContext,
+  role: RoleConfig,
+  kind: AgentRole,
+  taskText: string | Uint8Array,
+  sys: { file: string; text: string },
+  workCwd: string,
+  paneId: string,
+  state: LoopRunState,
+  taskId: string,
+  attemptN: number,
+  lifecycle?: Parameters<typeof runRoutedTurnCore>[10]
+): Promise<ChildResult> {
+  return runRoutedTurnCore(ctx, role, kind, taskText, sys, workCwd, paneId, state, taskId, attemptN, lifecycle);
+}
+
+/**
+ * Internal production-characterization seam. It bypasses only the unavailable-before-probe lookup:
+ * the caller supplies an already re-statted executable/helper identity and the exact shipped wire,
+ * never an availability verdict. Command building, containment, transcript/replay, cancellation,
+ * reservation and settlement remain the same code path as an ordinary routed turn.
+ *
+ * This symbol is intentionally not re-exported by the package root.
+ */
+export function runContainedNativeCharacterizationTurn(input: Readonly<{
+  ctx: RunContext;
+  role: RoleConfig;
+  kind: AgentRole;
+  taskText: string | Uint8Array;
+  systemPrompt: { file: string; text: string };
+  workCwd: string;
+  state: LoopRunState;
+  taskId: string;
+  attempt: number;
+  providerKey: string;
+  runtime: NativeRuntimeSelection;
+  onAdapterEvent?: (event: import("./adapters/codec.js").NormalizedAdapterEvent) => void;
+}>): Promise<ChildResult> {
+  const provider = input.ctx.project.providers[input.providerKey];
+  if (!provider || !isStructuredProvider(provider.type as ProviderKind)) {
+    throw new TypeError("contained characterization requires one configured shipped native adapter");
+  }
+  if (input.ctx.project.roles.find((candidate) => candidate.name === input.role.name)?.provider !== input.providerKey) {
+    throw new TypeError("contained characterization role/provider binding does not match the prepared run");
+  }
+  return runRoutedTurnCore(
+    input.ctx,
+    input.role,
+    input.kind,
+    input.taskText,
+    input.systemPrompt,
+    input.workCwd,
+    "",
+    input.state,
+    input.taskId,
+    input.attempt,
+    undefined,
+    Object.freeze({
+      providerKey: input.providerKey,
+      runtime: Object.freeze({ ...input.runtime }),
+      ...(input.onAdapterEvent ? { onAdapterEvent: input.onAdapterEvent } : {})
+    })
+  );
+}
+
+/**
+ * Narrow executable/version probe used only by the contained-evidence authority. It uses the same
+ * sandbox wrapper, authenticated cgroup launch, bounded stdout capture and durable transcript as a
+ * provider turn, but carries no task prompt and therefore creates no billing reservation.
+ */
+export function runContainedNativeExecutableProbe(input: Readonly<{
+  ctx: RunContext;
+  providerKey: string;
+  runtime: NativeRuntimeSelection;
+  args: readonly string[];
+  environment: Readonly<Record<string, string>>;
+  cwd: string;
+  transcriptDirectory: string;
+}>): Promise<ChildResult> {
+  const provider = input.ctx.project.providers[input.providerKey];
+  if (!provider || !isStructuredProvider(provider.type as ProviderKind)) {
+    throw new TypeError("contained executable probe requires one configured shipped native adapter");
+  }
+  const launch = sandboxProviderCommand(
+    provider,
+    input.runtime.executablePath,
+    [...input.args],
+    input.environment,
+    input.cwd,
+    [],
+    Object.freeze({
+      mode: "allowlist",
+      readableRoots: Object.freeze([]),
+      runtimeRoots: Object.freeze([
+        input.runtime.executablePath,
+        ...(input.runtime.helperPath ? [input.runtime.helperPath] : [])
+      ]),
+      inaccessibleRoots: Object.freeze([])
+    }),
+    false,
+    false
+  );
+  return runHeadlessChild(
+    input.ctx,
+    launch.command,
+    launch.args,
+    { ...input.environment },
+    "",
+    input.cwd,
+    undefined,
+    input.transcriptDirectory,
+    30_000
+  );
 }
 
 async function dispatchTask(
@@ -2317,25 +3706,108 @@ async function dispatchTask(
   const testHashBefore = hashFiles(workCwd, testFiles);
   const baselineVerify = await runOrderedVerify(ctx, workCwd, verifyCmds, `baseline-${task.id}`);
 
-  const context = gatherContext(ctx.boardDir, role.name, task);
-  const taskText = [
+  const baseTaskText = [
     isRepair ? `REPAIR ATTEMPT ${task.attempts + 1} for TASK ${task.id}` : `TASK ${task.id}: ${task.title}`,
     task.description,
     ``,
     `Acceptance criteria:`,
     ...task.acceptanceCriteria.map((c) => `- ${c}`),
-    context ? `\n${context}` : "",
     iterationContext ? `\n\n## Iteration context snapshot\n${iterationContext}` : "",
-    isRepair && task.lastSummary
-      ? `\nPREVIOUS ATTEMPT FAILED: ${task.lastSummary}\nDo NOT repeat the failed approach. Fix the root cause.`
-      : "",
     ``,
     `Do not modify test files or CI config to make checks pass — that is treated as tampering and will be rejected.`
   ].join("\n");
 
+  const authority = ctx.controlAuthority;
+  if (!authority) throw new Error("canonical control authority is unavailable at the provider prompt boundary");
+  const canonicalTask = authority.store.getProjection().tasks[task.id];
+  if (!canonicalTask) throw new Error(`canonical task ${task.id} is unavailable at the provider prompt boundary`);
+  const taskEvidence = authority.store.readRange({
+    afterSeq: Math.max(0, canonicalTask.updatedSeq - 1),
+    limit: 1,
+    runEpoch: authority.store.runEpoch
+  }).events[0];
+  if (!taskEvidence || taskEvidence.seq !== canonicalTask.updatedSeq || taskEvidence.taskId !== task.id) {
+    throw new Error(`canonical task ${task.id} update evidence is unavailable at sequence ${canonicalTask.updatedSeq}`);
+  }
+  const prepared = prepareDispatchAttempt({
+    store: authority.store,
+    runDir: ctx.runDir,
+    taskId: task.id,
+    role: role.name,
+    actorId: ctx.loop.orchestrator,
+    basePrompt: baseTaskText,
+    ...(isRepair && task.lastSummary
+      ? {
+          feedback: {
+            commandId: internalSteeringCommandId({
+              occurredAt: task.lastUpdate ?? task.createdAt,
+              runEpoch: ctx.runNonce,
+              taskId: task.id,
+              taskGeneration: canonicalTask.generation,
+              sourceKind: task.status === "rejected" ? "review_gate" : "control_plane",
+              body: task.lastSummary
+            }),
+            sourceKind: task.status === "rejected" ? "review_gate" as const : "control_plane" as const,
+            body: task.lastSummary,
+            evidenceRefs: [taskEvidence.eventId]
+          }
+        }
+      : {})
+  });
+  const launchId = `launch.${randomUUID()}`;
+  const lifecycle = {
+    launchId,
+    observationTarget: prepared.target,
+    plan: (): void => planDispatchLaunch({
+      store: authority.store,
+      target: prepared.target,
+      launchId,
+      actorId: ctx.loop.orchestrator
+    }),
+    started: (identity: { pid: number; processStartToken: string }): void => markDispatchStarted({
+      store: authority.store,
+      target: prepared.target,
+      launchId,
+      ...identity,
+      actorId: ctx.loop.orchestrator
+    })
+  };
   const sys = roleSystemPrompt(ctx, role);
   showInPane(paneId, `${role.name} → ${task.id}: ${task.title}${isRepair ? " (repair)" : ""}`);
-  const result = await runRoutedTurn(ctx, role, agentRoleKind(ctx, role), taskText, sys, workCwd, paneId, state, task.id, task.attempts + 1);
+  let result: ChildResult;
+  try {
+    result = await runRoutedTurn(
+      ctx,
+      role,
+      agentRoleKind(ctx, role),
+      prepared.content,
+      sys,
+      workCwd,
+      paneId,
+      state,
+      task.id,
+      prepared.target.attemptGeneration,
+      lifecycle
+    );
+  } catch (error) {
+    settleDispatchAttempt({
+      store: authority.store,
+      target: prepared.target,
+      actorId: ctx.loop.orchestrator,
+      result: { outcome: "uncertain", summary: `provider boundary failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 4_096) }
+    });
+    throw error;
+  }
+  settleDispatchAttempt({
+    store: authority.store,
+    target: prepared.target,
+    actorId: ctx.loop.orchestrator,
+    result: {
+      outcome: result.ok ? "succeeded" : isCancelled(ctx.runDir) ? "cancelled" : result.code === null ? "uncertain" : "failed",
+      ...(result.code === null ? {} : { exitCode: result.code }),
+      summary: result.ok ? "provider turn completed with trusted transport" : (failureTail(result.stdout, result.stderr) || result.uncertainReason || "provider turn failed").slice(0, 4_096)
+    }
+  });
 
   const block = (summary: string, event: string): DispatchOutcome => {
     noteLoopFailure(ctx, state, summary, role.name, task.id, event);
@@ -2386,6 +3858,87 @@ export type IterationReport = {
 
 export type ReviewResult = { accepted: number };
 
+/**
+ * Canonical authority borrowed by a parent-owned service for exactly one run lifetime. The parent
+ * may derive views or submit already-authenticated control operations through the pinned store, but
+ * it does not own the store or either outer lease and therefore must never close them itself.
+ */
+export type RunParentAuthorityContext = Readonly<{
+  store: ControlAuthorityHandle["store"];
+  runId: string;
+  runEpoch: string;
+  runDir: string;
+}>;
+
+/** Parent service lifetime returned only after it is ready to receive work. */
+export type RunParentAuthorityHandle = Readonly<{
+  openTranscriptObservation?: NonNullable<RunContext["openTranscriptObservation"]>;
+  closeAndDrain(): Promise<void>;
+}>;
+
+/**
+ * Exact post-cutover authority borrowed by the P6 coordinator. It receives the already-open sole
+ * ControlStore and immutable configuration proposal; it must route every P6 transition through the
+ * closed canonical journal contract and must never open a second store writer.
+ */
+export type RunMultiRepositoryAuthorityContext = Readonly<{
+  store: ControlAuthorityHandle["store"];
+  runId: string;
+  runEpoch: string;
+  runDir: string;
+  execute: boolean;
+  goal: string;
+  project: ProjectConfig;
+  loop: LoopConfig;
+  /**
+   * Borrow the parent run's one provider-launch path. This capability keeps P4 reservation,
+   * normalization, transcript and settlement authority inside the parent instead of allowing a
+   * P6 adapter to mint its own success boolean around a raw child process.
+   */
+  runWorkerTurn(request: Readonly<{
+    roleId: string;
+    taskId: string;
+    attemptGeneration: number;
+    launchId: string;
+    prompt: string;
+    systemPromptFile: string;
+    systemPromptText: string;
+    workCwd: string;
+    additionalWritableRoots: readonly string[];
+    /** Deterministic key for this exact run/task/generation/attempt/lease/repository-set. */
+    recoveryKey: string;
+    /** Closed empty-root visibility for this one multi-repository provider launch. */
+    filesystem: SandboxFilesystemAllowlist;
+    beforeProviderExec(identity: { pid: number; processStartToken: string }): void;
+  }>): Promise<ChildResult>;
+  /** One command through the parent verifier cgroup journal/cancel/reap authority. */
+  runVerification(request: MultiRepositoryVerificationRequest): Promise<MultiRepositoryVerificationResult>;
+}>;
+
+export type RunMultiRepositoryAuthorityHandle = Readonly<{
+  run(): Promise<MultiRepositoryRunOutcomeV1>;
+  closeAndDrain(): Promise<void>;
+}>;
+
+export type RunOptions = Readonly<{
+  execute: boolean;
+  onIteration?: (r: IterationReport) => void;
+  /**
+   * Start parent-owned authority work after cutover and crash reconciliation have established the
+   * canonical store. Finalization drains this service before closing that store or either lease.
+   */
+  startParentAuthority?: (
+    context: RunParentAuthorityContext
+  ) => RunParentAuthorityHandle | Promise<RunParentAuthorityHandle>;
+  /**
+   * Required whenever a project declares repositories. The handle is started only after P1 cutover,
+   * writer reconciliation, containment, and budget gates; its drain precedes canonical store close.
+   */
+  startMultiRepositoryAuthority?: (
+    context: RunMultiRepositoryAuthorityContext
+  ) => RunMultiRepositoryAuthorityHandle | Promise<RunMultiRepositoryAuthorityHandle>;
+}>;
+
 // ---------------------------------------------------------------------------
 // The autonomy loop.
 // ---------------------------------------------------------------------------
@@ -2393,17 +3946,65 @@ export type ReviewResult = { accepted: number };
 export async function runAutonomyLoop(
   ctx: RunContext,
   _roleFiles: Record<string, string>,
-  options: { execute: boolean; onIteration?: (r: IterationReport) => void }
+  options: RunOptions
 ): Promise<IterationReport[]> {
-  // Acquire the exclusive lease FIRST — before planning or any provider — so two concurrent
-  // processes for the same run can never both proceed. We do NOT clear a pending cancel on
-  // startup: a run that was asked to stop stays stopped.
-  const lease = acquireRunLease(ctx.runDir);
-  ctx.activeLeaseId = lease.nonce;
-  const verifyCmds = detectVerifyCommands(ctx);
-  initCostLedger(ctx.boardDir);
-  let state = loadLoopState(ctx);
+  // A context without both nested owners cannot be repaired here: acquiring the outer mutex after a
+  // run lease would invert the shared lock order. Refuse before opening any canonical handle.
+  const controlOwnership = ctx.controlOwnership;
+  const lease = ctx.runLease;
+  if (!controlOwnership || !lease || ctx.activeLeaseId !== lease.nonce) {
+    throw new Error("run context does not own the required control-lease -> run-lease chain; create it with prepareRun");
+  }
+  try {
+    controlOwnership.assertHeld();
+    assertActiveRunLease(ctx.runDir, lease.nonce);
+  } catch (error) {
+    disposePreparedRun(ctx);
+    throw error;
+  }
+  let verifyCmds: string[];
+  let markerAtEntry: ControlAuthorityMarker | undefined;
+  let state: LoopRunState;
+  try {
+    verifyCmds = detectVerifyCommands(ctx);
+    initCostLedger(ctx.boardDir);
+    markerAtEntry = readControlAuthorityMarker(ctx.boardDir);
+    state = markerAtEntry ? defaultLoopState(ctx) : loadLoopState(ctx);
+  } catch (error) {
+    disposePreparedRun(ctx);
+    throw error;
+  }
+  let cutoverStarted = false;
   const reports: IterationReport[] = [];
+  let parentAuthority: RunParentAuthorityHandle | undefined;
+  let parentAuthorityClose: Promise<void> | undefined;
+  let multiRepositoryAuthority: RunMultiRepositoryAuthorityHandle | undefined;
+  let multiRepositoryAuthorityClose: Promise<void> | undefined;
+
+  // A failing drain is sticky: never invoke an externally owned close operation twice in an attempt
+  // to infer success. Every path may await this helper, but the handle itself is called exactly once.
+  const closeParentAuthority = async (): Promise<void> => {
+    if (!parentAuthority) return;
+    ctx.openTranscriptObservation = undefined;
+    parentAuthorityClose ??= Promise.resolve().then(() => parentAuthority!.closeAndDrain());
+    await parentAuthorityClose;
+  };
+
+  const closeMultiRepositoryAuthority = async (): Promise<void> => {
+    if (!multiRepositoryAuthority) return;
+    multiRepositoryAuthorityClose ??= Promise.resolve().then(() => multiRepositoryAuthority!.closeAndDrain());
+    await multiRepositoryAuthorityClose;
+  };
+
+  // Attempt every borrowed-authority drain, but never dispose the canonical store/leases if either
+  // refuses. A sticky P6 failure may be retaining repository mutexes after an uncertain ref/store
+  // transition; closing P1 underneath it would create an unowned writer window.
+  const closeBorrowedAuthorities = async (): Promise<void> => {
+    let first: unknown;
+    try { await closeMultiRepositoryAuthority(); } catch (error) { first = error; }
+    try { await closeParentAuthority(); } catch (error) { first ??= error; }
+    if (first !== undefined) throw first;
+  };
 
   // Attempt worktrees, keyed by task id, plus the integration tip each branched from.
   const attempts = new Map<string, { wt: Worktree; baseTip: string }>();
@@ -2468,6 +4069,10 @@ export async function runAutonomyLoop(
       writeOperatorRecovery(ctx, survivors);
       logLoopEvent(ctx, { iter: state.iteration, event: "teardown_failed", detail: state.lastStopReason });
       saveLoopState(ctx, state);
+      ctx.finalState = loadLoopState(ctx);
+      await closeBorrowedAuthorities();
+      ctx.controlAuthority?.close();
+      ctx.controlAuthority = undefined;
       return reports; // lease intentionally NOT released
     }
 
@@ -2479,8 +4084,20 @@ export async function runAutonomyLoop(
     if (options.execute && state.status === "done" && worktreesSupported(ctx.cwd)) {
       cleanupRun(ctx.cwd, ctx.project.name, ctx.runId);
     }
-    lease.release();
-    ctx.activeLeaseId = undefined;
+    // Capture through the same authoritative read path before closing the store and releasing either
+    // writer mutex. CLI/reporting callers consume this immutable copy; they never reopen SQLite or
+    // fall back to the permanently retired `.loop_state.json` after finalization.
+    // A resumed run may fail its immutable manifest or predecessor-scope gate before the
+    // canonical store is rebound. Do not mask that primary refusal by attempting a canonical read
+    // through an unbound marker during cleanup. Fresh legacy state remains readable; bound
+    // canonical state is captured normally.
+    if (ctx.controlAuthority || !readControlAuthorityMarker(ctx.boardDir)) {
+      ctx.finalState = loadLoopState(ctx);
+    }
+    // A drain refusal is an uncertain authority boundary. It deliberately prevents
+    // disposePreparedRun from closing the canonical store or releasing either lifetime lease.
+    await closeBorrowedAuthorities();
+    disposePreparedRun(ctx);
     return reports;
   };
 
@@ -2489,6 +4106,65 @@ export async function runAutonomyLoop(
     // reused id with a different goal/config/base/verifier/mode (incl. dry-run→execute) fails
     // closed with a fresh-run instruction instead of silently returning the old `done`/`planned`.
     assertRunManifest(ctx, options.execute, verifyCmds);
+
+    // Prove every writer from a prior incarnation is gone before opening or creating the canonical
+    // authority. The scope journal is cleared only for scopes proven empty and removed.
+    const recovery = await reapAbandonedScopes(ctx);
+    if (recovery.unresolved.length) {
+      const detail = recovery.unresolved.map((u) => `  ${u.id} [${u.outcome}]\n    → ${u.advice}`).join("\n");
+      if (markerAtEntry) {
+        throw new Error(
+          `fail-closed: ${recovery.unresolved.length} predecessor scope(s) cannot be proven empty; canonical authority was not opened or mutated.\n${detail}`
+        );
+      }
+      state.status = "blocked";
+      state.phase = "stopped";
+      state.lastStopReason =
+        `fail-closed: ${recovery.unresolved.length} scope(s) this run previously launched into cannot be proven dead and empty, ` +
+        `so an agent orphaned by an earlier crash may still be running this run's work. Refusing to reclaim the board or ` +
+        `dispatch anything (that would put two agents on one task).\n${detail}\n` +
+        `They remain recorded in ${ctx.scopesPath}; each line is dropped automatically once its scope is proven gone.`;
+      logLoopEvent(ctx, { iter: 0, event: "fail_closed_orphan_scope", detail: state.lastStopReason });
+      saveLoopState(ctx, state);
+      return finalize();
+    }
+
+    cutoverStarted = true;
+    ctx.controlAuthority = cutoverControlAuthority({
+      runDir: ctx.runDir,
+      boardDir: ctx.boardDir,
+      statePath: ctx.statePath,
+      scopesPath: ctx.scopesPath,
+      runId: ctx.runId,
+      runEpoch: ctx.runNonce,
+      controlOwnership,
+      activeLeaseId: lease.nonce,
+      initialState: loopStateCheckpoint(state),
+      startedBy: ctx.loop.orchestrator,
+      goal: ctx.goal,
+      // The exact disclosed gaps are durable in the migration receipt. This trusted parent call is
+      // the explicit product acknowledgement; direct callers must independently opt in.
+      acknowledgeLegacyLoss: true
+    });
+    state = loadLoopState(ctx);
+    reconcileSteeringAfterCrash(ctx);
+
+    // The service sees only the bound, recovered canonical authority, while the stable config mutex
+    // and run lease are still held. A start refusal is handled by the ordinary fail-closed catch and
+    // finalization path; the callback cannot race an unowned or pre-cutover store.
+    if (options.startParentAuthority) {
+      const started = await options.startParentAuthority(Object.freeze({
+        store: ctx.controlAuthority.store,
+        runId: ctx.runId,
+        runEpoch: ctx.runNonce,
+        runDir: ctx.runDir
+      }));
+      if (!started || typeof started !== "object" || typeof started.closeAndDrain !== "function") {
+        throw new Error("startParentAuthority must return a closeAndDrain authority handle");
+      }
+      parentAuthority = started;
+      ctx.openTranscriptObservation = started.openTranscriptObservation;
+    }
 
     if (state.status === "done" || state.status === "planned") return finalize();
 
@@ -2500,6 +4176,11 @@ export async function runAutonomyLoop(
       logLoopEvent(ctx, { iter: 0, event: "cancelled", detail: state.lastStopReason });
       saveLoopState(ctx, state);
       return finalize();
+    }
+
+    const multiRepositoryConfigured = ctx.project.repositories.length > 0;
+    if (multiRepositoryConfigured && !options.startMultiRepositoryAuthority) {
+      throw new Error("multi-repository execution requires the product ControlStore-backed authority factory; refusing before target creation, planning, worktrees, or provider launch");
     }
 
     // Containment gate: a real --execute run must be able to physically contain every provider and
@@ -2551,28 +4232,82 @@ export async function runAutonomyLoop(
       }
     }
 
-    // ORPHAN GATE. A SIGKILLed predecessor does not take its agents with it: each provider is detached
-    // in its own cgroup, so it is orphaned to init and keeps running — still calling the model, still
-    // spending, still writing into the attempt worktree this run is about to reclaim. Kill those ghosts
-    // FIRST, and if even one of them cannot be PROVEN dead and empty, refuse to go on.
-    //
-    // This runs before the integration worktree, before the planner, and before the board is reclaimed,
-    // because every one of those is a way to act on state a live ghost is still mutating. "We wrote
-    // cgroup.kill and did our best" is not proof — only the cgroup being gone is (rmdir succeeds solely
-    // on an empty cgroup). Anything less and we would be re-dispatching a task that is still being
-    // worked on by a process we cannot see, cannot bill, and cannot stop.
-    const recovery = await reapAbandonedScopes(ctx);
-    if (recovery.unresolved.length) {
-      const detail = recovery.unresolved.map((u) => `  ${u.id} [${u.outcome}]\n    → ${u.advice}`).join("\n");
-      state.status = "blocked";
-      state.phase = "stopped";
-      state.lastStopReason =
-        `fail-closed: ${recovery.unresolved.length} scope(s) this run previously launched into cannot be proven dead and empty, ` +
-        `so an agent orphaned by an earlier crash may still be running this run's work. Refusing to reclaim the board or ` +
-        `dispatch anything (that would put two agents on one task).\n${detail}\n` +
-        `They remain recorded in ${ctx.scopesPath}; each line is dropped automatically once its scope is proven gone.`;
-      logLoopEvent(ctx, { iter: 0, event: "fail_closed_orphan_scope", detail: state.lastStopReason });
+    // Multi-repository execution has a separate authority path. Start it only after every common
+    // pre-provider gate passes and before the legacy single-repository integration target exists.
+    // The callback borrows the exact canonical store and both outer lifetime leases remain held.
+    if (multiRepositoryConfigured) {
+      const started = await options.startMultiRepositoryAuthority!(Object.freeze({
+        store: ctx.controlAuthority.store,
+        runId: ctx.runId,
+        runEpoch: ctx.runNonce,
+        runDir: ctx.runDir,
+        execute: options.execute,
+        goal: ctx.goal,
+        project: structuredClone(ctx.project),
+        loop: structuredClone(ctx.loop),
+        runWorkerTurn: async (request) => {
+          const role = ctx.project.roles.find((candidate) => candidate.name === request.roleId);
+          if (!role) throw new Error(`multi-repository worker role ${request.roleId} is not configured`);
+          if (!Number.isSafeInteger(request.attemptGeneration) || request.attemptGeneration < 1) {
+            throw new Error("multi-repository worker attempt generation is invalid");
+          }
+          return await runRoutedTurn(
+            ctx,
+            role,
+            "implementer",
+            request.prompt,
+            { file: request.systemPromptFile, text: request.systemPromptText },
+            request.workCwd,
+            "",
+            state,
+            request.taskId,
+            request.attemptGeneration,
+            {
+              launchId: request.launchId,
+              // P6's canonical scheduler admission is the durable plan for this physical launch.
+              plan() {},
+              started: request.beforeProviderExec,
+              additionalWritableRoots: request.additionalWritableRoots,
+              recoveryCallId: (providerKey, routeTag) =>
+                multiRepositoryWorkerCallId(request.recoveryKey, providerKey, routeTag),
+              filesystem: request.filesystem
+            }
+          );
+        },
+        runVerification: (request) => runMultiRepositoryVerification(ctx, request)
+      }));
+      if (!started || typeof started !== "object" || typeof started.run !== "function" || typeof started.closeAndDrain !== "function") {
+        throw new Error("startMultiRepositoryAuthority must return run and closeAndDrain authority methods");
+      }
+      multiRepositoryAuthority = started;
+      state.phase = "dispatch";
+      state.status = "running";
+      state.runBranch = undefined;
+      state.lastStopReason = undefined;
       saveLoopState(ctx, state);
+      logLoopEvent(ctx, { iter: 0, event: "multirepo_start", detail: `repositories=${ctx.project.repositories.length} execute=${options.execute}` });
+      const outcome = await multiRepositoryAuthority.run();
+      if (
+        outcome.runId !== ctx.runId || outcome.runEpoch !== ctx.runNonce || !/^[a-f0-9]{64}$/u.test(outcome.planDigest) ||
+        (options.execute && outcome.state === "planned") || (!options.execute && outcome.state !== "planned")
+      ) {
+        throw new Error("multi-repository authority returned an outcome for a different run/mode or invalid plan digest");
+      }
+      const completed = outcome.tasks.filter((task) => task.state === "applied" || task.state === "published").length;
+      state.iteration = outcome.tasks.length > 0 ? 1 : 0;
+      state.dispatched = options.execute ? outcome.tasks.length : 0;
+      state.accepted = options.execute ? completed : 0;
+      state.status = outcome.state === "done" ? "done" : outcome.state === "planned" ? "planned" : "blocked";
+      state.phase = outcome.state === "done" || outcome.state === "planned" ? "complete" : "stopped";
+      state.lastStopReason = outcome.state === "done" || outcome.state === "planned"
+        ? undefined
+        : outcome.reason ?? `multi-repository authority ended ${outcome.state}`;
+      saveLoopState(ctx, state);
+      logLoopEvent(ctx, {
+        iter: state.iteration,
+        event: outcome.state === "done" || outcome.state === "planned" ? "multirepo_complete" : "multirepo_recovery_required",
+        detail: outcome.reason ?? `tasks=${outcome.tasks.length} state=${outcome.state}`
+      });
       return finalize();
     }
 
@@ -2769,6 +4504,10 @@ export async function runAutonomyLoop(
       state.phase = "post-check";
       state.escalations += escalateExhausted(ctx, state);
       state.dispatched += dispatched.length;
+      // Every provider turn in this iteration is quiescent here. Advance the durable settlement
+      // cursor and terminalize commands whose task ended before inclusion; never leave them looking
+      // pending until a later process restart.
+      reconcileSteeringAfterCrash(ctx);
 
       const summary = boardSummary(ctx.boardDir);
       reports.push({ iteration, dispatched, summary });
@@ -2816,17 +4555,21 @@ export async function runAutonomyLoop(
         logLoopEvent(ctx, { iter: state.iteration, event: "stopped", detail: state.lastStopReason });
       }
     }
+    reconcileSteeringAfterCrash(ctx);
     saveLoopState(ctx, state);
     return finalize();
   } catch (error) {
     state.status = "blocked";
     state.phase = "stopped";
     state.lastStopReason = error instanceof Error ? error.message : String(error);
-    if (!(error instanceof ProvisioningRefusal)) {
-      logLoopEvent(ctx, { iter: state.iteration, event: "error", detail: state.lastStopReason });
+    if (!(error instanceof ProvisioningRefusal)) logLoopEvent(ctx, { iter: state.iteration, event: "error", detail: state.lastStopReason });
+    // A failed pre-marker import may already have a committed receipt. Never mutate its legacy
+    // source in this catch path: that would make the only safe retry report SOURCE_CHANGED.
+    try {
+      if (ctx.controlAuthority || (!cutoverStarted && !markerAtEntry)) saveLoopState(ctx, state);
+    } finally {
+      await finalize();
     }
-    saveLoopState(ctx, state);
-    await finalize();
     throw error;
   }
 }
@@ -3294,7 +5037,7 @@ async function reapAbandonedScopes(ctx: RunContext): Promise<ScopeRecovery> {
   try {
     writeStateFileDurable(ctx.scopesPath, result.retained.length ? `${result.retained.join("\n")}\n` : "");
   } catch {
-    // Keep the stale (superset) record — it can only ever make us MORE careful, never less.
+    // Keep the stale (broader) record — it can only ever make us MORE careful, never less.
   }
   return { reaped: result.reaped.length, unresolved: result.unresolved };
 }

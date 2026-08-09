@@ -187,4 +187,60 @@ describe.skipIf(!SCOPE_CAPABILITY.strong)("the launch handshake: no provider EXE
     expect(readFileSync(journal, "utf8").split("\n").filter(Boolean)).toEqual(ids);
     for (const id of ids) expect(parseScopeId(id)).toBeDefined();
   }, 40_000);
+
+  it("commits the exact PID/start-ticks callback while the provider is still gated", async () => {
+    const { dir, marker, journal } = openRun();
+    const ctx = ctxFor(journal);
+    let observed: { pid: number; processStartToken: string } | undefined;
+    const r = await runHeadlessChild(
+      ctx,
+      "node",
+      witnessArgs(marker, journal, 0),
+      { PATH },
+      "",
+      dir,
+      undefined,
+      undefined,
+      30_000,
+      "claude",
+      undefined,
+      {
+        beforeProviderExec: (identity) => {
+          expect(existsSync(marker), "provider executed before its canonical start fact").toBe(false);
+          observed = identity;
+        }
+      }
+    );
+    expect(r.ok).toBe(true);
+    expect(observed).toEqual({
+      pid: JSON.parse(readFileSync(marker, "utf8")).pid,
+      processStartToken: expect.stringMatching(/^[1-9][0-9]*$/)
+    });
+  }, 30_000);
+
+  it("refuses provider exec when the canonical attempt-start callback fails", async () => {
+    const { dir, marker, journal } = openRun();
+    const ctx = ctxFor(journal);
+    const r = await runHeadlessChild(
+      ctx,
+      "node",
+      witnessArgs(marker, journal, 60_000),
+      { PATH },
+      "",
+      dir,
+      undefined,
+      undefined,
+      30_000,
+      "claude",
+      undefined,
+      { beforeProviderExec: () => { throw new Error("canonical store unavailable"); } }
+    );
+    await settle();
+    expect(existsSync(marker), "provider executed without a canonical attempt-start fact").toBe(false);
+    expect(r.ok).toBe(false);
+    expect(r.scopeTrusted).toBe(true);
+    expect(r.uncertainReason).toMatch(/canonical attempt-start fact failed/);
+    expect(ctx.ownedScopes.size).toBe(0);
+    expect(ctx.ownedGroups.size).toBe(0);
+  }, 40_000);
 });

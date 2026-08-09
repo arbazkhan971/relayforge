@@ -22,7 +22,10 @@ setTrustedRunner(true);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
-const TSX = resolve(REPO_ROOT, "node_modules/tsx/dist/cli.mjs");
+// Import the TS loader into the child itself instead of starting the `tsx` CLI wrapper, which
+// creates another process. Crash tests must wait for (and signal) the process that actually owns
+// the SQLite/run leases; waiting for a wrapper can race the real owner's final SIGKILL teardown.
+const TSX_LOADER = resolve(REPO_ROOT, "node_modules/tsx/dist/loader.mjs");
 const CRASH_RUN = resolve(HERE, "fixtures/crash-run.ts");
 
 /**
@@ -80,7 +83,7 @@ describe.skipIf(!SCOPE_CAPABILITY.strong)("restart/resume after a hard crash", (
     const baseHead = headSubject(repoDir);
 
     // ---- 1. Start a REAL run in a child process and hard-kill it mid-attempt. -------------------
-    const child = spawn("node", [TSX, CRASH_RUN, repoDir, runId], {
+    const child = spawn(process.execPath, ["--import", TSX_LOADER, CRASH_RUN, repoDir, runId], {
       cwd: repoDir,
       detached: true, // its own process group, so we can kill the agent it spawned along with it
       stdio: "ignore",
@@ -147,7 +150,7 @@ describe.skipIf(!SCOPE_CAPABILITY.strong)("restart/resume after a hard crash", (
     const { repoDir } = setupRepo({ env: { FAKE_MODE: "hang-once", FAKE_ONCE_FILE: onceFile }, maxRepairs: 2 });
     const runDir = join(repoDir, ".loop/runs/e2e", runId);
 
-    const child = spawn("node", [TSX, CRASH_RUN, repoDir, runId], {
+    const child = spawn(process.execPath, ["--import", TSX_LOADER, CRASH_RUN, repoDir, runId], {
       cwd: repoDir,
       detached: true,
       stdio: "ignore",
@@ -209,7 +212,7 @@ describe.skipIf(!SCOPE_CAPABILITY.strong)("restart/resume after a hard crash", (
     const runId = "run-spend";
     const { repoDir } = setupRepo({ env: { FAKE_MODE: "hang-once", FAKE_ONCE_FILE: onceFile, FAKE_COST: "0.01" }, ...budget });
 
-    const child = spawn("node", [TSX, CRASH_RUN, repoDir, runId], {
+    const child = spawn(process.execPath, ["--import", TSX_LOADER, CRASH_RUN, repoDir, runId], {
       cwd: repoDir,
       detached: true,
       stdio: "ignore",

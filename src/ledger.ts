@@ -27,6 +27,8 @@ import { formatNano, isNanoString, MAX_NANO, MoneyError, nanoToUsd, parseNano, u
 import { isProcessGroupAlive } from "./runtime.js";
 import { detectScopeCapability, reapProofOf, scopeAliveOf, scopeIdOf, type ScopeRef } from "./scope.js";
 import { settleCompletedCall, type CompletedCallSettlement, type SettlementOutcome } from "./settlement-kernel.js";
+import type { AdapterCallIdentity } from "./streaming.js";
+import type { GrokEgressEvidenceBinding } from "./adapters/grok-egress-contract.js";
 
 /**
  * The RUN-SCOPED money authority (wave-8d independent audit, B1–B7).
@@ -108,6 +110,19 @@ export type CallBinding = {
   /** Hash and exact byte count of the bytes delivered to the provider on stdin. */
   stdinSha256: string;
   stdinBytes: number;
+  /**
+   * Exact shipped descriptor/wire/codec/normalizer and protocol-correlation
+   * identity selected before this reservation. Optional only so existing v2
+   * journals remain readable; every newly launched production call supplies it.
+   */
+  adapter?: AdapterCallIdentity;
+  /** Grok's pre-launch network authority, fixed before reservation. Dynamic decision/cleanup evidence
+   * is appended only by the settlement kernel after the exact child scope has been reaped. */
+  egress?: Readonly<{
+    policySha256: string;
+    probeReceiptSha256: string;
+    socketIdentitySha256: string;
+  }>;
 };
 
 /**
@@ -164,6 +179,8 @@ type SettleData = {
   /** The ledger's own MAC-tagged attestation, when this settlement was ISSUED authority. Absent for an
    *  UNCERTAIN settlement, which retains the worst case and authorizes nothing. Never caller-supplied. */
   attest?: DurableAttestation;
+  /** Parent proxy evidence for this exact physical call. Journal folding authenticates these bytes. */
+  egress?: GrokEgressEvidenceBinding;
 };
 
 type JournalData = ReserveData | SettleData;
@@ -293,6 +310,177 @@ function procFdAvailable(): boolean {
 const SHA256 = /^[0-9a-f]{64}$/;
 const HEX = /^[0-9a-f]+$/;
 
+function adapterRecord(value: unknown, allowed: readonly string[], name: string): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+  if (Object.getOwnPropertySymbols(value).length !== 0) return undefined;
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if (descriptor.get || descriptor.set) return undefined;
+  }
+  const keys = Object.keys(value).sort();
+  const expected = [...allowed].sort();
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function adapterString(value: unknown, max = 512): value is string {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= max && !value.includes("\0");
+}
+
+function validateGrokEgressEvidence(value: unknown, bind: CallBinding): string | undefined {
+  const egress = adapterRecord(
+    value,
+    ["policySha256", "probeReceiptSha256", "decisionLogSha256", "socketIdentitySha256", "cleanupSha256"],
+    "egress evidence"
+  );
+  if (!egress) return "invalid settlement egress evidence";
+  for (const key of ["policySha256", "probeReceiptSha256", "decisionLogSha256", "socketIdentitySha256", "cleanupSha256"] as const) {
+    if (!SHA256.test(String(egress[key]))) return `invalid settlement egress ${key}`;
+  }
+  if (!bind.egress) return "settlement egress evidence was not authorized before reservation";
+  if (
+    egress.policySha256 !== bind.egress.policySha256 ||
+    egress.probeReceiptSha256 !== bind.egress.probeReceiptSha256 ||
+    egress.socketIdentitySha256 !== bind.egress.socketIdentitySha256
+  ) return "settlement egress evidence does not match its reserved authority";
+  return undefined;
+}
+
+/** Validate the closed durable adapter-call identity without importing executable adapter code. */
+export function validateAdapterCallIdentity(value: unknown): string | undefined {
+  const hasRuntime = Boolean(value && typeof value === "object" && "runtimeIdentitySha256" in value);
+  const adapter = adapterRecord(value, hasRuntime ? ["replay", "correlation", "runtimeIdentitySha256"] : ["replay", "correlation"], "adapter");
+  if (!adapter) return "invalid binding adapter";
+  if (hasRuntime && !SHA256.test(String(adapter.runtimeIdentitySha256))) return "invalid binding adapter runtime identity";
+  const replay = adapterRecord(
+    adapter.replay,
+    ["adapterId", "contractVersion", "transportKind", "wireVersion", "codec", "normalizer"],
+    "adapter.replay"
+  );
+  if (!replay) return "invalid binding adapter replay";
+  if (!adapterString(replay.adapterId, 64)) return "invalid binding adapterId";
+  if (!Number.isSafeInteger(replay.contractVersion) || (replay.contractVersion as number) < 1) return "invalid binding adapter contractVersion";
+  if (!["oneshot-jsonl", "oneshot-text", "rpc-jsonl", "acp-v1", "app-server-jsonrpc"].includes(String(replay.transportKind))) {
+    return "invalid binding adapter transportKind";
+  }
+  if (!adapterString(replay.wireVersion, 128)) return "invalid binding adapter wireVersion";
+  for (const field of ["codec", "normalizer"] as const) {
+    const identity = adapterRecord(replay[field], ["id", "version"], `adapter.replay.${field}`);
+    if (!identity || !adapterString(identity.id, 128) || !Number.isSafeInteger(identity.version) || (identity.version as number) < 1) {
+      return `invalid binding adapter ${field}`;
+    }
+  }
+  if (adapter.correlation === null || typeof adapter.correlation !== "object" || Array.isArray(adapter.correlation)) {
+    return "invalid binding adapter correlation";
+  }
+  const correlation = adapter.correlation as Record<string, unknown>;
+  const correlationPrototype = Object.getPrototypeOf(correlation);
+  if ((correlationPrototype !== Object.prototype && correlationPrototype !== null) || typeof correlation.kind !== "string") {
+    return "invalid binding adapter correlation";
+  }
+  if (correlation.kind === "oneshot") {
+    const exact = adapterRecord(correlation, ["kind", "providerKind"], "adapter.correlation");
+    if (!exact || !["claude", "codex", "gemini", "custom"].includes(String(exact.providerKind))) {
+      return "invalid binding one-shot correlation";
+    }
+    if (replay.transportKind !== "oneshot-jsonl" && replay.transportKind !== "oneshot-text") {
+      return "binding adapter correlation contradicts transportKind";
+    }
+    return undefined;
+  }
+  if (correlation.kind === "acp-v1") {
+    const lifecycle = "initializeRequestId" in correlation;
+    const exact = adapterRecord(
+      correlation,
+      lifecycle
+        ? ["kind", "initializeRequestId", "newSessionRequestId", "promptRequestId"]
+        : ["kind", "sessionId", "promptRequestId"],
+      "adapter.correlation"
+    );
+    const ids = lifecycle
+      ? [exact?.initializeRequestId, exact?.newSessionRequestId, exact?.promptRequestId]
+      : [exact?.promptRequestId];
+    if (
+      !exact ||
+      (!lifecycle && !adapterString(exact.sessionId)) ||
+      ids.some((requestId) => !(
+        (typeof requestId === "number" && Number.isSafeInteger(requestId)) || adapterString(requestId)
+      )) ||
+      (lifecycle && new Set(ids).size !== ids.length) ||
+      replay.transportKind !== "acp-v1"
+    ) {
+      return "invalid binding ACP correlation";
+    }
+    return undefined;
+  }
+  if (correlation.kind === "pi-rpc") {
+    const lifecycle = "stateRequestId" in correlation;
+    const hasCancel = lifecycle && "cancelRequestId" in correlation;
+    const exact = adapterRecord(
+      correlation,
+      lifecycle
+        ? hasCancel
+          ? ["kind", "stateRequestId", "statisticsBeforeRequestId", "promptRequestId", "statisticsAfterRequestId", "cancelRequestId"]
+          : ["kind", "stateRequestId", "statisticsBeforeRequestId", "promptRequestId", "statisticsAfterRequestId"]
+        : ["kind", "sessionId", "promptRequestId"],
+      "adapter.correlation"
+    );
+    const ids = lifecycle
+      ? [exact?.stateRequestId, exact?.statisticsBeforeRequestId, exact?.promptRequestId, exact?.statisticsAfterRequestId, ...(hasCancel ? [exact?.cancelRequestId] : [])]
+      : [exact?.promptRequestId];
+    if (
+      !exact ||
+      (!lifecycle && !adapterString(exact.sessionId)) ||
+      ids.some((id) => !adapterString(id)) ||
+      (lifecycle && new Set(ids).size !== ids.length) ||
+      replay.transportKind !== "rpc-jsonl"
+    ) {
+      return "invalid binding Pi correlation";
+    }
+    return undefined;
+  }
+  return "invalid binding adapter correlation kind";
+}
+
+/**
+ * MAC-friendly digest of the exact replay grammar and correlation scope. The
+ * journal retains the readable fields; the attestation's providerKind carries
+ * this digest so changing any one of them invalidates durable authority.
+ */
+export function adapterEvidenceIdentity(adapter: AdapterCallIdentity): string {
+  const error = validateAdapterCallIdentity(adapter);
+  if (error) throw new MoneyError(error);
+  const replay = adapter.replay;
+  const correlation = adapter.correlation;
+  const values: unknown[] = [
+    replay.adapterId,
+    replay.contractVersion,
+    replay.transportKind,
+    replay.wireVersion,
+    replay.codec.id,
+    replay.codec.version,
+    replay.normalizer.id,
+    replay.normalizer.version,
+    correlation.kind,
+    adapter.runtimeIdentitySha256 ?? null
+  ];
+  if (correlation.kind === "oneshot") values.push(correlation.providerKind);
+  else if ("sessionId" in correlation) values.push(correlation.sessionId, correlation.promptRequestId);
+  else if (correlation.kind === "acp-v1") {
+    values.push(correlation.initializeRequestId, correlation.newSessionRequestId, correlation.promptRequestId);
+  } else {
+    values.push(
+      correlation.stateRequestId,
+      correlation.statisticsBeforeRequestId,
+      correlation.promptRequestId,
+      correlation.statisticsAfterRequestId,
+      ...(correlation.cancelRequestId ? [correlation.cancelRequestId] : [])
+    );
+  }
+  return `adapter-sha256:${createHash("sha256").update(JSON.stringify(values)).digest("hex")}`;
+}
+
 export function validateBinding(v: unknown): string | undefined {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return "binding is not an object";
   const b = v as Record<string, unknown>;
@@ -307,6 +495,18 @@ export function validateBinding(v: unknown): string | undefined {
   if (typeof b.intentSha256 !== "string" || !SHA256.test(b.intentSha256)) return "invalid binding intentSha256";
   if (typeof b.stdinSha256 !== "string" || !SHA256.test(b.stdinSha256)) return "invalid binding stdinSha256";
   if (typeof b.stdinBytes !== "number" || !Number.isInteger(b.stdinBytes) || b.stdinBytes < 0) return "invalid binding stdinBytes";
+  if (b.adapter !== undefined) {
+    const adapterError = validateAdapterCallIdentity(b.adapter);
+    if (adapterError) return adapterError;
+  }
+  if (b.egress !== undefined) {
+    const egress = adapterRecord(b.egress, ["policySha256", "probeReceiptSha256", "socketIdentitySha256"], "egress");
+    if (!egress || !SHA256.test(String(egress.policySha256)) || !SHA256.test(String(egress.probeReceiptSha256)) || !SHA256.test(String(egress.socketIdentitySha256))) {
+      return "invalid binding egress authority";
+    }
+    const adapter = b.adapter as AdapterCallIdentity | undefined;
+    if (adapter?.replay.adapterId !== "grok") return "binding egress authority belongs only to grok";
+  }
   return undefined;
 }
 
@@ -341,6 +541,9 @@ function attestationBindingError(key: AttestKey, s: SettleData, epoch: string, r
   if (p.provider !== b.provider) return "attestation provider does not match its binding";
   if (p.model !== b.model) return "attestation model does not match its binding";
   if (p.attempt !== b.attempt) return "attestation attempt does not match its binding (cross-attempt replay)";
+  if (b.adapter !== undefined && p.providerKind !== adapterEvidenceIdentity(b.adapter)) {
+    return "attestation adapter replay identity does not match its binding";
+  }
   // The MONEY the record carries must be exactly the money the ledger attested. A record that claims a
   // different amount than its own attestation is corruption, never the cheaper of the two.
   if (p.usdNano !== s.usdNano) return `settlement records ${s.usdNano} nano-USD but its attestation charges ${p.usdNano}`;
@@ -402,6 +605,12 @@ function validateRecordSchema(rec: unknown, epoch: string, runNonce: string, key
         const err = attestationBindingError(key, d as unknown as SettleData, epoch, runNonce);
         if (err) return err;
       }
+      if (d.egress !== undefined) {
+        const err = validateGrokEgressEvidence(d.egress, bind);
+        if (err) return err;
+      } else if (bind.egress !== undefined && d.attest !== undefined) {
+        return "attested Grok settlement is missing exact egress evidence";
+      }
     } else {
       return `unknown record type ${String(d.type)}`;
     }
@@ -428,6 +637,15 @@ function bindingMismatch(reserve: CallBinding, settle: CallBinding): string | un
   ];
   for (const k of keys) {
     if (reserve[k] !== settle[k]) return `${k} ${String(settle[k])} != reserved ${String(reserve[k])}`;
+  }
+  if (
+    (reserve.adapter === undefined) !== (settle.adapter === undefined) ||
+    (reserve.adapter !== undefined && settle.adapter !== undefined && adapterEvidenceIdentity(reserve.adapter) !== adapterEvidenceIdentity(settle.adapter))
+  ) {
+    return "adapter replay identity does not match the reservation";
+  }
+  if (JSON.stringify(reserve.egress ?? null) !== JSON.stringify(settle.egress ?? null)) {
+    return "egress authority does not match the reservation";
   }
   return undefined;
 }
@@ -641,6 +859,43 @@ export type SettlementStatus = {
   fallbackAuthorized: boolean;
 };
 
+/**
+ * Content-bound, read-only evidence for one terminal journal record. This is deliberately useful for
+ * conformance/release receipts whose provider omitted an exact USD amount: a bare uncertain settlement
+ * remains terminal and retains the full reservation, but carries no money or fallback authority.
+ *
+ * The digest is computed only after the complete ledger generation has been folded and verified. It
+ * exposes neither the attestation payload/key nor a capability that can append or settle a record.
+ */
+export type LedgerTerminalSettlementEvidence = Readonly<{
+  bind: Readonly<CallBinding>;
+  costAuthority: "trusted" | "unknown";
+  fallbackAuthorized: boolean;
+  recordSha256: string;
+  egress?: GrokEgressEvidenceBinding;
+}>;
+
+/**
+ * Read-only recovery evidence from an already verified journal fold. This exposes no tag/key/mint and
+ * cannot create or alter a settlement; it lets a parent reconciler bind crash recovery to the exact
+ * reservation plus the ledger-derived transcript/scope attestation that survived restart.
+ */
+export type LedgerAttestedSettlement = Readonly<{
+  bind: Readonly<CallBinding>;
+  payload: Readonly<AttestPayload>;
+}>;
+
+function immutableJsonCopy<T>(value: T): T {
+  const copy = JSON.parse(JSON.stringify(value)) as T;
+  const freeze = (candidate: unknown): void => {
+    if (typeof candidate !== "object" || candidate === null || Object.isFrozen(candidate)) return;
+    for (const nested of Object.values(candidate as Record<string, unknown>)) freeze(nested);
+    Object.freeze(candidate);
+  };
+  freeze(copy);
+  return copy;
+}
+
 /** The capabilities the ledger uses to VERIFY evidence for itself, instead of believing a caller. */
 export type LedgerCaps = {
   /** Whether ANY process in the owned group `pid` is still alive. The ledger probes the scope ITSELF at
@@ -723,6 +978,8 @@ export type KernelSettlementDraft = {
   terminalOffset: number;
   /** The PROVIDER-REPORTED cost, in NANO-USD fixed point, as read off that terminal frame. */
   usdNano: string;
+  /** Exact dynamic Grok proxy evidence validated against the pre-reservation authority. */
+  egress?: GrokEgressEvidenceBinding;
 };
 
 /**
@@ -765,7 +1022,7 @@ export type LedgerKernelAccess = {
    *  payload). Like it, it closes over the ledger's `#private` key: a forged `access` cannot reproduce it. */
   attestFallbackAndSettle(bind: CallBinding, draft: KernelFallbackDraft): void;
   /** Settle UNCERTAIN — retain the full worst case, authorize nothing. The kernel's fail-closed path. */
-  settleUncertain(bind: CallBinding): void;
+  settleUncertain(bind: CallBinding, egress?: GrokEgressEvidenceBinding): void;
   /** Read a call's durable settlement status (used only to disambiguate a refusal). */
   settlementOf(callId: string): SettlementStatus;
 };
@@ -1179,17 +1436,23 @@ export class LedgerHandle {
    * — a clean turn, a spawn failure, a timeout, a framing fatal, a throw — lands here, and none of them
    * can lower the worst case or buy the right to bill a second provider.
    */
-  settleUncertain(bind: CallBinding): void {
+  settleUncertain(bind: CallBinding, egress?: GrokEgressEvidenceBinding): void {
     const err = validateBinding(bind);
     if (err) throw new MoneyError(`settle received an incomplete call binding: ${err}`);
-    this.appendSettlement(bind, undefined, 0n, false);
+    this.appendSettlement(bind, undefined, 0n, false, egress);
   }
 
   /** The one durable settlement append. `attest` is non-`undefined` on exactly ONE path: `#attestAndSettle`,
    *  a `#private` method reached only from the `#kernelAccess` capability the handle builds for its own
    *  `settleCompleted`, and only after the ledger itself proved the scope empty and the money exact. Every
    *  other caller can only reach `settleUncertain`. */
-  private appendSettlement(bind: CallBinding, attest: DurableAttestation | undefined, usdNano: bigint, reported: boolean): void {
+  private appendSettlement(
+    bind: CallBinding,
+    attest: DurableAttestation | undefined,
+    usdNano: bigint,
+    reported: boolean,
+    egress?: GrokEgressEvidenceBinding
+  ): void {
     this.txn<void>((folded) => {
       const map = foldReservations(folded.datas, this.#key, this.manifest.epoch, this.manifest.runNonce);
       const existing = map.get(bind.callId);
@@ -1206,7 +1469,8 @@ export class LedgerHandle {
           ts: this.io.now(),
           epoch: this.manifest.epoch,
           bind,
-          attest
+          attest,
+          ...(egress ? { egress } : {})
         },
         result: undefined
       };
@@ -1238,7 +1502,7 @@ export class LedgerHandle {
       scopeAlive: (ref: ScopeRef) => this.#caps.scopeAlive(ref),
       attestAndSettle: (bind, draft) => this.#attestAndSettle(bind, draft),
       attestFallbackAndSettle: (bind, draft) => this.#attestFallback(bind, draft),
-      settleUncertain: (bind) => this.settleUncertain(bind),
+      settleUncertain: (bind, egress) => this.settleUncertain(bind, egress),
       settlementOf: (callId) => this.settlementOf(callId)
     };
   }
@@ -1285,11 +1549,17 @@ export class LedgerHandle {
   /** MAC a derived payload and durably append its settlement — the ONE place a tag is produced. Refuses
    *  to write an attestation this very ledger would not fold back into trust: a record that cannot be
    *  re-verified after a restart is worse than no record, because it fails the whole journal closed. */
-  #sealAndSettle(bind: CallBinding, payload: AttestPayload, usdNano: bigint, reported: boolean): void {
+  #sealAndSettle(
+    bind: CallBinding,
+    payload: AttestPayload,
+    usdNano: bigint,
+    reported: boolean,
+    egress?: GrokEgressEvidenceBinding
+  ): void {
     const attest: DurableAttestation = { payload, tag: tagPayload(this.#key, payload) };
     const selfErr = verifyAttestation(this.#key, attest);
     if (selfErr) throw new MoneyError(`the ledger refused to issue an unverifiable attestation: ${selfErr}`);
-    this.appendSettlement(bind, attest, usdNano, reported);
+    this.appendSettlement(bind, attest, usdNano, reported, egress);
   }
 
   /**
@@ -1310,6 +1580,9 @@ export class LedgerHandle {
    */
   #attestAndSettle(bind: CallBinding, draft: KernelSettlementDraft): void {
     const scope = this.#assertMintable(bind, draft.scope, "an accounted terminal");
+    if (bind.adapter !== undefined && draft.providerKind !== adapterEvidenceIdentity(bind.adapter)) {
+      throw new MoneyError("the settlement kernel replayed a different adapter grammar than the reservation selected");
+    }
     const usdNano = parseNano(draft.usdNano, "provider-reported usdNano"); // exact fixed point, or throw
     if (usdNano < 0n) throw new MoneyError(`a provider-reported cost may not be negative (${draft.usdNano})`);
     const payload: AttestPayload = {
@@ -1342,7 +1615,7 @@ export class LedgerHandle {
       costProvenance: "provider-reported",
       ts: this.io.now()
     };
-    this.#sealAndSettle(bind, payload, usdNano, true);
+    this.#sealAndSettle(bind, payload, usdNano, true, draft.egress);
   }
 
   /**
@@ -1365,6 +1638,9 @@ export class LedgerHandle {
    */
   #attestFallback(bind: CallBinding, draft: KernelFallbackDraft): void {
     const scope = this.#assertMintable(bind, draft.scope, "a trusted fallback");
+    if (bind.adapter !== undefined && draft.providerKind !== adapterEvidenceIdentity(bind.adapter)) {
+      throw new MoneyError("the settlement kernel replayed a different adapter grammar than the reservation selected");
+    }
     const payload: AttestPayload = {
       schema: "loop.ledger.attest.v2",
       kind: "trusted-fallback",
@@ -1434,6 +1710,45 @@ export class LedgerHandle {
       const r = this.foldCalls(f).get(callId);
       if (!r || !r.settled) return { settled: false, costTrusted: false, fallbackAuthorized: false };
       return { settled: true, costTrusted: r.trustedUsd !== null, fallbackAuthorized: r.fallbackAuthorized };
+    });
+  }
+
+  /**
+   * Return the exact verified terminal settlement identity for a collector/reconciler. Missing or
+   * outstanding calls return undefined; a trusted-fallback record remains visible as such so callers
+   * that require ordinary terminal settlement can reject it rather than accidentally laundering it.
+   */
+  terminalSettlementEvidenceOf(callId: string): LedgerTerminalSettlementEvidence | undefined {
+    return this.read((folded) => {
+      const calls = this.foldCalls(folded);
+      const call = calls.get(callId);
+      if (!call?.settled) return undefined;
+      const record = folded.datas.find((candidate): candidate is SettleData =>
+        candidate.type === "settle" && candidate.callId === callId
+      );
+      if (!record) throw new CorruptJournalError(`settled call ${callId} has no terminal record`);
+      return immutableJsonCopy(Object.freeze({
+        bind: record.bind,
+        costAuthority: call.trustedUsd === null ? "unknown" as const : "trusted" as const,
+        fallbackAuthorized: call.fallbackAuthorized,
+        recordSha256: createHash("sha256").update(JSON.stringify(record)).digest("hex"),
+        ...(record.egress ? { egress: record.egress } : {})
+      }));
+    });
+  }
+
+  /**
+   * Return the authentic attested settlement for one exact call, if one exists. `read()` first folds
+   * and verifies the entire generation, including the attestation MAC and reserve/settle binding; a
+   * bare/uncertain settlement intentionally returns undefined. The detached immutable copy carries no
+   * authority to append, settle, or mint anything.
+   */
+  attestedSettlementOf(callId: string): LedgerAttestedSettlement | undefined {
+    return this.read((folded) => {
+      this.foldCalls(folded);
+      const record = folded.datas.find((candidate): candidate is SettleData => candidate.type === "settle" && candidate.callId === callId);
+      if (!record?.attest) return undefined;
+      return immutableJsonCopy(Object.freeze({ bind: record.bind, payload: record.attest.payload }));
     });
   }
 

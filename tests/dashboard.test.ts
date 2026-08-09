@@ -13,7 +13,7 @@ const cliPath = resolve(repoRoot, "src/cli.ts");
 const tsxPath = resolve(repoRoot, "node_modules/tsx/dist/cli.mjs");
 
 describe("dashboard CLI", () => {
-  it("serves dashboard HTML and project APIs", async () => {
+  it("serves dashboard HTML and versioned control APIs from the same owned process", async () => {
     const root = mkdtempSync(join(tmpdir(), "loop-dashboard-"));
     const configPath = join(root, "loop.config.yaml");
     writeFileSync(
@@ -43,14 +43,15 @@ projects:
     try {
       await waitForDashboard(port, child);
 
-      const status = await getJson(`http://127.0.0.1:${port}/api/status`);
-      expect(status).toEqual({ project: "demo", sessions: [] });
-
-      const config = await getJson(`http://127.0.0.1:${port}/api/config`);
-      expect(config).toMatchObject({ name: "demo", safetyMode: "workspace-write" });
+      const status = await getJson(`http://127.0.0.1:${port}/api/v1/status`) as any;
+      expect(status).toMatchObject({
+        service: "relayforge-control",
+        status: "ok",
+        projects: [{ project: "demo", latestRun: null, sessions: [] }]
+      });
 
       const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
-      expect(html).toContain("Loop Orchestrator");
+      expect(html).toContain("RelayForge");
       expect(html).toContain("demo");
     } finally {
       await stopProcess(child);
@@ -159,7 +160,7 @@ async function waitForDashboard(port: number, child: ChildProcessWithoutNullStre
       throw new Error(`Dashboard exited early with code ${child.exitCode}: ${stderr}`);
     }
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/status`);
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/health`);
       if (response.ok) return;
     } catch {
       // Keep polling until the server is listening.

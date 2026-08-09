@@ -13,6 +13,16 @@ const idString = (label: string) =>
       message: `${label} must be letters/digits then ._- only (no spaces, separators, or "..", max 64 chars)`
     });
 
+const gitRefString = (label: string) => z
+  .string()
+  .min(1)
+  .max(512)
+  .refine((value) =>
+    !value.startsWith("-") && !value.startsWith("/") && !value.endsWith("/") && !value.endsWith(".") &&
+    !value.includes("..") && !value.includes("@{") && !value.includes("//") &&
+    !/[~^:?*\[\\\]\u0000-\u0020\u007f]/u.test(value),
+  { message: `${label} is not a canonical Git ref name` });
+
 export const AuthSchema = z
   .object({
     mode: z.enum(["auto", "subscription", "api-key", "env"]).default("auto"),
@@ -24,14 +34,14 @@ export const AuthSchema = z
 
 export const ProviderSchema = z
   .object({
-    type: z.enum(["claude", "codex", "gemini", "custom"]),
-    command: z.string().optional(),
-    args: z.array(z.string()).default([]),
-    model: z.string().optional(),
+    type: z.enum(["claude", "codex", "gemini", "custom", "opencode", "pi", "grok"]),
+    command: z.string().min(1).max(4096).optional(),
+    args: z.array(z.string().max(4096)).max(128).default([]),
+    model: z.string().min(1).max(256).optional(),
     /** Reasoning effort (Codex: minimal|low|medium|high|xhigh). */
-    effort: z.string().optional(),
+    effort: z.string().min(1).max(64).optional(),
     /** Override the flag Claude uses to load a system prompt from a file (headless). */
-    systemPromptFlag: z.string().optional(),
+    systemPromptFlag: z.string().min(1).max(128).optional(),
     /**
      * DEPRECATED / UNSAFE. Kept only so an explicit opt-in can still be expressed, but the
      * orchestrator no longer passes it by default — headless implementers run inside an
@@ -56,17 +66,174 @@ export const ProviderSchema = z
       configured: false
     }),
     promptMode: z.enum(["interactive", "stdin", "argument"]).default("interactive"),
-    env: z.record(z.string(), z.string()).default({})
+    env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string().max(4 * 1024 * 1024)).default({})
+  })
+  .strict()
+  .superRefine((provider, ctx) => {
+    if (provider.type !== "opencode" && provider.type !== "pi" && provider.type !== "grok") return;
+    const allowedAuthEnv = provider.type === "pi"
+      ? new Set(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"])
+      : provider.type === "grok"
+        ? new Set(["XAI_API_KEY"])
+      : new Set<string>();
+    // Native structured adapters have a compile-time launch recipe. Raw command/argv/env overrides
+    // could replace ACP/RPC mode, relax read-only policy, smuggle a shell, or change the protocol
+    // contract, so their configuration surface is deliberately data-only and closed.
+    const forbidden: Array<[boolean, (string | number)[], string]> = [
+      [provider.command !== undefined, ["command"], `${provider.type} uses only its canonical installed executable; command overrides are forbidden`],
+      [provider.args.length !== 0, ["args"], `${provider.type} protocol/control arguments are parent-owned; raw args are forbidden`],
+      [Object.keys(provider.env).length !== 0, ["env"], `${provider.type} environment overlays are parent-owned; raw env is forbidden`],
+      [provider.effort !== undefined, ["effort"], `${provider.type} does not accept the Codex effort option`],
+      [provider.systemPromptFlag !== undefined, ["systemPromptFlag"], `${provider.type} standing instructions use its structured protocol contract`],
+      [provider.dangerouslySkipPermissions, ["dangerouslySkipPermissions"], `${provider.type} cannot bypass its parent-controlled role policy`],
+      [provider.yolo, ["yolo"], `${provider.type} cannot bypass its parent-controlled role policy`],
+      [provider.promptMode !== "interactive", ["promptMode"], `${provider.type} prompt transport is fixed by its descriptor`],
+      [provider.fallbackFor !== undefined, ["fallbackFor"], `${provider.type} has no fallback authority in this contract`],
+      [provider.auth.env !== undefined && !allowedAuthEnv.has(provider.auth.env), ["auth", "env"], `${provider.type} authentication environment names are closed by its descriptor`]
+    ];
+    if (provider.type === "opencode" && provider.model !== undefined) {
+      forbidden.push([true, ["model"], "opencode model selection is unavailable until ACP model-option negotiation is proven"]);
+    }
+    for (const [invalid, path, message] of forbidden) {
+      if (invalid) ctx.addIssue({ code: "custom", path, message });
+    }
+  });
+
+/** A parent-side, offline dependency tree copied into a contained worktree before execution. */
+export const ProvisionSpecSchema = z
+  .object({
+    path: z.string().min(1, "provision path must not be empty").max(4096, "provision path is too long"),
+    requiredExecutables: z
+      .array(z.string().min(1, "required executable path must not be empty").max(4096, "required executable path is too long"))
+      .max(64, "a provision spec may require at most 64 executables")
+      .optional()
   })
   .strict();
 
 export const RepositorySchema = z
   .object({
-    name: z.string().min(1),
+    name: idString("repository name"),
     path: z.string().min(1),
     role: z.enum(["frontend", "backend", "fullstack", "docs", "qa", "release", "other"]).default("other"),
-    defaultBranch: z.string().default("main"),
-    protectedBranches: z.array(z.string()).default(["main", "production"])
+    defaultBranch: gitRefString("default branch").default("main"),
+    protectedBranches: z.array(gitRefString("protected branch")).max(64).default(["main", "production"])
+  })
+  .strict();
+
+const ScmLimitOverridesSchema = z
+  .object({
+    requestTimeoutMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxPagesPerEndpoint: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxItemsPerPage: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxItemsPerEndpoint: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxDecodedBytesPerRequest: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxDecodedBytesPerPoll: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxEvidenceBodyBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxEvidencePreviewBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxFailureLogBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxFailureLogsBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxConcurrentPerRepository: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    maxConcurrentPerRun: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()
+  })
+  .strict();
+
+/**
+ * Secret-free product binding for one configured repository. The local root is deliberately not a
+ * caller field: it is derived from the matching `repositories[].path` after configuration path
+ * confinement and physical identity checks. `credentialEnv` is only a variable name; its value is
+ * resolved by the parent at run-authority startup and never enters the parsed configuration DTO.
+ */
+export const ScmRepositoryConfigSchema = z
+  .object({
+    repository: idString("SCM repository binding"),
+    provider: z.literal("github").default("github"),
+    canonicalHost: z.string().min(1).max(253).regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/u),
+    owner: z.string().min(1).max(100).regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?$/u),
+    name: z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u),
+    baseOwner: z.string().min(1).max(100).regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?$/u),
+    baseName: z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u),
+    remoteName: z.string().min(1).max(256).regex(/^[A-Za-z0-9._-]+$/u).default("origin"),
+    expectedPushUrl: z.string().url().max(4_096),
+    baseRef: z.string().min(12).max(512).regex(/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._\/-]*$/u),
+    credentialEnv: z.string().regex(/^[A-Z_][A-Z0-9_]{0,127}$/u),
+    capabilities: z
+      .array(z.enum(["scm.read", "scm.publish_branch", "scm.write_pr"]))
+      .min(1)
+      .max(3)
+      .default(["scm.read", "scm.publish_branch", "scm.write_pr"]),
+    limits: ScmLimitOverridesSchema.optional()
+  })
+  .strict();
+
+export const ScmProjectConfigSchema = z
+  .object({
+    repositories: z.array(ScmRepositoryConfigSchema).min(1).max(32),
+    /** Cross-repository publication is enabled only with this exact, implemented capability. */
+    crossLinks: z.object({ mode: z.literal("pull-request-body") }).strict().optional(),
+    minimumHumanApprovals: z.number().int().nonnegative().max(100).default(1),
+    requireRequiredChecks: z.boolean().default(true)
+  })
+  .strict();
+
+const MultiRepositoryPublicationEntrySchema = z
+  .object({
+    repository: idString("publication repository"),
+    publicationId: idString("publication ID"),
+    remoteName: z.string().min(1).max(256).regex(/^[A-Za-z0-9._-]+$/),
+    expectedPushUrl: z.string().url().max(4_096),
+    remoteRef: gitRefString("publication remote ref"),
+    expectedRemoteOid: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).nullable(),
+    baseRef: gitRefString("publication base ref"),
+    title: z.string().max(512),
+    body: z.string().max(16 * 1024)
+  })
+  .strict();
+
+const MultiRepositoryTaskEntrySchema = z
+  .object({
+    repository: idString("task repository"),
+    branch: gitRefString("task branch"),
+    targetRef: gitRefString("task target ref"),
+    provision: z.array(ProvisionSpecSchema).max(32).default([])
+  })
+  .strict();
+
+export const MultiRepositoryTaskConfigSchema = z
+  .object({
+    id: idString("multi-repository task ID"),
+    generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).default(1),
+    role: idString("multi-repository role"),
+    provider: idString("multi-repository provider"),
+    repositories: z.array(idString("task repository")).min(1).max(32),
+    dependsOn: z.array(idString("task dependency")).max(256).default([]),
+    priority: z.number().int().min(-1_000).max(1_000).default(0),
+    entries: z.array(MultiRepositoryTaskEntrySchema).min(1).max(32),
+    verifyCommands: z.array(z.string().min(1).max(4_096)).min(1).max(64),
+    verifyEnvironment: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/), z.string().max(16 * 1024)).default({}),
+    commitMessage: z.string().min(1).max(8 * 1024),
+    publication: z
+      .object({
+        policyApproved: z.literal(true),
+        entries: z.array(MultiRepositoryPublicationEntrySchema).min(1).max(32)
+      })
+      .strict()
+      .optional()
+  })
+  .strict();
+
+export const MultiRepositoryProjectConfigSchema = z
+  .object({
+    providerRepositories: z.record(idString("provider capability"), z.array(idString("provider repository")).min(1).max(64)),
+    scheduler: z
+      .object({
+        global: z.number().int().positive().max(64).default(1),
+        perProvider: z.number().int().positive().max(64).default(1),
+        perRepository: z.number().int().positive().max(64).default(1),
+        perTask: z.number().int().positive().max(1).default(1)
+      })
+      .strict()
+      .default({ global: 1, perProvider: 1, perRepository: 1, perTask: 1 }),
+    tasks: z.array(MultiRepositoryTaskConfigSchema).min(1).max(4_096)
   })
   .strict();
 
@@ -126,22 +293,6 @@ export const RoleSchema = z
     responsibilities: z.array(z.string()).default([]),
     guardrails: z.array(z.string()).default([]),
     autoStart: z.boolean().default(true)
-  })
-  .strict();
-
-/**
- * A parent-side, offline dependency tree made available to every worktree used by a loop.
- * The schema deliberately only bounds shape and input size; portable path safety, aliases,
- * overlaps, and executable containment are enforced by the shared provisioning validator so
- * configuration, doctor, and execution cannot drift apart.
- */
-export const ProvisionSpecSchema = z
-  .object({
-    path: z.string().min(1, "provision path must not be empty").max(4096, "provision path is too long"),
-    requiredExecutables: z
-      .array(z.string().min(1, "required executable path must not be empty").max(4096, "required executable path is too long"))
-      .max(64, "a provision spec may require at most 64 executables")
-      .optional()
   })
   .strict();
 
@@ -216,13 +367,15 @@ export const ProjectSchema = z
     name: idString("project name"),
     brief: z.string().default("brief.md"),
     workingDir: z.string().default("."),
-    /** Path to the auto-generated project intelligence file (`loop learn` output). */
+    /** Path to the auto-generated project intelligence file (`relayforge learn` output). */
     intelligence: z.string().default("PROJECT-INTELLIGENCE.md"),
     /** review = reviewer read-only + implementer workspace-write inside its sandbox;
      *  workspace-write = same. "full-auto" is rejected — there is no unsandboxed host mode. */
     safetyMode: z.enum(["review", "workspace-write"]).default("workspace-write"),
     providers: z.record(z.string(), ProviderSchema),
     repositories: z.array(RepositorySchema).default([]),
+    multiRepository: MultiRepositoryProjectConfigSchema.optional(),
+    scm: ScmProjectConfigSchema.optional(),
     roles: z.array(RoleSchema).min(1),
     loops: z.array(LoopSchema).default([])
   })
@@ -238,8 +391,9 @@ export const RootConfigSchema = z
         promptDir: z.string().default(".loop/prompts"),
         runDir: z.string().default(".loop/runs"),
         /** The OPTIONAL tmux viewport. Off means the loop never opens a tmux session; it still runs
-         *  fully headless, and `loop monitor` / the dashboard still work. `LOOP_TMUX=off` overrides
-         *  this to off for one invocation (it can only ever DISABLE, never enable). */
+         *  fully headless, and `relayforge monitor` / the dashboard still work.
+         *  `RELAYFORGE_TMUX=off` (legacy: `LOOP_TMUX=off`) overrides this to off for one invocation
+         *  and can only ever DISABLE, never enable. */
         viewport: z.boolean().default(true)
       })
       .strict()
@@ -257,6 +411,10 @@ export const RootConfigSchema = z
 export type ProviderConfig = z.infer<typeof ProviderSchema>;
 export type AuthConfig = z.infer<typeof AuthSchema>;
 export type RepositoryConfig = z.infer<typeof RepositorySchema>;
+export type ScmRepositoryConfig = z.infer<typeof ScmRepositoryConfigSchema>;
+export type ScmProjectConfig = z.infer<typeof ScmProjectConfigSchema>;
+export type MultiRepositoryTaskConfig = z.infer<typeof MultiRepositoryTaskConfigSchema>;
+export type MultiRepositoryProjectConfig = z.infer<typeof MultiRepositoryProjectConfigSchema>;
 export type RoleConfig = z.infer<typeof RoleSchema>;
 export type LoopConfig = z.infer<typeof LoopSchema>;
 export type ProjectConfig = z.infer<typeof ProjectSchema>;

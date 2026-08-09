@@ -8,7 +8,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * Node only permits self-referencing a package by name when it declares "exports",
- * so resolving "loop-orchestrator/..." from inside the repo exercises the real
+ * so resolving "relayforge/..." from inside the repo exercises the real
  * package resolver — the same code path a consumer hits after `npm install`.
  */
 function resolveFromNode(specifier: string): { ok: boolean; code: string; stderr: string } {
@@ -34,26 +34,115 @@ describe("package exports map", () => {
   }, 120_000);
 
   it("exposes the public root API", async () => {
-    expect(resolveFromNode("loop-orchestrator").ok).toBe(true);
+    expect(resolveFromNode("relayforge").ok).toBe(true);
 
     const mod = await import(resolve(repoRoot, "dist/index.js"));
     expect(typeof mod).toBe("object");
     expect(Object.keys(mod).length).toBeGreaterThan(0);
+    expect(typeof mod.getShippedAdapterDescriptor).toBe("function");
+    expect(typeof mod.parseControlStatus).toBe("function");
+    expect(typeof mod.inspectControlService).toBe("function");
+    expect(typeof mod.parsePublicObservation).toBe("function");
+    expect(typeof mod.createControlRoomClient).toBe("function");
+    expect(typeof mod.buildMultiRepositoryControlView).toBe("function");
+    expect(mod.relayForgeIdentity).toMatchObject({ product: "RelayForge", packageName: "relayforge", command: "relayforge" });
+    // Safe steering domain constants/helpers are part of the authority-free root.
+    expect(mod.STEERING_SCHEMA_VERSION).toBe(1);
+    expect(typeof mod.createSteeringCommandId).toBe("function");
+    expect(typeof mod.deriveSteeringActivity).toBe("function");
+    expect(typeof mod.renderSteeringBlock).toBe("function");
+    for (const forbidden of [
+      "runHeadlessChild",
+      "runRoutedTurn",
+      "runAutonomyLoop",
+      "prepareRun",
+      "disposePreparedRun",
+      "TailBuffer",
+      "ControlStore",
+      "ControlStoreError",
+      "openControlStore",
+      "controlStoreInternals",
+      "createControlServer",
+      "startControlServer",
+      "createControlService",
+      "startControlService",
+      "stopControlService",
+      "ControlServiceOwnership",
+      "acquireControlServiceOwnership",
+      "getControlServiceStatus",
+      "createParentSteeringService",
+      "sendSteeringIpcRequest",
+      "SteeringRepository",
+      "startSteeringIpcServer",
+      "steeringIpcAdmitRequest",
+      "steeringIpcWithdrawRequest",
+      "prepareAttemptPrompt",
+      "planSteeringRecovery",
+      "completeExitedSettlement",
+      "createParentScmProductAuthority",
+      "createParentTranscriptRuntimeAuthority",
+      "createControlServiceControlRoomTransport",
+      "buildProviderCommand",
+      "buildHeadlessCommand",
+      "opencodeAdapterDescriptor",
+      "buildOpenCodeConfigOverlay",
+      "buildPiInvocationArguments",
+      "buildGrokInvocationArguments",
+      "createMultiRepositoryRunAuthority",
+      "runMultiRepositoryOrchestration"
+    ]) {
+      expect(mod, forbidden).not.toHaveProperty(forbidden);
+    }
   });
 
   it("exposes the CLI entry", () => {
-    expect(resolveFromNode("loop-orchestrator/cli").ok).toBe(true);
+    expect(resolveFromNode("relayforge/cli").ok).toBe(true);
+  });
+
+  it("exposes only the approved P5 observability and read-only control-room surfaces", async () => {
+    for (const specifier of [
+      "relayforge/observability",
+      "relayforge/observability/control-store-adapter",
+      "relayforge/control-room",
+    ]) {
+      expect(resolveFromNode(specifier), specifier).toMatchObject({ ok: true });
+    }
+
+    const observability = await import(resolve(repoRoot, "dist/observability/index.js"));
+    expect(observability).toHaveProperty("parsePublicObservation");
+    expect(observability).toHaveProperty("createObservationPresentationRing");
+    expect(observability).not.toHaveProperty("openTranscriptSource");
+    expect(observability).not.toHaveProperty("createTranscriptIngestorState");
+    expect(observability).not.toHaveProperty("createControlStoreTranscriptCommit");
+
+    const commitAdapter = await import(resolve(repoRoot, "dist/observability/control-store-adapter.js"));
+    expect(commitAdapter).toHaveProperty("createControlStoreTranscriptCommit");
+    expect(commitAdapter).not.toHaveProperty("ControlStore");
+
+    const controlRoom = await import(resolve(repoRoot, "dist/control-room/index.js"));
+    expect(controlRoom).toHaveProperty("createControlRoomClient");
+    expect(controlRoom).toHaveProperty("buildControlRoomSnapshot");
+    expect(controlRoom).toHaveProperty("renderControlRoomHtml");
+    expect(controlRoom).not.toHaveProperty("ControlStore");
+    expect(controlRoom).not.toHaveProperty("appendControlEvent");
   });
 
   it.each([
-    "loop-orchestrator/attest",
-    "loop-orchestrator/ledger",
-    "loop-orchestrator/settlement-kernel",
-    "loop-orchestrator/dist/attest.js",
-    "loop-orchestrator/dist/ledger.js",
-    "loop-orchestrator/src/ledger.ts",
-    "loop-orchestrator/orchestrator",
-    "loop-orchestrator/money",
+    "relayforge/attest",
+    "relayforge/ledger",
+    "relayforge/settlement-kernel",
+    "relayforge/dist/attest.js",
+    "relayforge/dist/ledger.js",
+    "relayforge/src/ledger.ts",
+    "relayforge/orchestrator",
+    "relayforge/money",
+    "relayforge/steering",
+    "relayforge/steering/ipc",
+    "relayforge/dist/steering/ipc.js",
+    "relayforge/observability/source-context",
+    "relayforge/observability/transcript-ingestor",
+    "relayforge/control-room/projection",
+    "relayforge/control-room/server-adapter",
   ])("blocks the internal subpath %s", (specifier) => {
     const result = resolveFromNode(specifier);
     expect(result.ok).toBe(false);

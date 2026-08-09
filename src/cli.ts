@@ -3,21 +3,50 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { resolve } from "node:path";
 import { Command } from "commander";
 import { configureLocalAuth, getAuthStatus } from "./auth.js";
-import { defaultRunId, latestRunId, output, parseBoundedInt, runSucceeded, safeLoadConfig, safeLoadConfigOptional, writeIfMissing } from "./cli/support.js";
-import { getProject } from "./config/load.js";
+import { defaultRunId, latestRunId, output, parseBoundedInt, reportConfigLoadError, runSucceeded, safeLoadConfig, safeLoadConfigOptional, writeIfMissing } from "./cli/support.js";
+import { ConfigDiscoveryError, findConfig, getProject } from "./config/load.js";
 import { assertConfigSemantics, validateConfigSemantics } from "./config/validate.js";
 import { assertId } from "./ids.js";
 import { startDashboard } from "./dashboard/server.js";
-import { runDoctor } from "./doctor.js";
+import { runDoctorWithControl } from "./doctor.js";
+import { renderControlStatus, requireControlService } from "./control/client.js";
+import { assertActiveRunLease } from "./control/cutover.js";
+import { controlPaths } from "./control/runfile.js";
+import {
+  getControlServiceStatus,
+  startControlService,
+  stopControlService,
+  type ControlServiceHandle
+} from "./control/service.js";
 import { writeIntelligence } from "./intelligence.js";
 import { discoverPanes, renderOnce, startMonitor } from "./monitor.js";
-import { prepareRun, runAutonomyLoop, writeRolePrompts } from "./orchestrator.js";
+import { assertOrdinaryExecuteNativeAdapterPreflight } from "./adapters/native-product-preflight.js";
+import { finalLoopState, prepareRun, runAutonomyLoop, selectLoop, writeRolePrompts } from "./orchestrator.js";
 import { packageVersion } from "./metadata.js";
+import { assertRelayForgeEnvironmentCompatibility, invokedRelayForgeCommand, RELAYFORGE_COMMAND, RELAYFORGE_LEGACY_COMMANDS, RELAYFORGE_PRODUCT_NAME } from "./identity.js";
 import { requestCancel } from "./runtime.js";
 import { listSmeDisciplines } from "./sme.js";
+import { createSteeringCommandId } from "./steering/schema.js";
+import { createParentSteeringService } from "./steering/service.js";
+import {
+  SteeringIpcError,
+  sendSteeringIpcRequest,
+  startSteeringIpcServer,
+  steeringIpcAdmitRequest,
+  steeringIpcWithdrawRequest
+} from "./steering/ipc.js";
 import { chooseStarterProvider, starterBrief, starterConfig, StarterProvider } from "./starter.js";
 import { attachSession, capturePane, isSafeTmuxName, listSessions, paneTitle, sessionName, startProjectSessions, stopRun, tmuxClient } from "./tmux.js";
 import { detectHost, killViewport, openViewport, planViewport, pruneViewport, showViewport, TmuxExit } from "./tmux-workflow.js";
+import {
+  assertMultiRepositoryExecutionPreflight,
+  createMultiRepositoryRunAuthority
+} from "./multirepo/runtime.js";
+import { createParentTranscriptRuntimeAuthority } from "./observability/runtime-authority.js";
+import { createParentScmProductAuthority, type ParentScmProductAuthority } from "./scm/product-authority.js";
+import { createControlRoomClient, type ControlRoomClient } from "./control-room/client.js";
+import { createControlServiceControlRoomTransport } from "./control-room/control-service-transport.js";
+import { buildControlRoomViewModel } from "./control-room/view-model.js";
 
 /** Ensure the given entries are present in the repo's .gitignore (so loop artifacts never
  *  dirty the tree and trip the execution clean-git gate). */
@@ -41,20 +70,104 @@ function die(error: unknown): void {
   process.exitCode = 1;
 }
 
+function controlCommandError(error: unknown, asJson: boolean): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (asJson) console.log(JSON.stringify({ ok: false, error: message }, null, 2));
+  else console.error(message);
+  process.exitCode = 1;
+}
+
+function steeringCommandError(error: unknown, asJson: boolean): void {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error instanceof SteeringIpcError ? error.code : "INVALID_REQUEST";
+  if (asJson) console.log(JSON.stringify({ ok: false, code, error: message }, null, 2));
+  else console.error(`${code}: ${message}`);
+  process.exitCode = 1;
+}
+
+/** Keep the command pending until a graceful signal/runtime close completes in lifecycle order. */
+function runForegroundService(handle: ControlServiceHandle, asJson: boolean, label: string): Promise<void> {
+  if (asJson) {
+    console.log(JSON.stringify({
+      ready: true,
+      service: "relayforge-control",
+      instanceId: handle.runFile.instanceId,
+      host: handle.address.host,
+      port: handle.address.port,
+      url: handle.address.url
+    }));
+  } else {
+    console.log(`RelayForge ${label}: ${handle.address.url} (foreground; loopback only)`);
+  }
+  return new Promise<void>((resolvePromise) => {
+    let closing = false;
+    const cleanup = (): void => {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      handle.server.nodeServer.off("error", onRuntimeError);
+    };
+    const close = (failed: boolean): void => {
+      if (closing) return;
+      closing = true;
+      if (failed) process.exitCode = 1;
+      void handle.shutdown().then(
+        () => {
+          cleanup();
+          resolvePromise();
+        },
+        (error) => {
+          cleanup();
+          controlCommandError(error, asJson);
+          resolvePromise();
+        }
+      );
+    };
+    const onSignal = (): void => close(false);
+    const onRuntimeError = (error: Error): void => {
+      controlCommandError(new Error(`The control listener failed at runtime: ${error.message}`), asJson);
+      close(true);
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+    handle.server.nodeServer.once("error", onRuntimeError);
+  });
+}
+
 program
-  .name("loop")
-  .description("Safe, end-to-end AI agent team orchestrator (tmux is an optional viewport)")
-  .version(packageVersion)
-  .option("-c, --config <path>", "path to loop.config.yaml")
+  .name(RELAYFORGE_COMMAND)
+  .description(`${RELAYFORGE_PRODUCT_NAME}: safe, end-to-end AI agent team orchestration (tmux is an optional viewport)`)
+  .version(packageVersion, "-V, --version", `output the ${RELAYFORGE_PRODUCT_NAME} version`)
+  .option("-c, --config <path>", "exact path to relayforge.config.* or legacy loop.config.*")
   .option("--json", "print machine-readable JSON");
 
 program
   .command("init")
-  .description("create a starter loop.config.yaml and brief.md wired to an installed provider")
-  .option("-f, --force", "overwrite existing files")
+  .description("create relayforge.config.yaml and starter files without replacing an existing config")
+  .option("-f, --force", "overwrite auxiliary starter files (never a config or .loop state)")
   .option("--provider <type>", "force a provider: claude | codex | gemini | custom")
   .action((options) => {
     const root = process.cwd();
+    let existingConfigs: readonly string[] = [];
+    try {
+      existingConfigs = [findConfig(root)];
+    } catch (error) {
+      if (!(error instanceof ConfigDiscoveryError) || error.code !== "CONFIG_NOT_FOUND") {
+        if (error instanceof ConfigDiscoveryError && error.code === "CONFIG_AMBIGUOUS") {
+          existingConfigs = error.candidates;
+        } else {
+          reportConfigLoadError(error, Boolean(program.opts().json));
+          return;
+        }
+      }
+    }
+    if (existingConfigs.length) {
+      const code = existingConfigs.length > 1 ? "CONFIG_AMBIGUOUS" : "CONFIG_ALREADY_EXISTS";
+      const message = `${code}: init refuses to overwrite or compete with existing config: ${existingConfigs.join(", ")}`;
+      if (program.opts().json) output({ ok: false, code, error: message }, true);
+      else console.error(message);
+      process.exitCode = 1;
+      return;
+    }
     const override = options.provider as StarterProvider | undefined;
     if (override && !["claude", "codex", "gemini", "custom"].includes(override)) {
       console.error(`Unknown --provider ${override}. Use one of: claude, codex, gemini, custom.`);
@@ -62,27 +175,33 @@ program
       return;
     }
     const choice = chooseStarterProvider(override);
-    writeIfMissing(resolve(root, "loop.config.yaml"), starterConfig(choice.provider, choice.detected, Boolean(override)), Boolean(options.force));
+    writeIfMissing(resolve(root, "relayforge.config.yaml"), starterConfig(choice.provider, choice.detected, Boolean(override)), false);
     writeIfMissing(resolve(root, "brief.md"), starterBrief(), Boolean(options.force));
     mkdirSync(resolve(root, ".loop"), { recursive: true });
     ensureGitignore(root, [".loop/", "PROJECT-INTELLIGENCE.md"]);
-    console.log("Created loop.config.yaml, brief.md, and .loop/");
+    console.log("Created relayforge.config.yaml, brief.md, and .loop/");
     console.log(`Provider: ${choice.provider}${choice.installed ? " (detected)" : " (not detected locally)"}.`);
     if (choice.detected.length) console.log(`Installed provider CLIs: ${choice.detected.join(", ")}.`);
     if (!choice.installed && choice.provider !== "custom") {
-      console.log(`Tip: install the ${choice.provider} CLI, or re-run \`loop init --provider <type>\`. Dry-run works without any provider.`);
+      console.log(`Tip: install the ${choice.provider} CLI, or re-run \`relayforge init --provider <type>\`. Dry-run works without any provider.`);
     }
-    console.log("Next: `loop validate`, then `loop doctor`, then `loop run \"<goal>\"` (add --execute to launch agents).");
+    console.log("Next: `relayforge validate`, then `relayforge doctor`, then `relayforge run \"<goal>\"` (add --execute to launch agents).");
   });
 
 program
   .command("doctor")
   .description("check environment, config, and provider readiness with actionable fixes")
   .option("-p, --project <name>", "project name")
-  .action((options) => {
+  .action(async (options) => {
     const opts = program.opts();
-    const loaded = safeLoadConfigOptional(opts.config);
-    const report = runDoctor(loaded, process.cwd(), options.project);
+    let loaded;
+    try {
+      loaded = safeLoadConfigOptional(opts.config);
+    } catch (error) {
+      reportConfigLoadError(error, Boolean(opts.json));
+      return;
+    }
+    const report = await runDoctorWithControl(loaded, process.cwd(), options.project);
     if (opts.json) {
       output(report, true);
     } else {
@@ -96,6 +215,69 @@ program
     if (!report.ok) process.exitCode = 1;
   });
 
+const serveCommand = program
+  .command("serve")
+  .description("run the foreground loopback control service (dashboard + read-only API + durable events)")
+  .option("-p, --project <name>", "project displayed by the dashboard")
+  .option("--port <port>", "control service port")
+  .action(async (options) => {
+    const opts = program.opts();
+    const loaded = safeLoadConfig(opts.config, Boolean(opts.json));
+    if (!loaded) return;
+    let port: number | undefined;
+    try {
+      port = options.port === undefined ? undefined : parseBoundedInt(options.port, "--port", 1, 65_535);
+      assertConfigSemantics(loaded);
+      await runForegroundService(
+        await startControlService(loaded, { port, dashboardProject: options.project }),
+        Boolean(opts.json),
+        "control service"
+      );
+    } catch (error) {
+      controlCommandError(error, Boolean(opts.json));
+    }
+  });
+
+serveCommand
+  .command("status")
+  .description("inspect the exact held owner and fetch its bounded versioned status")
+  .option("--json", "print the exact versioned status DTO")
+  .option("--timeout <ms>", "bounded attach and request timeout", "2000")
+  .action(async (options) => {
+    const opts = program.opts();
+    const asJson = Boolean(opts.json || options.json);
+    const loaded = safeLoadConfig(opts.config, asJson);
+    if (!loaded) return;
+    try {
+      const timeoutMs = parseBoundedInt(options.timeout, "--timeout", 1, 60_000);
+      const status = await getControlServiceStatus(loaded, { timeoutMs });
+      if (asJson) output(status, true);
+      else console.log(renderControlStatus(status));
+    } catch (error) {
+      controlCommandError(error, asJson);
+    }
+  });
+
+serveCommand
+  .command("stop")
+  .description("gracefully stop only the twice-verified exact control process incarnation")
+  .option("--json", "print machine-readable output")
+  .option("--timeout <ms>", "bounded graceful shutdown timeout", "7000")
+  .action(async (options) => {
+    const opts = program.opts();
+    const asJson = Boolean(opts.json || options.json);
+    const loaded = safeLoadConfig(opts.config, asJson);
+    if (!loaded) return;
+    try {
+      const timeoutMs = parseBoundedInt(options.timeout, "--timeout", 1, 60_000);
+      const result = await stopControlService(loaded, { timeoutMs });
+      if (asJson) output(result, true);
+      else console.log(`Stopped RelayForge control service ${result.instanceId.slice(0, 12)} (pid ${result.pid}).`);
+    } catch (error) {
+      controlCommandError(error, asJson);
+    }
+  });
+
 program
   .command("learn")
   .description("scan the project and generate PROJECT-INTELLIGENCE.md")
@@ -105,7 +287,13 @@ program
     const opts = program.opts();
     let scanDir = options.dir ? resolve(options.dir) : process.cwd();
     let outPath = resolve(scanDir, "PROJECT-INTELLIGENCE.md");
-    const loaded = safeLoadConfigOptional(opts.config);
+    let loaded;
+    try {
+      loaded = safeLoadConfigOptional(opts.config);
+    } catch (error) {
+      reportConfigLoadError(error, Boolean(opts.json));
+      return;
+    }
     if (loaded && !options.dir) {
       const project = getProject(loaded, options.project);
       scanDir = resolve(loaded.rootDir, project.workingDir);
@@ -113,6 +301,127 @@ program
     }
     const intel = writeIntelligence(scanDir, outPath);
     output({ wrote: outPath, name: intel.name, languages: intel.languages, frameworks: intel.frameworks, commands: intel.commands }, opts.json);
+  });
+
+const steer = program
+  .command("steer")
+  .description("admit or withdraw parent steering for a future immutable attempt prompt");
+
+steer
+  .command("new-id")
+  .description("mint a caller-owned stable UUIDv7 command ID; save it and reuse it for exact retries")
+  .action(() => {
+    const opts = program.opts();
+    const commandId = createSteeringCommandId();
+    output({ commandId, note: "Reuse this exact ID for every retry of the same immutable command." }, opts.json);
+  });
+
+steer
+  .command("admit")
+  .description("durably admit or refuse one parent command; admission does not mean prompt inclusion or delivery")
+  .option("-p, --project <name>", "project name")
+  .requiredOption("-r, --run <id>", "exact run id")
+  .requiredOption("--run-epoch <id>", "exact run epoch from the active canonical projection")
+  .requiredOption("--command-id <uuidv7>", "stable UUIDv7 request/command ID; reuse unchanged on retry")
+  .requiredOption("--task-id <id>", "exact task id")
+  .requiredOption("--task-generation <n>", "exact positive task generation")
+  .requiredOption("--session-id <id>", "exact session id")
+  .requiredOption("--session-generation <n>", "exact positive session generation")
+  .requiredOption("--not-before-attempt <n>", "first attempt generation eligible to include this command")
+  .requiredOption("--body <text>", "bounded command body for a future prompt boundary")
+  .option("--evidence <event-id...>", "canonical evidence event IDs", [])
+  .option("--expires-at <timestamp>", "explicit RFC 3339 expiry")
+  .option("--supersedes <uuidv7>", "pending command ID this command supersedes")
+  .action(async (options) => {
+    const opts = program.opts();
+    const loaded = safeLoadConfig(opts.config, opts.json);
+    if (!loaded) return;
+    try {
+      assertConfigSemantics(loaded);
+      assertId("run", options.run);
+      const project = getProject(loaded, options.project);
+      const request = steeringIpcAdmitRequest({
+        schemaVersion: 1,
+        commandId: options.commandId,
+        runId: options.run,
+        runEpoch: options.runEpoch,
+        taskId: options.taskId,
+        taskGeneration: parseBoundedInt(options.taskGeneration, "--task-generation", 1, Number.MAX_SAFE_INTEGER),
+        sessionId: options.sessionId,
+        sessionGeneration: parseBoundedInt(options.sessionGeneration, "--session-generation", 1, Number.MAX_SAFE_INTEGER),
+        notBeforeAttemptGeneration: parseBoundedInt(options.notBeforeAttempt, "--not-before-attempt", 1, Number.MAX_SAFE_INTEGER),
+        kind: "steer_next_boundary",
+        evidenceRefs: options.evidence,
+        body: options.body,
+        expiresAt: options.expiresAt,
+        supersedesCommandId: options.supersedes
+      });
+      const runDir = resolve(loaded.rootDir, loaded.config.defaults.runDir, project.name, options.run);
+      const result = await sendSteeringIpcRequest(request, { runDir });
+      if (result.decision === "admitted") {
+        output({
+          ok: true,
+          requestId: request.requestId,
+          commandId: result.commandId,
+          decision: "admitted",
+          label: "Pending",
+          seq: result.seq,
+          bodySha256: result.command.bodySha256,
+          note: "Durably admitted for a future safe prompt boundary; not yet Included, delivered, read, processed, or obeyed."
+        }, opts.json);
+      } else {
+        output({
+          ok: true,
+          requestId: request.requestId,
+          commandId: result.commandId,
+          decision: "refused",
+          label: "Refused",
+          seq: result.seq,
+          reasonCode: result.refusal.reasonCode,
+          observedActivity: result.refusal.observedActivity,
+          note: "Durably refused; this command will not be included."
+        }, opts.json);
+      }
+    } catch (error) {
+      steeringCommandError(error, Boolean(opts.json));
+    }
+  });
+
+steer
+  .command("withdraw")
+  .description("withdraw one still-pending command; included or otherwise terminal commands refuse withdrawal")
+  .option("-p, --project <name>", "project name")
+  .requiredOption("-r, --run <id>", "exact run id")
+  .requiredOption("--run-epoch <id>", "exact run epoch from the active canonical projection")
+  .requiredOption("--command-id <uuidv7>", "stable command ID to withdraw and to reuse on exact retry")
+  .option("--reason <text>", "bounded operator reason")
+  .action(async (options) => {
+    const opts = program.opts();
+    const loaded = safeLoadConfig(opts.config, opts.json);
+    if (!loaded) return;
+    try {
+      assertConfigSemantics(loaded);
+      assertId("run", options.run);
+      const project = getProject(loaded, options.project);
+      const request = steeringIpcWithdrawRequest(
+        { runId: options.run, runEpoch: options.runEpoch },
+        { schemaVersion: 1, commandId: options.commandId, reason: options.reason }
+      );
+      const runDir = resolve(loaded.rootDir, loaded.config.defaults.runDir, project.name, options.run);
+      const result = await sendSteeringIpcRequest(request, { runDir });
+      output({
+        ok: true,
+        requestId: request.requestId,
+        commandId: result.commandId,
+        status: result.status,
+        label: "Withdrawn",
+        seq: result.seq,
+        reason: result.reason ?? null,
+        note: "The command was pending and is now terminal; it was not included by this withdrawal."
+      }, opts.json);
+    } catch (error) {
+      steeringCommandError(error, Boolean(opts.json));
+    }
   });
 
 program
@@ -137,6 +446,40 @@ program
     }
     const project = getProject(loaded, options.project);
 
+    // Validate every caller-controlled scalar before prepareRun acquires the configuration/run
+    // authorities or creates any run state. A malformed option must be a zero-mutation refusal.
+    let maxIterations: number | undefined;
+    if (options.maxIterations !== undefined) {
+      try {
+        maxIterations = parseBoundedInt(options.maxIterations, "--max-iterations", 1, 1_000);
+      } catch (error) {
+        die(error);
+        return;
+      }
+    }
+
+    // Structured native adapters (opencode/pi/grok) need parent-contained compatibility evidence.
+    // Ordinary CLI has no evidence injection path into RunContext, so refuse execute before any
+    // prepareRun mutation (run dir, control, worktree) and before host capability probes that would
+    // otherwise surface as PATH/sandbox noise. Dry-run stays accepted and launches nothing.
+    try {
+      const loop = selectLoop(project, options.loop);
+      assertOrdinaryExecuteNativeAdapterPreflight(project, loop, Boolean(options.execute));
+    } catch (error) {
+      die(error);
+      return;
+    }
+
+    // P6's stronger empty-root/PID/network boundary is a host capability, not something cutover can
+    // repair. Refuse it while the command is still read-only: no run directory, lease, ControlStore,
+    // worktree, reservation, or provider process may exist on an unsupported/replaced runtime.
+    try {
+      assertMultiRepositoryExecutionPreflight(project, Boolean(options.execute));
+    } catch (error) {
+      die(error);
+      return;
+    }
+
     let ctx;
     try {
       ctx = prepareRun(loaded, project, options.run, goal, options.loop);
@@ -145,17 +488,10 @@ program
       process.exitCode = 1;
       return;
     }
-    if (options.maxIterations) {
-      const n = Number(options.maxIterations);
-      if (!Number.isInteger(n) || n < 1 || n > 1000) {
-        console.error("--max-iterations must be an integer between 1 and 1000.");
-        process.exitCode = 1;
-        return;
-      }
-      ctx.loop.maxIterations = n;
-    }
+    if (maxIterations !== undefined) ctx.loop.maxIterations = maxIterations;
 
-    // NOTE: `loop run` never writes PROJECT-INTELLIGENCE.md into the checkout — only `loop learn`
+    // NOTE: `relayforge run` never writes PROJECT-INTELLIGENCE.md into the checkout — only
+    // `relayforge learn`
     // may write project intelligence. Planning happens INSIDE the run (after the clean gate and
     // integration worktree exist), so no provider ever runs against the human's checked-out tree.
     const roleFiles = writeRolePrompts(ctx);
@@ -163,13 +499,115 @@ program
     if (!opts.json) {
       console.log(`\n🛰  Run ${ctx.runId} · ${project.name} · loop ${ctx.loop.name}${options.execute ? "" : " (dry-run — no provider launched)"}`);
       console.log(`Goal: ${goal}`);
-      console.log(`Team: ${project.roles.length} role(s). Monitor: loop monitor --run ${ctx.runId}\n`);
+      console.log(`Team: ${project.roles.length} role(s). Monitor: relayforge monitor --run ${ctx.runId}\n`);
     }
 
     let reports;
+    let runScmAuthority: ParentScmProductAuthority | undefined;
     try {
       reports = await runAutonomyLoop(ctx, roleFiles, {
         execute: Boolean(options.execute),
+        startParentAuthority: async ({ store, runId, runEpoch, runDir }) => {
+          const assertAuthority = (): void => {
+            if (ctx.controlAuthority?.store !== store) throw new Error("canonical steering store is no longer bound to this run parent");
+            const controlOwnership = ctx.controlOwnership;
+            const runLease = ctx.runLease;
+            if (!controlOwnership || !runLease || ctx.activeLeaseId !== runLease.nonce) {
+              throw new Error("parent steering requires the active control-lease -> run-lease chain");
+            }
+            controlOwnership.assertHeld();
+            assertActiveRunLease(runDir, runLease.nonce);
+          };
+          const service = createParentSteeringService({
+            store,
+            authority: {
+              principal: typeof process.geteuid === "function" ? `operator-uid-${process.geteuid()}` : "local-operator",
+              sourceKind: "operator"
+            }
+          });
+          const transcriptAuthority = createParentTranscriptRuntimeAuthority({
+            store,
+            runDir,
+            actorId: ctx.loop.orchestrator
+          });
+          let controlRuntimeError: Error | undefined;
+          let controlService: Awaited<ReturnType<typeof startControlService>> | undefined;
+          let steeringServer: Awaited<ReturnType<typeof startSteeringIpcServer>> | undefined;
+          try {
+            runScmAuthority = project.scm === undefined ? undefined : createParentScmProductAuthority({
+              project,
+              configRoot: loaded.rootDir,
+              store,
+              steering: service,
+              actorId: ctx.loop.orchestrator,
+              environment: process.env
+            });
+            controlService = await startControlService(loaded, {
+              dashboardProject: project.name,
+              controlOwnership: ctx.controlOwnership,
+              borrowedSources: {
+                projects: () => [{ project: project.name, runs: [store] }]
+              },
+              onRuntimeError(error) { controlRuntimeError ??= error; }
+            });
+            steeringServer = await startSteeringIpcServer({
+              runDir,
+              runId,
+              runEpoch,
+              service,
+              assertAuthority
+            });
+          } catch (error) {
+            // Startup is transactional with respect to borrowed lifetimes: unwind every component
+            // that became reachable before returning no handle to the orchestrator.
+            for (const close of [
+              () => steeringServer?.closeAndDrain(),
+              () => controlService?.shutdown(),
+              () => runScmAuthority?.closeAndDrain(),
+              () => transcriptAuthority.closeAndDrain()
+            ]) {
+              try { await close(); } catch { /* the original startup refusal remains authoritative */ }
+            }
+            runScmAuthority = undefined;
+            throw error;
+          }
+          if (controlService === undefined || steeringServer === undefined) {
+            throw new Error("parent authority startup returned without complete owned services");
+          }
+          const ownedControlService = controlService;
+          const ownedSteeringServer = steeringServer;
+          let closePromise: Promise<void> | undefined;
+          return Object.freeze({
+            openTranscriptObservation: (input: Parameters<typeof transcriptAuthority.open>[0]) => transcriptAuthority.open(input),
+            closeAndDrain() {
+              closePromise ??= (async () => {
+                let first: unknown = controlRuntimeError;
+                for (const close of [
+                  () => runScmAuthority?.closeAndDrain(),
+                  () => transcriptAuthority.closeAndDrain(),
+                  () => ownedSteeringServer.closeAndDrain(),
+                  () => ownedControlService.shutdown()
+                ]) {
+                  try { await close(); } catch (error) { first ??= error; }
+                }
+                runScmAuthority = undefined;
+                if (first !== undefined) throw first;
+              })();
+              return closePromise;
+            }
+          });
+        },
+        ...(project.multiRepository === undefined ? {} : {
+          startMultiRepositoryAuthority: (authorityContext: Parameters<typeof createMultiRepositoryRunAuthority>[1]) => {
+            const publicationConfigured = project.multiRepository!.tasks.some((task) => task.publication !== undefined);
+            if (publicationConfigured && runScmAuthority === undefined) {
+              throw new Error("multi-repository publication requires an initialized parent SCM authority");
+            }
+            return createMultiRepositoryRunAuthority(ctx, authorityContext, publicationConfigured
+              ? { publicationAdapter: runScmAuthority!.publicationAdapterForRun() }
+              : {});
+          }
+        }),
         onIteration: opts.json
           ? undefined
           : (r) => {
@@ -183,12 +621,9 @@ program
       return;
     }
 
-    let finalState: Record<string, unknown> = {};
-    try {
-      finalState = JSON.parse(readFileSync(ctx.statePath, "utf8"));
-    } catch {
-      // state unreadable — omit
-    }
+    // The legacy state file is permanently retired after control-store cutover. Consume the
+    // canonical snapshot captured while runAutonomyLoop still held its store and both leases.
+    const finalState = finalLoopState(ctx);
 
     const status = String(finalState.status ?? "");
     // Exit 0 ONLY for a real success — see runSucceeded(). Every other terminal state (unverified,
@@ -216,7 +651,7 @@ program
         logFile: ctx.runLog,
         iterations: reports.length,
         final: reports[reports.length - 1]?.summary ?? null,
-        monitor: `loop monitor --run ${ctx.runId}`,
+        monitor: `relayforge monitor --run ${ctx.runId}`,
         reviewRunBranch: ctx.target ? `git log ${ctx.target.integration.branch}` : null
       },
       opts.json
@@ -230,7 +665,7 @@ program
   .option("-r, --run <id>", "run id to monitor (defaults to the most recent run)")
   .option("--once", "render one frame and exit (for CI / piping)")
   .option("--interval <ms>", "refresh interval in ms", "1500")
-  .action((options) => {
+  .action(async (options) => {
     const opts = program.opts();
     const loaded = safeLoadConfig(opts.config, opts.json);
     if (!loaded) return;
@@ -248,7 +683,7 @@ program
     const runsDir = resolve(loaded.rootDir, loaded.config.defaults.runDir, project.name);
     const runId = options.run ?? latestRunId(runsDir);
     if (!runId) {
-      console.error("No runs found. Start one with `loop run \"<goal>\"`.");
+      console.error("No runs found. Start one with `relayforge run \"<goal>\"`.");
       process.exitCode = 1;
       return;
     }
@@ -256,12 +691,34 @@ program
     const namespace = loaded.config.defaults.namespace;
     const session = sessionName(namespace, project.name, runId, "team");
     const panes = discoverPanes(session);
-    const monitorOpts = { boardDir, session, panes, intervalMs };
+    let controlRoomClient: ControlRoomClient | undefined;
+    try {
+      const attachment = await requireControlService(controlPaths(loaded.rootDir, loaded.path));
+      controlRoomClient = createControlRoomClient({
+        transport: createControlServiceControlRoomTransport({ attachment, project: project.name, run: runId })
+      });
+      await controlRoomClient.start();
+    } catch {
+      // A completed/legacy run may have no active parent read authority. Do not reopen its store or
+      // infer activity from board/tmux bytes: the renderer's explicit unknown state is fail-closed.
+      controlRoomClient?.stop();
+      controlRoomClient = undefined;
+    }
+    const monitorOpts = {
+      boardDir,
+      session,
+      panes,
+      intervalMs,
+      ...(controlRoomClient === undefined
+        ? {}
+        : { controlRoom: () => buildControlRoomViewModel(controlRoomClient!.state()) })
+    };
     if (options.once) {
       console.log(renderOnce(monitorOpts));
+      controlRoomClient?.stop();
       return;
     }
-    startMonitor(monitorOpts);
+    startMonitor(monitorOpts, () => controlRoomClient?.stop());
   });
 
 program
@@ -287,7 +744,7 @@ program
       const runsDir = resolve(loaded.rootDir, loaded.config.defaults.runDir, project.name);
       const runId = options.run ?? latestRunId(runsDir);
       if (!runId) {
-        console.error("No runs found to attach to. Start one with `loop run`.");
+        console.error("No runs found to attach to. Start one with `relayforge run`.");
         process.exitCode = 1;
         return;
       }
@@ -302,7 +759,7 @@ program
   });
 
 // ---------------------------------------------------------------------------
-// `loop tmux` — the OPTIONAL viewport, as one coherent verb group.
+// `relayforge tmux` — the OPTIONAL viewport, as one coherent verb group.
 //
 //   loop tmux pre     what `new` would do (changes nothing)     → exit 0 when it would work
 //   loop tmux new     create-or-attach, idempotent               → exit 0 / 2 / 3
@@ -322,18 +779,18 @@ const tmuxCmd = program
     `
 Exit codes:
   0  ok / would work        2  tmux not installed or viewport off
-  1  error                  3  a foreign (non-Loop) session holds the name
+  1  error                  3  a foreign (non-RelayForge) session holds the name
                             4  nothing found
 
 Examples:
-  $ loop tmux pre                  # pre-flight: what would "loop tmux new" do? (mutates nothing)
-  $ loop tmux new                  # open the latest run's viewport and attach (idempotent)
-  $ loop tmux new -r bug-42 --no-attach
-  $ loop tmux show --capture 40    # owned sessions + the last 40 lines of each
-  $ loop tmux kill -r bug-42       # kill only THIS run's Loop-owned sessions
-  $ loop tmux prune --dry-run      # what stale viewports would be reaped?
+  $ relayforge tmux pre                  # pre-flight: what would "relayforge tmux new" do? (mutates nothing)
+  $ relayforge tmux new                  # open the latest run's viewport and attach (idempotent)
+  $ relayforge tmux new -r bug-42 --no-attach
+  $ relayforge tmux show --capture 40    # owned sessions + the last 40 lines of each
+  $ relayforge tmux kill -r bug-42       # kill only this run's RelayForge-owned sessions
+  $ relayforge tmux prune --dry-run      # what stale viewports would be reaped?
 
-tmux is an OPTIONAL viewport. The loop always runs headless; "loop monitor" needs no tmux at all.`
+tmux is an OPTIONAL viewport. RelayForge always runs headless; "relayforge monitor" needs no tmux at all.`
   );
 
 /** Resolve (config → project → run → identity → panes) for every `loop tmux` subcommand, or `undefined`
@@ -382,7 +839,7 @@ function parseCaptureLines(value: unknown): number | null | undefined {
 /** Every `loop tmux` verb that needs a run: without one there is nothing to view. */
 function requireRun(ctx: { runId?: string }): boolean {
   if (ctx.runId) return true;
-  console.error("No runs found for this project. Start one first: `loop run \"<goal>\" --execute` (or `loop start` for a prompt-only viewport).");
+  console.error("No runs found for this project. Start one first: `relayforge run \"<goal>\" --execute` (or `relayforge start` for a prompt-only viewport).");
   process.exitCode = TmuxExit.NOT_FOUND;
   return false;
 }
@@ -394,7 +851,7 @@ const viewportOptions = <T extends Command>(cmd: T): T => {
 };
 
 viewportOptions(tmuxCmd.command("pre").aliases(["preview", "plan"]))
-  .description("pre-flight: print exactly what `loop tmux new` would do — creates and changes NOTHING")
+  .description("pre-flight: print exactly what `relayforge tmux new` would do — creates and changes NOTHING")
   .option("--no-attach", "plan a detached open (do not hand over this terminal)")
   .action((options) => {
     const opts = program.opts();
@@ -411,7 +868,7 @@ viewportOptions(tmuxCmd.command("pre").aliases(["preview", "plan"]))
       output(plan, true);
       return;
     }
-    console.log(`${plan.ok ? "✓" : "✗"} loop tmux new · run ${ctx.runId} · project ${ctx.project.name}`);
+    console.log(`${plan.ok ? "✓" : "✗"} relayforge tmux new · run ${ctx.runId} · project ${ctx.project.name}`);
     console.log(`  session : ${plan.session}`);
     console.log(`  panes   : ${plan.roles.join(", ") || "(none)"}`);
     console.log(`  cwd     : ${plan.cwd}`);
@@ -451,7 +908,7 @@ viewportOptions(tmuxCmd.command("new").aliases(["open"]))
   });
 
 viewportOptions(tmuxCmd.command("show").aliases(["ls"]))
-  .description("list Loop-owned tmux sessions: liveness, panes, and (with --capture) recent output")
+  .description("list RelayForge-owned tmux sessions: liveness, panes, and (with --capture) recent output")
   .option("--capture [lines]", "also capture the last N lines of each session (default 40)")
   .option("-a, --all", "show every run's sessions, not just the latest run")
   .action((options) => {
@@ -485,12 +942,12 @@ viewportOptions(tmuxCmd.command("show").aliases(["ls"]))
         for (const line of s.capture.split("\n").filter(Boolean).slice(-10)) console.log(`  │ ${line}`);
       }
     }
-    if (report.sessions.some((s) => s.dead || s.orphan)) console.log("\nStale viewports found — reap them with `loop tmux prune`.");
+    if (report.sessions.some((s) => s.dead || s.orphan)) console.log("\nStale viewports found — reap them with `relayforge tmux prune`.");
   });
 
 viewportOptions(tmuxCmd.command("kill"))
-  .description("kill this run's Loop-owned tmux sessions (never a session Loop did not create)")
-  .option("-a, --all", "kill every Loop-owned session for the project")
+  .description("kill this run's RelayForge-owned tmux sessions (never a foreign session)")
+  .option("-a, --all", "kill every RelayForge-owned session for the project")
   .action((options) => {
     const opts = program.opts();
     const ctx = viewportContext(options, opts);
@@ -511,7 +968,7 @@ viewportOptions(tmuxCmd.command("kill"))
       output({ killed: report.killed, reason: report.reason }, true);
       return;
     }
-    if (!report.killed.length) console.log(report.reason ?? "No Loop-owned sessions matched — nothing killed.");
+    if (!report.killed.length) console.log(report.reason ?? "No RelayForge-owned sessions matched — nothing killed.");
     else for (const name of report.killed) console.log(`killed ${name}`);
   });
 
@@ -559,7 +1016,7 @@ program
 
 program
   .command("validate")
-  .description("validate the loop config (schema + semantic references)")
+  .description("validate the RelayForge config (schema + semantic references)")
   .action(() => {
     const opts = program.opts();
     const loaded = safeLoadConfig(opts.config, opts.json);
@@ -589,7 +1046,7 @@ auth
 
 auth
   .command("configure")
-  .description("write detected local provider auth settings into loop.config.yaml")
+  .description("write detected local provider auth settings into the selected config")
   .option("-p, --project <name>", "project name")
   .option("--write", "write detected settings")
   .action((options) => {
@@ -598,7 +1055,7 @@ auth
     if (!loaded) return;
     const project = getProject(loaded, options.project);
     if (!options.write) {
-      output({ project: project.name, dryRun: true, message: "Run `loop auth configure --write` to update loop.config.yaml.", providers: getAuthStatus(project) }, opts.json);
+      output({ project: project.name, dryRun: true, message: "Run `relayforge auth configure --write` to update the selected config.", providers: getAuthStatus(project) }, opts.json);
       return;
     }
     output({ project: project.name, updated: loaded.path, providers: configureLocalAuth(loaded, project.name) }, opts.json);
@@ -606,7 +1063,7 @@ auth
 
 program
   .command("start")
-  .description("open a prompt-only tmux viewport for a project team (observational; use `loop run --execute` to actually run agents safely)")
+  .description("open a prompt-only tmux viewport for a project team (observational; use `relayforge run --execute` to actually run agents safely)")
   .option("-p, --project <name>", "project name")
   .option("-r, --run <id>", "run id", defaultRunId())
   .option("--role <name...>", "only start specific roles")
@@ -632,7 +1089,7 @@ program
 
 program
   .command("status")
-  .description("list loop tmux sessions")
+  .description("list RelayForge-owned tmux sessions")
   .action(() => {
     const opts = program.opts();
     const loaded = safeLoadConfig(opts.config, opts.json);
@@ -685,7 +1142,7 @@ program
     }
     const project = getProject(loaded, options.project);
     const runDir = resolve(loaded.rootDir, loaded.config.defaults.runDir, project.name, run);
-    requestCancel(runDir, "stopped via `loop stop`");
+    requestCancel(runDir, "stopped via `relayforge stop`");
     // Metadata-owned kill: only sessions THIS project+run created. The old substring match on
     // `-<run>-` could reach a different project's session (or a human's own).
     const killed = stopRun(loaded.config.defaults.namespace, project.name, run);
@@ -694,7 +1151,7 @@ program
 
 program
   .command("dashboard")
-  .description("start the local (loopback-only) dashboard")
+  .description("start the foreground control service with its local dashboard (compatibility alias)")
   .option("-p, --project <name>", "project name")
   .option("--port <port>", "dashboard port")
   .action(async (options) => {
@@ -712,10 +1169,39 @@ program
       return;
     }
     try {
-      await startDashboard(loaded, { project: options.project, port });
+      await runForegroundService(
+        await startDashboard(loaded, { project: options.project, port }),
+        Boolean(opts.json),
+        "dashboard"
+      );
     } catch (error) {
-      die(error);
+      controlCommandError(error, Boolean(opts.json));
     }
   });
 
-program.parse();
+const invokedCommand = invokedRelayForgeCommand();
+if (
+  invokedCommand &&
+  RELAYFORGE_LEGACY_COMMANDS.includes(invokedCommand as "loop" | "loop-orchestrator") &&
+  process.stderr.isTTY &&
+  !process.argv.includes("--json") &&
+  !process.argv.includes("--version") &&
+  !process.argv.includes("-V")
+) {
+  console.error(`RelayForge: ${invokedCommand} is a deprecated v1 command alias; use relayforge.`);
+}
+
+let environmentCompatible = true;
+try {
+  assertRelayForgeEnvironmentCompatibility();
+} catch (error) {
+  environmentCompatible = false;
+  const message = error instanceof Error ? error.message : String(error);
+  if (process.argv.includes("--json")) {
+    console.log(JSON.stringify({ ok: false, code: "ENV_CONFLICT", error: message }, null, 2));
+  } else {
+    console.error(message);
+  }
+  process.exitCode = 1;
+}
+if (environmentCompatible) await program.parseAsync();

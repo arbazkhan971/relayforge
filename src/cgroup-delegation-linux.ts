@@ -995,14 +995,57 @@ function assertVerifierWritableCheckout(cwd: string): string {
   return checkout;
 }
 
+type VerifierWorkspaceIdentity = Readonly<{ path: string; dev: string; ino: string }>;
+
+function containsPath(parent: string, child: string): boolean {
+  return child === parent || child.startsWith(`${parent}/`);
+}
+
+/** Pin the complete candidate workspace vector before scope allocation. No common parent or nested
+ * checkout is accepted: every bind below is one exact reviewed repository root. */
+function pinVerifierWorkspaceVector(cwd: string, additionalRoots: readonly string[]): readonly VerifierWorkspaceIdentity[] {
+  if (additionalRoots.length > 31) throw new Error("verifier workspace vector exceeds 32 repositories");
+  const paths: string[] = [];
+  for (const raw of [cwd, ...additionalRoots]) {
+    if (!isAbsolute(raw) || raw.includes("\0")) throw new Error("verifier workspace root must be an absolute non-NUL path");
+    const path = assertVerifierWritableCheckout(raw);
+    if (paths.includes(path)) continue;
+    for (const existing of paths) {
+      if (containsPath(existing, path) || containsPath(path, existing)) {
+        throw new Error(`verifier workspace roots overlap: ${existing} and ${path}`);
+      }
+    }
+    paths.push(path);
+  }
+  return Object.freeze(paths.map((path) => {
+    const stat = lstatSync(path, { bigint: true });
+    return Object.freeze({ path, dev: String(stat.dev), ino: String(stat.ino) });
+  }));
+}
+
+function assertVerifierWorkspaceVector(identities: readonly VerifierWorkspaceIdentity[]): void {
+  for (const identity of identities) {
+    const physical = realpathSync(identity.path);
+    const stat = lstatSync(physical, { bigint: true });
+    if (
+      physical !== identity.path || !stat.isDirectory() || stat.isSymbolicLink() ||
+      String(stat.dev) !== identity.dev || String(stat.ino) !== identity.ino
+    ) {
+      throw new Error(`verifier workspace identity changed before launch: ${identity.path}`);
+    }
+  }
+}
+
 /** Compose a verifier payload around the exact strict fragment obtained from an available token. */
 export function buildLinuxVerifierBwrapArgs(
   plan: ReturnType<typeof buildVerifierCgroupLaunchPlan>,
   command: string,
   args: readonly string[],
-  cwd: string
+  cwd: string,
+  additionalWorkspaceRoots: readonly string[] = []
 ): string[] {
-  const checkout = assertVerifierWritableCheckout(cwd);
+  const workspaces = pinVerifierWorkspaceVector(cwd, additionalWorkspaceRoots);
+  const checkout = workspaces[0]!.path;
   if (!command || command.includes("\0") || args.some((arg) => arg.includes("\0"))) throw new Error("invalid verifier argv");
   if (plan.cgroupArgs.length !== VERIFIER_CGROUP_BWRAP_FRAGMENT.length ||
       plan.cgroupArgs.some((arg, index) => arg !== VERIFIER_CGROUP_BWRAP_FRAGMENT[index])) {
@@ -1015,7 +1058,10 @@ export function buildLinuxVerifierBwrapArgs(
     "--tmpfs", "/tmp",
     "--die-with-parent",
     "--new-session",
-    "--bind", checkout, checkout,
+    // Verification may create ignored build outputs in any authorized repository. Every exact root
+    // is writable, while the before/after candidate observer rejects tracked identity or cleanliness
+    // drift. The /tmp shadow keeps undeclared sibling repositories absent.
+    ...workspaces.flatMap((workspace) => ["--bind", workspace.path, workspace.path]),
     ...plan.cgroupArgs,
     "--chdir", checkout,
     "--",
@@ -1058,7 +1104,7 @@ class LinuxVerifierCgroupScope implements ProcessScope {
   constructor(
     private readonly runtime: { capability: VerifierCgroupAvailableCapability; collected: CollectedLinuxCgroupEvidence },
     private readonly metadata: LinuxVerifierScopeMetadata,
-    private readonly cwd: string
+    private readonly workspaces: readonly VerifierWorkspaceIdentity[]
   ) {
     const { outerScopeRoot, membership } = runtime.collected;
     if (!outerScopeRoot || !membership || !runtime.collected.dependencies) throw new Error("available verifier runtime lacks launch evidence");
@@ -1071,7 +1117,7 @@ class LinuxVerifierCgroupScope implements ProcessScope {
       this.identity = pinnedIdentity(this.#fd);
       const limits = setAndVerifyStructuralLimits(structuralIo(), this.#fd, this.identity);
       if (!limits.ok) throw new Error(`structural limit setup failed [${limits.reason}]: ${limits.detail}`);
-      assertVerifierWritableCheckout(cwd);
+      assertVerifierWorkspaceVector(workspaces);
     } catch (error) {
       if (this.#fd !== undefined) {
         try { closeSync(this.#fd); } catch { /* best effort */ }
@@ -1091,7 +1137,14 @@ class LinuxVerifierCgroupScope implements ProcessScope {
     }
     const currentBwrap = inspectTrustedExecutable(dependencies.bubblewrap.command);
     const plan = buildVerifierCgroupLaunchPlan(this.runtime.capability, this.#fd, currentBwrap.identity);
-    const bwrapArgs = buildLinuxVerifierBwrapArgs(plan, command, args, this.cwd);
+    assertVerifierWorkspaceVector(this.workspaces);
+    const bwrapArgs = buildLinuxVerifierBwrapArgs(
+      plan,
+      command,
+      args,
+      this.workspaces[0]!.path,
+      this.workspaces.slice(1).map((workspace) => workspace.path)
+    );
     return {
       command: dependencies.shell.command,
       args: [
@@ -1118,6 +1171,11 @@ class LinuxVerifierCgroupScope implements ProcessScope {
       return;
     }
     this.#pid = pid;
+    try { assertVerifierWorkspaceVector(this.workspaces); }
+    catch (error) {
+      this.#bindFailure = error instanceof Error ? error.message : "verifier workspace identity changed after spawn";
+      return;
+    }
     const deadline = Date.now() + VERIFIER_CGROUP_ENROLLMENT_TIMEOUT_MS;
     while (Date.now() < deadline) {
       try {
@@ -1261,23 +1319,25 @@ class LinuxVerifierCgroupBackend implements ScopeBackend {
   constructor(
     private readonly runtime: { capability: VerifierCgroupAvailableCapability; collected: CollectedLinuxCgroupEvidence },
     private readonly metadata: LinuxVerifierScopeMetadata,
-    private readonly cwd: string
+    private readonly workspaces: readonly VerifierWorkspaceIdentity[]
   ) {}
   open(): ProcessScope {
-    return new LinuxVerifierCgroupScope(this.runtime, this.metadata, this.cwd);
+    return new LinuxVerifierCgroupScope(this.runtime, this.metadata, this.workspaces);
   }
 }
 
 export function linuxVerifierCgroupBackend(
   runtime: LinuxVerifierCgroupRuntime,
   metadata: LinuxVerifierScopeMetadata,
-  cwd: string
+  cwd: string,
+  additionalWorkspaceRoots: readonly string[] = []
 ): ScopeBackend {
   if (!runtime.capability.available) throw new Error(`verifier cgroup jail unavailable [${runtime.capability.reasonCode}]: ${runtime.capability.detail}`);
   // The runtime identity that authorized this adapter is deliberately materialized here. This
   // catches accidental token substitution before any scope allocation.
   verifierCgroupRuntimeCacheKey(runtime.capability.runtimeIdentity);
-  return new LinuxVerifierCgroupBackend({ capability: runtime.capability, collected: runtime.collected }, metadata, cwd);
+  const workspaces = pinVerifierWorkspaceVector(cwd, additionalWorkspaceRoots);
+  return new LinuxVerifierCgroupBackend({ capability: runtime.capability, collected: runtime.collected }, metadata, workspaces);
 }
 
 export type LinuxVerifierRecoveryOutcome = "reaped" | "gone" | "foreign" | "unresolved";

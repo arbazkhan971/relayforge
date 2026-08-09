@@ -34,7 +34,11 @@ function workspace(): string {
   return dir;
 }
 
-function loadedFor(dir: string, loops: Array<Pick<LoopConfig, "name"> & { provision?: unknown }>) {
+function loadedFor(
+  dir: string,
+  loops: Array<Pick<LoopConfig, "name"> & { provision?: unknown }>,
+  configBasename: string = "loop.config.yaml"
+) {
   const config = RootConfigSchema.parse({
     version: 1,
     projects: [
@@ -50,11 +54,15 @@ function loadedFor(dir: string, loops: Array<Pick<LoopConfig, "name"> & { provis
       }
     ]
   });
-  return { config, rootDir: dir, path: join(dir, "loop.config.yaml") };
+  return { config, rootDir: dir, path: join(dir, configBasename) };
 }
 
-function provisionCheck(dir: string, loops: Array<Pick<LoopConfig, "name"> & { provision?: unknown }>) {
-  return runDoctor(loadedFor(dir, loops), dir).checks.find((check) => check.name === "provision");
+function provisionCheck(
+  dir: string,
+  loops: Array<Pick<LoopConfig, "name"> & { provision?: unknown }>,
+  configBasename: string = "loop.config.yaml"
+) {
+  return runDoctor(loadedFor(dir, loops, configBasename), dir).checks.find((check) => check.name === "provision");
 }
 
 function treeEntries(root: string, prefix = ""): string[] {
@@ -174,19 +182,27 @@ describe("provision doctor check", () => {
   });
 
   it.each([
-    ["ESC and BEL", `deps\u001b\u0007cache`, "deps\\u{1b}\\u{7}cache", "INVALID_PATH", "Provision path contains a NUL or control byte"],
-    ["newline", `deps\ncache`, "deps\\u{a}cache", "INVALID_PATH", "Provision path contains a NUL or control byte"],
-    ["C1 CSI", `deps\u009bcache`, "deps\\u{9b}cache", "MISSING_SOURCE", "Configured provision source is missing"],
-    ["bidi override and isolate", `deps\u202ecache\u2066x`, "deps\\u{202e}cache\\u{2066}x", "MISSING_SOURCE", "Configured provision source is missing"],
-    ["line and paragraph separators", `deps\u2028cache\u2029x`, "deps\\u{2028}cache\\u{2029}x", "MISSING_SOURCE", "Configured provision source is missing"]
-  ])("renders configured %s controls as visible ASCII without losing diagnostic context", (_label, path, rendered, code, message) => {
+    ["ESC and BEL", `deps\u001b\u0007cache`, "deps\\u{1b}\\u{7}cache", "INVALID_PATH", "Provision path contains a NUL or control byte", "loop.config.yaml"],
+    ["newline", `deps\ncache`, "deps\\u{a}cache", "INVALID_PATH", "Provision path contains a NUL or control byte", "loop.config.yaml"],
+    ["C1 CSI", `deps\u009bcache`, "deps\\u{9b}cache", "MISSING_SOURCE", "Configured provision source is missing", "loop.config.yaml"],
+    ["bidi override and isolate", `deps\u202ecache\u2066x`, "deps\\u{202e}cache\\u{2066}x", "MISSING_SOURCE", "Configured provision source is missing", "loop.config.yaml"],
+    ["line and paragraph separators", `deps\u2028cache\u2029x`, "deps\\u{2028}cache\\u{2029}x", "MISSING_SOURCE", "Configured provision source is missing", "loop.config.yaml"],
+    ["ESC and BEL (canonical config)", `deps\u001b\u0007cache`, "deps\\u{1b}\\u{7}cache", "INVALID_PATH", "Provision path contains a NUL or control byte", "relayforge.config.yaml"],
+    ["newline (canonical config)", `deps\ncache`, "deps\\u{a}cache", "INVALID_PATH", "Provision path contains a NUL or control byte", "relayforge.config.yaml"],
+    ["C1 CSI (canonical config)", `deps\u009bcache`, "deps\\u{9b}cache", "MISSING_SOURCE", "Configured provision source is missing", "relayforge.config.yaml"],
+    ["bidi override and isolate (canonical config)", `deps\u202ecache\u2066x`, "deps\\u{202e}cache\\u{2066}x", "MISSING_SOURCE", "Configured provision source is missing", "relayforge.config.yaml"],
+    ["line and paragraph separators (canonical config)", `deps\u2028cache\u2029x`, "deps\\u{2028}cache\\u{2029}x", "MISSING_SOURCE", "Configured provision source is missing", "relayforge.config.yaml"]
+  ])("renders configured %s controls as visible ASCII without losing diagnostic context", (_label, path, rendered, code, message, configBasename) => {
     const dir = workspace();
-    const check = provisionCheck(dir, [{ name: "delivery", provision: [{ path }] }]);
+    const check = provisionCheck(dir, [{ name: "delivery", provision: [{ path }] }], configBasename);
 
     expect(check?.status).toBe("fail");
     expect(check?.detail).toBe(`loop delivery path ${rendered} provision.0.path: [${code}] ${message}`);
     expect(check?.detail).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
-    expect(check?.fix).toContain("loop.config.yaml");
+    expect(check?.fix).toContain(configBasename);
+    // Basename context only — never the absolute secret-bearing workspace path.
+    expect(check?.fix).not.toContain(dir);
+    expect(check?.fix).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
   });
 
   it("fails for missing, non-directory, linked, and missing executable sources with actionable loop/path detail", () => {

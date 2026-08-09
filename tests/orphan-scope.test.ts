@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { addEvent, addTask, foldBoard } from "../src/board.js";
 import { loadConfig } from "../src/config/load.js";
-import { prepareRun, runAutonomyLoop, writeRolePrompts, type LoopRunState } from "../src/orchestrator.js";
+import { finalLoopState, prepareRun, runAutonomyLoop, writeRolePrompts } from "../src/orchestrator.js";
 import { setTrustedRunner } from "../src/sandbox.js";
 import type { ScopeOs } from "../src/scope.js";
 import { gitLog, setupRepo } from "./e2e-harness.js";
@@ -78,7 +78,7 @@ async function resumeWith(opts: { journal: string; os?: ScopeOs; claimed?: boole
 
   await runAutonomyLoop(ctx, {}, { execute: true });
 
-  const state = JSON.parse(readFileSync(ctx.statePath, "utf8")) as LoopRunState;
+  const state = finalLoopState(ctx);
   return {
     repoDir,
     ctx,

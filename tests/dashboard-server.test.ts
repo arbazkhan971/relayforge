@@ -1,109 +1,70 @@
-import type { Server } from "node:http";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, expect, it } from "vitest";
-import { createDashboardServer } from "../src/dashboard/server.js";
-import type { ProjectConfig } from "../src/config/schema.js";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config/load.js";
+import { startDashboard } from "../src/dashboard/server.js";
+import type { ControlServiceHandle } from "../src/control/service.js";
 
-describe("dashboard server", () => {
-  it("serves status, config, and logs through injectable tmux adapters", async () => {
-    const server = createDashboardServer({
-      project: sampleProject(),
-      namespace: "loop",
-      port: 0,
-      listSessions: () => [
-        { name: "loop-demo-run-1-dev", project: "demo", run: "run-1", role: "dev" },
-        { name: "loop-other-run-1-dev", project: "other", run: "run-1", role: "dev" }
-      ],
-      capturePane: (session, lines) => `${session}:${lines}`
+const roots: string[] = [];
+const handles: ControlServiceHandle[] = [];
+
+afterEach(async () => {
+  for (const handle of handles.splice(0).reverse()) await handle.shutdown();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("dashboard server integration", () => {
+  it("uses the lifetime-owned control server and its versioned read models", async () => {
+    const loaded = config();
+    const port = await freePort();
+    const handle = await startDashboard(loaded, {
+      project: "demo",
+      port,
+      borrowedSources: { projects: () => [{ project: "demo", runs: [] }] }
     });
-    const port = await listen(server);
+    handles.push(handle);
 
-    try {
-      await expect(getJson(`http://127.0.0.1:${port}/api/status`)).resolves.toEqual({
-        project: "demo",
-        sessions: ["loop-demo-run-1-dev"]
-      });
-      await expect(getJson(`http://127.0.0.1:${port}/api/config`)).resolves.toMatchObject({
-        name: "demo",
-        safetyMode: "workspace-write"
-      });
-      await expect(getJson(`http://127.0.0.1:${port}/api/logs?session=loop-demo-run-1-dev`)).resolves.toEqual({
-        session: "loop-demo-run-1-dev",
-        logs: "loop-demo-run-1-dev:220"
-      });
-    } finally {
-      await close(server);
-    }
-  });
+    const html = await fetch(`${handle.address.url}/`).then((response) => response.text());
+    expect(html).toContain("RelayForge");
+    expect(html).toContain('data-project="demo"');
 
-  it("rejects log requests without a session", async () => {
-    const server = createDashboardServer({
-      project: sampleProject(),
-      namespace: "loop",
-      port: 0,
-      listSessions: (): never[] => [],
-      capturePane: () => ""
+    const status = await fetch(`${handle.address.url}/api/v1/status`);
+    expect(status.status).toBe(200);
+    await expect(status.json()).resolves.toMatchObject({
+      service: "relayforge-control",
+      status: "ok",
+      projects: [{ project: "demo", latestRun: null, sessions: [] }]
     });
-    const port = await listen(server);
-
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/logs`);
-
-      expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toEqual({ error: "Missing session" });
-    } finally {
-      await close(server);
-    }
   });
 });
 
-async function listen(server: Server): Promise<number> {
-  await new Promise<void>((resolve, reject) => {
+function config() {
+  const root = mkdtempSync(join(tmpdir(), "relayforge-dashboard-server-"));
+  roots.push(root);
+  const path = join(root, "loop.config.yaml");
+  writeFileSync(path, `version: 1
+defaults:
+  dashboardPort: 4318
+projects:
+  - name: demo
+    providers:
+      dev: { type: codex }
+    roles:
+      - { name: dev, title: Developer, provider: dev }
+`);
+  return loadConfig(path);
+}
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolvePromise, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+    server.listen(0, "127.0.0.1", resolvePromise);
   });
-  return (server.address() as AddressInfo).port;
-}
-
-async function close(server: Server) {
-  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-}
-
-async function getJson(url: string) {
-  const response = await fetch(url);
-  expect(response.ok).toBe(true);
-  return response.json();
-}
-
-function sampleProject(): ProjectConfig {
-  return {
-    name: "demo",
-    brief: "brief.md",
-    workingDir: ".",
-    safetyMode: "workspace-write",
-    providers: {
-      dev: {
-        type: "codex",
-        args: [],
-        dangerouslySkipPermissions: false,
-        yolo: false,
-        auth: { mode: "auto", configured: false },
-        promptMode: "interactive",
-        env: {}
-      }
-    },
-    repositories: [],
-    roles: [
-      {
-        name: "dev",
-        title: "Developer",
-        provider: "dev",
-        repositories: [],
-        responsibilities: [],
-        guardrails: [],
-        autoStart: true
-      }
-    ],
-    loops: []
-  };
+  const port = (server.address() as AddressInfo).port;
+  await new Promise<void>((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
+  return port;
 }

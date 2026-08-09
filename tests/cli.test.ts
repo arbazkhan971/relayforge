@@ -23,36 +23,52 @@ describe("CLI", () => {
     expect(result.stdout.trim()).toBe(packageJson.version);
   });
 
+  it("uses RelayForge as the canonical help identity", () => {
+    const result = runLoop(["--help"], repoRoot);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Usage: relayforge");
+    expect(result.stdout).toContain("RelayForge:");
+  });
+
+  it("refuses conflicting canonical/legacy public env before command work, including JSON", () => {
+    const root = mkdtempSync(join(tmpdir(), "relayforge-cli-env-conflict-"));
+    const result = runLoop(["--json", "init"], root, { RELAYFORGE_TMUX: "on", LOOP_TMUX: "off" });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, code: "ENV_CONFLICT" });
+    expect(existsSync(join(root, "relayforge.config.yaml"))).toBe(false);
+    expect(existsSync(join(root, ".loop"))).toBe(false);
+  });
+
   it("initializes starter files without overwriting existing files by default", () => {
     const root = mkdtempSync(join(tmpdir(), "loop-cli-init-"));
 
     const first = runLoop(["init"], root);
     expect(first.status).toBe(0);
-    expect(first.stdout).toContain("Created loop.config.yaml, brief.md, and .loop/");
-    expect(existsSync(join(root, "loop.config.yaml"))).toBe(true);
+    expect(first.stdout).toContain("Created relayforge.config.yaml, brief.md, and .loop/");
+    expect(existsSync(join(root, "relayforge.config.yaml"))).toBe(true);
     expect(existsSync(join(root, "brief.md"))).toBe(true);
     expect(existsSync(join(root, ".loop"))).toBe(true);
 
     writeFileSync(join(root, "brief.md"), "custom brief");
     const second = runLoop(["init"], root);
 
-    expect(second.status).toBe(0);
-    expect(second.stdout).toContain("Skipped");
+    expect(second.status).toBe(1);
+    expect(second.stderr).toContain("CONFIG_ALREADY_EXISTS");
     expect(readFileSync(join(root, "brief.md"), "utf8")).toBe("custom brief");
   });
 
-  it("`init --force` overwrites, and provider auto-detection prefers claude → codex → gemini", async () => {
-    // Both halves were unproven. Dropping `Boolean(options.force)` would turn `--force` into a silent
-    // no-op ("Skipped …; already exists.") and reordering the preference list to gemini-first would
-    // change which CLI every new user is wired to — with a green suite either way.
+  it("`init --force` may overwrite an auxiliary brief but never a config, and provider auto-detection keeps its order", async () => {
     const root = mkdtempSync(join(tmpdir(), "loop-cli-force-"));
-    expect(runLoop(["init"], root).status).toBe(0);
     writeFileSync(join(root, "brief.md"), "custom brief");
 
     const forced = runLoop(["init", "--force"], root);
     expect(forced.status).toBe(0);
     expect(forced.stdout).not.toContain("Skipped");
     expect(readFileSync(join(root, "brief.md"), "utf8")).not.toBe("custom brief");
+    const config = readFileSync(join(root, "relayforge.config.yaml"), "utf8");
+    const refused = runLoop(["init", "--force"], root);
+    expect(refused.status).toBe(1);
+    expect(readFileSync(join(root, "relayforge.config.yaml"), "utf8")).toBe(config);
 
     // Auto-detection is a pure decision over the set of installed CLIs — assert it directly rather
     // than depending on what happens to be installed on this box.
@@ -64,6 +80,23 @@ describe("CLI", () => {
     const order = ["claude", "codex", "gemini"] as const;
     const firstInstalled = order.find((p) => pick.detected.includes(p));
     if (firstInstalled) expect(pick.provider).toBe(firstInstalled);
+  });
+
+  it("init refuses cross-family ambiguity before mutating any starter or state file", () => {
+    const root = mkdtempSync(join(tmpdir(), "relayforge-cli-ambiguous-init-"));
+    const canonical = join(root, "relayforge.config.yaml");
+    const legacy = join(root, "loop.config.yaml");
+    writeFileSync(canonical, "canonical-bytes\n");
+    writeFileSync(legacy, "legacy-bytes\n");
+
+    const result = runLoop(["--json", "init", "--force"], root);
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, code: "CONFIG_AMBIGUOUS" });
+    expect(readFileSync(canonical, "utf8")).toBe("canonical-bytes\n");
+    expect(readFileSync(legacy, "utf8")).toBe("legacy-bytes\n");
+    expect(existsSync(join(root, "brief.md"))).toBe(false);
+    expect(existsSync(join(root, ".loop"))).toBe(false);
+    expect(existsSync(join(root, ".gitignore"))).toBe(false);
   });
 
   it("a config that FAILS the schema is reported, not thrown (no stack trace; JSON under --json)", () => {
@@ -87,7 +120,7 @@ projects:
     expect(human.status).toBe(1);
     expect(human.stderr).toMatch(/isolate/); // it names the offending key…
     expect(human.stderr).not.toMatch(/at \w+ \(|node:internal|Error:\s*$/m); // …and does not dump a stack trace
-    expect(human.stderr).toMatch(/loop validate/i); // and says what to do next
+    expect(human.stderr).toMatch(/relayforge validate/i); // and says what to do next
 
     const asJson = runLoop(["--json", "validate"], root);
     expect(asJson.status).toBe(1);
@@ -133,16 +166,17 @@ projects:
     expect(result.status).toBe(1);
     expect(JSON.parse(result.stdout)).toEqual({
       ok: false,
-      error: "No loop.config.yaml found.",
+      error: "No RelayForge config found.",
+      code: "CONFIG_NOT_FOUND",
       nextSteps: [
-        "Run `loop init` in this repo.",
-        "Run `loop auth status` again.",
-        "Run `loop auth configure --write` to store detected local provider metadata."
+        "Run `relayforge init` in this repo.",
+        "Run `relayforge auth status` again.",
+        "Run `relayforge auth configure --write` to store detected local provider metadata."
       ]
     });
   });
 
-  it("emits a config that `loop validate` accepts, and `loop doctor` reports on it", () => {
+  it("emits a config that `relayforge validate` accepts, and `relayforge doctor` reports on it", () => {
     const root = mkdtempSync(join(tmpdir(), "loop-cli-init-validate-"));
 
     const init = runLoop(["init", "--provider", "claude"], root);
@@ -267,6 +301,18 @@ projects:
     expect(existsSync(join(root, "..", "evil"))).toBe(false);
   });
 
+  it("rejects max-iterations before prepareRun acquires leases or creates run state", () => {
+    const root = mkdtempSync(join(tmpdir(), "loop-cli-max-before-prepare-"));
+    runLoop(["init"], root);
+    const runId = "run-invalid-max";
+
+    const result = runLoop(["run", "goal", "--run", runId, "--max-iterations", "not-an-integer"], root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--max-iterations must be an integer between 1 and 1000/u);
+    expect(existsSync(join(root, ".loop", "runs", "demo-product", runId))).toBe(false);
+  });
+
   it("(wave-8) every lifecycle command rejects a traversal run id and leaves a sibling victim byte-identical", () => {
     // A temp repo with a SIBLING victim tree next to it. A `../../../victim` run id passed to any
     // lifecycle command must exit non-zero BEFORE resolving paths / writing cancel files / touching
@@ -308,8 +354,8 @@ projects:
     // The exit-code contract is what makes these commands scriptable — it must be in the help, not folklore.
     expect(help.stdout).toContain("Exit codes");
     expect(help.stdout).toMatch(/2\s+tmux not installed or viewport off/);
-    expect(help.stdout).toMatch(/3\s+a foreign \(non-Loop\) session holds the name/);
-    expect(help.stdout).toContain("loop tmux pre");
+    expect(help.stdout).toMatch(/3\s+a foreign \(non-RelayForge\) session holds the name/);
+    expect(help.stdout).toContain("relayforge tmux pre");
   });
 
   it("viewport OFF → exit 2; no runs → exit 4; traversal run id → exit 1 (before tmux is ever touched)", () => {
@@ -319,7 +365,7 @@ projects:
     const noRun = runLoop(["tmux", "pre"], root);
     expect(noRun.status).toBe(4);
     expect(noRun.stderr).toMatch(/No runs found/i);
-    expect(noRun.stderr).toMatch(/loop run/);
+    expect(noRun.stderr).toMatch(/relayforge run/);
 
     mkdirSync(join(root, ".loop/runs/demo-product/r1/board"), { recursive: true });
 

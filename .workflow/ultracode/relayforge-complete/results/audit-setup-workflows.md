@@ -3,11 +3,13 @@
 Audited 2026-08-09. None of these projects implements dependency copying, and
 none supersedes `agent-worktree` for that primitive.
 
-| Repository | Commit | Relevant behavior | License | Reuse |
-| --- | --- | --- | --- | --- |
-| `stagewise-io/stagewise` | `104d1c2737` | Post-mount setup runner with bounded output, timeout, state and UI | AGPL-3.0 | `IDEA_ONLY` |
-| `stellarlinkco/myclaude` | `f2e75c1263` | Minimal worktree creation and phase routing | AGPL-3.0 | `IDEA_ONLY` |
-| `OpenBMB/ChatDev` | `4fb2db0ea9` | Agent-driven `uv` environment commands and bounded workflow loops | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` / `IDEA_ONLY` |
+## Reference Matrix
+
+| Repository | Relevant implementation | Strength | Weakness | License | Reuse decision |
+|---|---|---|---|---|---|
+| `stagewise-io/stagewise` `104d1c2737` | Post-mount setup runner, lifecycle state, bounded output, timeout, teardown, UI throttling, and focused tests | Strongest explicit setup lifecycle and late-event characterization | Not a readiness gate; follows links, runs credential-bearing shell scripts, kills only the direct child, and stores state in memory | AGPL-3.0 | `IDEA_ONLY`; no code, tests, or structure copied |
+| `stellarlinkco/myclaude` `f2e75c1263` | Minimal worktree creation, injected seams, real-Git tests, and phase routing | Small deterministic worktree wrapper and stable phase identity | Fails open to the main checkout; lacks containment, timeout, cleanup, and reconciliation | AGPL-3.0 | `IDEA_ONLY`; no code or tests copied |
+| `OpenBMB/ChatDev` `4fb2db0ea9` | Direct-argv `uv` helpers, workspace path checks, timeout, bounded workflow loops, and cooperative cancellation | Useful direct-argv and bounded-loop concepts | Networked and agent-controlled; inherits host environment; lacks focused provisioning tests, receipts, rollback, and process-tree cancellation | Apache-2.0 | `IDEA_ONLY`; provisioning implementation `NOT_USED` |
 
 ## Stagewise
 
@@ -52,7 +54,33 @@ tests, durable receipt, rollback, process-tree cancellation, or deterministic
 resolution. `tests/test_server_main_reload.py` passed 20 tests; another focused
 suite could not collect because the optional FastAPI dependency was absent.
 
-## RelayForge conclusion
+## Chosen design
+
+### Best implementation discovered
+
+Stagewise has the strongest setup lifecycle and late-event tests. MyClaude has
+the smallest useful deterministic seams, while ChatDev contributes the
+direct-argv principle and bounded workflow loops.
+
+### Why
+
+None provides the required parent-owned, offline, inode-isolated readiness
+barrier. Stagewise is asynchronous and credential-bearing, MyClaude fails
+open, and ChatDev is networked and agent-controlled.
+
+### What RelayForge will reuse
+
+Only `IDEA_ONLY` behavior: explicit terminal setup states, bounded diagnostics,
+late-event tests, injected seams, stable task identity, direct argv, and bounded
+loops. No upstream implementation or test expression is copied.
+
+### What RelayForge will change
+
+Provisioning runs before any consumer, copies from pinned descriptors without
+network or repository scripts, excludes credentials, and has deterministic
+rollback/recovery semantics.
+
+### How RelayForge will improve it
 
 Keep Phase-00 provisioning as a parent-owned, offline copy before any agent,
 reviewer, verifier, terminal, or mount consumer can use the worktree. Borrow

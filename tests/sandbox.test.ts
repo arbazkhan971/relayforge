@@ -11,10 +11,13 @@ import {
 import { verifyEnv } from "../src/orchestrator.js";
 
 const savedSandbox = process.env.LOOP_SANDBOX;
+const savedRelayForgeSandbox = process.env.RELAYFORGE_SANDBOX;
 
 afterEach(() => {
   if (savedSandbox === undefined) delete process.env.LOOP_SANDBOX;
   else process.env.LOOP_SANDBOX = savedSandbox;
+  if (savedRelayForgeSandbox === undefined) delete process.env.RELAYFORGE_SANDBOX;
+  else process.env.RELAYFORGE_SANDBOX = savedRelayForgeSandbox;
   setTrustedRunner(false);
 });
 
@@ -47,6 +50,14 @@ describe("bwrap policy (deterministic argv proof)", () => {
 });
 
 describe("fails closed without a launchable sandbox", () => {
+  it("accepts the canonical strictness-only override and refuses an alias conflict", () => {
+    delete process.env.LOOP_SANDBOX;
+    process.env.RELAYFORGE_SANDBOX = "none";
+    expect(detectSandbox()).toBe("none");
+    process.env.LOOP_SANDBOX = "off";
+    expect(() => detectSandbox()).toThrow(/ENV_CONFLICT/u);
+  });
+
   it("wrapCommand throws when no OS sandbox mechanism exists", () => {
     process.env.LOOP_SANDBOX = "none";
     expect(detectSandbox()).toBe("none");

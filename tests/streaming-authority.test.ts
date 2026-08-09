@@ -8,6 +8,7 @@ import { detectScopeCapability } from "../src/scope.js";
 const SCOPE_CAPABILITY = detectScopeCapability();
 
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,6 +21,8 @@ import type { NormalizedTurn, StreamingNormalizer } from "../src/normalize.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EMIT = join(HERE, "fixtures", "emit-bytes.mjs");
+const FLOOD_PROBE = join(HERE, "fixtures", "streaming-flood-probe.ts");
+const TSX = join(HERE, "..", "node_modules", "tsx", "dist", "cli.mjs");
 const PATH = process.env.PATH ?? "";
 
 // The launch handshake journals every scope BEFORE the provider execs, so a fake context needs a real
@@ -33,6 +36,57 @@ function fakeCtx() {
 }
 function tmp() {
   return mkdtempSync(join(tmpdir(), "loop-stream-"));
+}
+
+async function runFreshFloodProbe(): Promise<Readonly<{
+  rssDelta: number;
+  elapsedMs: number;
+  transportOk: boolean;
+  success: boolean;
+  ownedGroups: number;
+}>> {
+  return await new Promise((resolveProbe, rejectProbe) => {
+    const child = spawn(process.execPath, ["--expose-gc", TSX, FLOOD_PROBE], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let bytes = 0;
+    const maximumOutputBytes = 1024 * 1024;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectProbe(new Error("fresh streaming flood probe exceeded 120 seconds"));
+    }, 120_000);
+    const capture = (target: Buffer[]) => (chunk: Buffer): void => {
+      bytes += chunk.byteLength;
+      if (bytes > maximumOutputBytes) {
+        child.kill("SIGKILL");
+        rejectProbe(new Error("fresh streaming flood probe exceeded its output cap"));
+        return;
+      }
+      target.push(Buffer.from(chunk));
+    };
+    child.stdout!.on("data", capture(stdout));
+    child.stderr!.on("data", capture(stderr));
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      rejectProbe(error);
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        rejectProbe(new Error(`fresh streaming flood probe exited ${code ?? signal}: ${Buffer.concat(stderr).toString("utf8")}`));
+        return;
+      }
+      try {
+        resolveProbe(JSON.parse(Buffer.concat(stdout).toString("utf8")) as Awaited<ReturnType<typeof runFreshFloodProbe>>);
+      } catch (error) {
+        rejectProbe(new Error(`fresh streaming flood probe returned invalid JSON: ${String(error)}`));
+      }
+    });
+  });
 }
 
 /** A normalizer that records the EXACT frames the pipeline handed it — so a test can prove the framer
@@ -408,7 +462,11 @@ describe("Priority A — retention is bounded by CONFIGURED BYTES, not by event 
     for (let i = 0; i < 200_000; i++) {
       f.push(one);
       // The bound holds at EVERY instant — not just at the end, and not just on average.
-      expect(f.retainedBytes()).toBeLessThanOrEqual(cap);
+      // Avoid 200,000 framework matcher allocations: under the full two-worker stress suite those
+      // allocations alone can consume the test's deadline. This still checks every iteration and
+      // reports the exact first violating sample.
+      const retained = f.retainedBytes();
+      if (retained > cap) throw new Error(`retained ${retained} bytes after push ${i}; cap is ${cap}`);
     }
     expect(f.fatal()?.kind).toBe("oversize"); // ...and past the ceiling it retains nothing at all
     expect(f.retainedBytes()).toBe(0);
@@ -571,16 +629,11 @@ describe.skipIf(!SCOPE_CAPABILITY.strong)("Priority A — bounded memory and tim
   }
 
   it("6 million short newlines stay bounded, stay fast, and are classified UNCERTAIN (no terminal record)", async () => {
-    const ctx = fakeCtx();
-    global.gc?.();
-    const rss0 = process.memoryUsage().rss;
-    const t0 = Date.now();
-    const r = await runHeadlessChild(ctx, "node", [EMIT, "flood", "6000000"], { PATH }, "", process.cwd(), undefined, undefined, 90_000, "claude");
-    const elapsed = Date.now() - t0;
-    const rssDelta = process.memoryUsage().rss - rss0;
-    expect(r.transportOk).toBe(true); // no single record exceeded the ceiling — the STREAM is just junk
-    expect(r.streamedVerdict?.success).toBe(false);
-    expect(rssDelta, `RSS delta ${(rssDelta / 1048576).toFixed(1)} MiB`).toBeLessThan(128 * 1024 * 1024);
-    expect(elapsed, `elapsed ${elapsed}ms`).toBeLessThan(60_000);
+    const probe = await runFreshFloodProbe();
+    expect(probe.transportOk).toBe(true); // no single record exceeded the ceiling — the STREAM is just junk
+    expect(probe.success).toBe(false);
+    expect(probe.ownedGroups).toBe(0);
+    expect(probe.rssDelta, `RSS delta ${(probe.rssDelta / 1048576).toFixed(1)} MiB`).toBeLessThan(128 * 1024 * 1024);
+    expect(probe.elapsedMs, `elapsed ${probe.elapsedMs}ms`).toBeLessThan(60_000);
   }, 120_000);
 });

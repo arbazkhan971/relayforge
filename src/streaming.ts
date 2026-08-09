@@ -1,4 +1,288 @@
 import { createStreamingNormalizer, type FrameBytes, type NormalizedTurn, type ProviderKind, type StreamingNormalizer } from "./normalize.js";
+import {
+  AcpV1SessionCodec,
+  AcpV1TurnCodec,
+  AcpCancelStateMachine,
+  serializeAcpPermissionResponse,
+  serializeAcpNewSession,
+  serializeAcpPrompt,
+  type AcpRequestId
+} from "./adapters/acp-v1.js";
+import {
+  PiRpcSessionCodec,
+  PiRpcTurnCodec,
+  PiCancelStateMachine,
+  serializePiGetSessionStats,
+  serializePiPrompt
+} from "./adapters/pi-rpc.js";
+import { createAdapterReplayBinding } from "./adapters/registry.js";
+import { claudeAdapterDescriptor } from "./adapters/builtins/claude.js";
+import { codexAdapterDescriptor } from "./adapters/builtins/codex.js";
+import { customAdapterDescriptor } from "./adapters/builtins/custom.js";
+import { geminiAdapterDescriptor } from "./adapters/builtins/gemini.js";
+import { grokAdapterDescriptor } from "./adapters/builtins/grok.js";
+import { decodeGrokInitializeResponse } from "./adapters/grok-acp.js";
+import { opencodeAdapterDescriptor } from "./adapters/builtins/opencode.js";
+import { piAdapterDescriptor } from "./adapters/builtins/pi.js";
+import type {
+  AdapterDescriptor,
+  AdapterReplayBinding,
+  AdapterReplayBindingInput
+} from "./adapters/types.js";
+import type {
+  AdapterTerminalResult,
+  CodecFrame,
+  NormalizedAdapterEvent
+} from "./adapters/codec.js";
+
+export type AdapterProtocolCorrelation =
+  | Readonly<{ kind: "oneshot"; providerKind: ProviderKind }>
+  | Readonly<{ kind: "acp-v1"; sessionId: string; promptRequestId: AcpRequestId }>
+  | Readonly<{
+      kind: "acp-v1";
+      initializeRequestId: AcpRequestId;
+      newSessionRequestId: AcpRequestId;
+      promptRequestId: AcpRequestId;
+    }>
+  | Readonly<{ kind: "pi-rpc"; sessionId: string; promptRequestId: string }>
+  | Readonly<{
+      kind: "pi-rpc";
+      stateRequestId: string;
+      statisticsBeforeRequestId: string;
+      promptRequestId: string;
+      statisticsAfterRequestId: string;
+      cancelRequestId?: string;
+    }>;
+
+export type AdapterProtocolDriver = Readonly<{
+  request:
+    | Readonly<{
+        kind: "acp-v1";
+        cwd: string;
+        promptText: string;
+        sessionMeta?: Readonly<Record<string, unknown>>;
+        /** Parent-owned policy; absent means deny. Persistent approvals are never selectable. */
+        permissionPolicy?: "allow-once" | "deny";
+      }>
+    | Readonly<{ kind: "pi-rpc"; promptText: string }>;
+  write(bytes: Buffer): void;
+  close(): void;
+}>;
+
+/**
+ * Durable identity of the exact parser grammar used for one physical call.
+ * The correlation values are included because ACP/Pi replay cannot determine
+ * which response/session is authoritative without the original request scope.
+ */
+export type AdapterCallIdentity = Readonly<{
+  replay: AdapterReplayBinding;
+  correlation: AdapterProtocolCorrelation;
+  /** Exact canonical executable/helper evidence digest selected before reservation. */
+  runtimeIdentitySha256?: string;
+}>;
+
+const SHIPPED_DESCRIPTORS: Readonly<Record<string, AdapterDescriptor>> = Object.freeze({
+  claude: claudeAdapterDescriptor,
+  codex: codexAdapterDescriptor,
+  custom: customAdapterDescriptor,
+  gemini: geminiAdapterDescriptor,
+  grok: grokAdapterDescriptor,
+  opencode: opencodeAdapterDescriptor,
+  pi: piAdapterDescriptor
+});
+
+function boundedCorrelationId(value: unknown, name: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > 512 ||
+    value.includes("\0")
+  ) {
+    throw new TypeError(`${name} must be a bounded non-empty NUL-free string`);
+  }
+  return value;
+}
+
+function exactKeys(value: unknown, keys: readonly string[], name: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`${name} must be a plain object`);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${name} must be a plain object`);
+  if (Object.getOwnPropertySymbols(value).length !== 0) throw new TypeError(`${name} must not contain symbol keys`);
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if (descriptor.get || descriptor.set) throw new TypeError(`${name} must not contain accessors`);
+  }
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new TypeError(`${name} must contain exactly ${expected.join(", ")}`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function canonicalCorrelation(
+  descriptor: AdapterDescriptor,
+  value: AdapterProtocolCorrelation | unknown
+): AdapterProtocolCorrelation {
+  if (descriptor.transportKind === "oneshot-jsonl" || descriptor.transportKind === "oneshot-text") {
+    const input = exactKeys(value, ["kind", "providerKind"], "adapter correlation");
+    if (input.kind !== "oneshot" || input.providerKind !== descriptor.providerId) {
+      throw new TypeError(`adapter ${descriptor.id} requires its matching one-shot provider dialect`);
+    }
+    return Object.freeze({ kind: "oneshot", providerKind: input.providerKind as ProviderKind });
+  }
+  if (descriptor.transportKind === "acp-v1") {
+    if (value && typeof value === "object" && "sessionId" in value) {
+      const input = exactKeys(value, ["kind", "sessionId", "promptRequestId"], "adapter correlation");
+      if (input.kind !== "acp-v1") throw new TypeError(`adapter ${descriptor.id} requires ACP v1 correlation`);
+      return Object.freeze({
+        kind: "acp-v1",
+        sessionId: boundedCorrelationId(input.sessionId, "ACP sessionId"),
+        promptRequestId: acpCorrelationId(input.promptRequestId, "ACP promptRequestId")
+      });
+    }
+    const input = exactKeys(value, ["kind", "initializeRequestId", "newSessionRequestId", "promptRequestId"], "adapter correlation");
+    if (input.kind !== "acp-v1") throw new TypeError(`adapter ${descriptor.id} requires ACP v1 correlation`);
+    const ids = [
+      acpCorrelationId(input.initializeRequestId, "ACP initializeRequestId"),
+      acpCorrelationId(input.newSessionRequestId, "ACP newSessionRequestId"),
+      acpCorrelationId(input.promptRequestId, "ACP promptRequestId")
+    ] as const;
+    if (new Set(ids).size !== ids.length) throw new TypeError("ACP lifecycle request IDs must be distinct");
+    return Object.freeze({ kind: "acp-v1", initializeRequestId: ids[0], newSessionRequestId: ids[1], promptRequestId: ids[2] });
+  }
+  if (descriptor.transportKind === "rpc-jsonl" && descriptor.codec.id === "pi-rpc-jsonl") {
+    if (value && typeof value === "object" && "sessionId" in value) {
+      const input = exactKeys(value, ["kind", "sessionId", "promptRequestId"], "adapter correlation");
+      if (input.kind !== "pi-rpc") throw new TypeError(`adapter ${descriptor.id} requires Pi RPC correlation`);
+      return Object.freeze({
+        kind: "pi-rpc",
+        sessionId: boundedCorrelationId(input.sessionId, "Pi sessionId"),
+        promptRequestId: boundedCorrelationId(input.promptRequestId, "Pi promptRequestId")
+      });
+    }
+    const hasCancel = Boolean(value && typeof value === "object" && "cancelRequestId" in value);
+    const input = exactKeys(value, hasCancel
+      ? ["kind", "stateRequestId", "statisticsBeforeRequestId", "promptRequestId", "statisticsAfterRequestId", "cancelRequestId"]
+      : ["kind", "stateRequestId", "statisticsBeforeRequestId", "promptRequestId", "statisticsAfterRequestId"], "adapter correlation");
+    if (input.kind !== "pi-rpc") throw new TypeError(`adapter ${descriptor.id} requires Pi RPC correlation`);
+    const ids = [
+      boundedCorrelationId(input.stateRequestId, "Pi stateRequestId"),
+      boundedCorrelationId(input.statisticsBeforeRequestId, "Pi statisticsBeforeRequestId"),
+      boundedCorrelationId(input.promptRequestId, "Pi promptRequestId"),
+      boundedCorrelationId(input.statisticsAfterRequestId, "Pi statisticsAfterRequestId"),
+      ...(hasCancel ? [boundedCorrelationId(input.cancelRequestId, "Pi cancelRequestId")] : [])
+    ] as const;
+    if (new Set(ids).size !== ids.length) throw new TypeError("Pi lifecycle request IDs must be distinct");
+    return Object.freeze({
+      kind: "pi-rpc",
+      stateRequestId: ids[0],
+      statisticsBeforeRequestId: ids[1],
+      promptRequestId: ids[2],
+      statisticsAfterRequestId: ids[3],
+      ...(hasCancel ? { cancelRequestId: ids[4] } : {})
+    });
+  }
+  throw new TypeError(`adapter ${descriptor.id} transport ${descriptor.transportKind} has no shipped transcript codec`);
+}
+
+function acpCorrelationId(value: unknown, name: string): AcpRequestId {
+  if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+  return boundedCorrelationId(value, name);
+}
+
+/** Select and freeze the exact descriptor/wire/parser contract before reservation. */
+export function createAdapterCallIdentity(
+  descriptor: AdapterDescriptor,
+  wireVersion: string,
+  correlation: AdapterProtocolCorrelation,
+  runtimeIdentitySha256?: string
+): AdapterCallIdentity {
+  if (runtimeIdentitySha256 !== undefined && !/^[a-f0-9]{64}$/u.test(runtimeIdentitySha256)) {
+    throw new TypeError("adapter runtime identity must be a lowercase SHA-256 digest");
+  }
+  return Object.freeze({
+    replay: createAdapterReplayBinding(descriptor, wireVersion),
+    correlation: canonicalCorrelation(descriptor, correlation),
+    ...(runtimeIdentitySha256 === undefined ? {} : { runtimeIdentitySha256 })
+  });
+}
+
+/** Resolve untrusted durable identity only against a currently shipped exact descriptor. */
+export function resolveAdapterCallIdentity(value: AdapterCallIdentity | unknown): AdapterCallIdentity {
+  const hasRuntime = Boolean(value && typeof value === "object" && "runtimeIdentitySha256" in value);
+  const input = exactKeys(value, hasRuntime ? ["replay", "correlation", "runtimeIdentitySha256"] : ["replay", "correlation"], "adapter call identity");
+  const replay = exactKeys(input.replay, ["adapterId", "contractVersion", "transportKind", "wireVersion", "codec", "normalizer"], "adapter replay binding");
+  const descriptor = SHIPPED_DESCRIPTORS[String(replay.adapterId)];
+  if (!descriptor) throw new TypeError(`unknown shipped adapter ${JSON.stringify(replay.adapterId)}`);
+  const candidate = replay as unknown as AdapterReplayBindingInput;
+  const expected = createAdapterReplayBinding(descriptor, String(replay.wireVersion));
+  if (
+    candidate.adapterId !== expected.adapterId ||
+    candidate.contractVersion !== expected.contractVersion ||
+    candidate.transportKind !== expected.transportKind ||
+    candidate.wireVersion !== expected.wireVersion ||
+    candidate.codec?.id !== expected.codec.id ||
+    candidate.codec?.version !== expected.codec.version ||
+    candidate.normalizer?.id !== expected.normalizer.id ||
+    candidate.normalizer?.version !== expected.normalizer.version
+  ) {
+    throw new TypeError(`adapter ${descriptor.id} replay binding does not match the shipped descriptor`);
+  }
+  const runtimeIdentitySha256 = hasRuntime ? boundedCorrelationId(input.runtimeIdentitySha256, "adapter runtimeIdentitySha256") : undefined;
+  if (runtimeIdentitySha256 !== undefined && !/^[a-f0-9]{64}$/u.test(runtimeIdentitySha256)) {
+    throw new TypeError("adapter runtimeIdentitySha256 must be a lowercase SHA-256 digest");
+  }
+  return Object.freeze({
+    replay: expected,
+    correlation: canonicalCorrelation(descriptor, input.correlation),
+    ...(runtimeIdentitySha256 === undefined ? {} : { runtimeIdentitySha256 })
+  });
+}
+
+export function sameAdapterCallIdentity(left: AdapterCallIdentity, right: AdapterCallIdentity): boolean {
+  const a = left.replay;
+  const b = right.replay;
+  if (
+    a.adapterId !== b.adapterId ||
+    a.contractVersion !== b.contractVersion ||
+    a.transportKind !== b.transportKind ||
+    a.wireVersion !== b.wireVersion ||
+    a.codec.id !== b.codec.id ||
+    a.codec.version !== b.codec.version ||
+    a.normalizer.id !== b.normalizer.id ||
+    a.normalizer.version !== b.normalizer.version ||
+    left.correlation.kind !== right.correlation.kind ||
+    left.runtimeIdentitySha256 !== right.runtimeIdentitySha256
+  ) return false;
+  if (left.correlation.kind === "oneshot" && right.correlation.kind === "oneshot") {
+    return left.correlation.providerKind === right.correlation.providerKind;
+  }
+  if (left.correlation.kind === "acp-v1" && right.correlation.kind === "acp-v1") {
+    if ("sessionId" in left.correlation && "sessionId" in right.correlation) {
+      return left.correlation.sessionId === right.correlation.sessionId &&
+        left.correlation.promptRequestId === right.correlation.promptRequestId;
+    }
+    if (!("initializeRequestId" in left.correlation) || !("initializeRequestId" in right.correlation)) return false;
+    return left.correlation.initializeRequestId === right.correlation.initializeRequestId &&
+      left.correlation.newSessionRequestId === right.correlation.newSessionRequestId &&
+      left.correlation.promptRequestId === right.correlation.promptRequestId;
+  }
+  if (left.correlation.kind === "pi-rpc" && right.correlation.kind === "pi-rpc") {
+    if ("sessionId" in left.correlation && "sessionId" in right.correlation) {
+      return left.correlation.sessionId === right.correlation.sessionId &&
+        left.correlation.promptRequestId === right.correlation.promptRequestId;
+    }
+    if (!("stateRequestId" in left.correlation) || !("stateRequestId" in right.correlation)) return false;
+    return left.correlation.stateRequestId === right.correlation.stateRequestId &&
+      left.correlation.statisticsBeforeRequestId === right.correlation.statisticsBeforeRequestId &&
+      left.correlation.promptRequestId === right.correlation.promptRequestId &&
+      left.correlation.statisticsAfterRequestId === right.correlation.statisticsAfterRequestId &&
+      left.correlation.cancelRequestId === right.correlation.cancelRequestId;
+  }
+  return false;
+}
 
 /**
  * HARD ceiling on ONE stdout record (frame), in RAW WIRE BYTES — shared by the LIVE transport and by the
@@ -7,6 +291,8 @@ import { createStreamingNormalizer, type FrameBytes, type NormalizedTurn, type P
  * fatal on replay (or vice versa), and the money authority would diverge from the turn that earned it.
  */
 export const MAX_FRAME_BYTES = 32 * 1024 * 1024;
+export const MAX_STREAM_BYTES = 512 * 1024 * 1024;
+export const MAX_STREAM_FRAMES = 1_000_000;
 
 /**
  * ONE bounded raw stdout pipeline (wave-8d independent audit, findings A1/A2/A3).
@@ -32,10 +318,10 @@ export const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 /** A framing FATAL: the stream can no longer be interpreted, so the turn carries NO protocol authority
  *  (no terminal, no success, no explicit limit, no cost, no fallback). It is uncertainty, not a verdict. */
 export type FrameFatal = {
-  kind: "oversize";
-  /** The configured per-frame ceiling in raw bytes. */
+  kind: "oversize" | "total-limit" | "frame-count-limit";
+  /** The configured byte/frame ceiling. Retained names preserve the v1 transport API. */
   limitBytes: number;
-  /** Raw bytes of the offending frame observed before we stopped retaining (always > limitBytes). */
+  /** Observed raw bytes/frames before we stopped (always > limitBytes). */
   observedBytes: number;
   detail: string;
 };
@@ -99,26 +385,46 @@ export class RawFramer {
    *  which the transport writes from those same bytes in the same order. */
   private consumed = 0;
   private frameIndex = 0;
+  private totalBytes = 0;
+  private readonly maxTotalBytes: number;
+  private readonly maxFrames: number;
 
   constructor(
     private readonly maxFrameBytes: number,
-    private readonly onFrame: (frame: AcceptedFrame) => void
+    private readonly onFrame: (frame: AcceptedFrame) => void,
+    bounds: Readonly<{ maxTotalBytes?: number; maxFrames?: number }> = {}
   ) {
     assertLimit("maxFrameBytes", maxFrameBytes);
+    this.maxTotalBytes = bounds.maxTotalBytes ?? MAX_STREAM_BYTES;
+    this.maxFrames = bounds.maxFrames ?? Number.MAX_SAFE_INTEGER;
+    assertLimit("maxTotalBytes", this.maxTotalBytes);
+    assertLimit("maxFrames", this.maxFrames);
   }
 
   /** Feed raw child bytes. A no-op after a fatal or after `finish()` (push-after-finish is safe). */
   push(chunk: Buffer): void {
     if (this.fatalState !== undefined || this.finished || chunk.length === 0) return;
+    const remaining = this.maxTotalBytes - this.totalBytes;
+    const acceptedLength = Math.min(chunk.length, remaining);
+    const accepted = acceptedLength === chunk.length ? chunk : chunk.subarray(0, acceptedLength);
+    this.totalBytes += acceptedLength;
     let start = 0;
     for (;;) {
-      const nl = chunk.indexOf(0x0a, start); // scan the RAW bytes; never decoded text
+      const nl = accepted.indexOf(0x0a, start); // scan the RAW bytes; never decoded text
       if (nl < 0) break;
-      if (!this.take(chunk, start, nl)) return; // fatal on a TERMINATED frame → retain/scan nothing more
-      this.emit(true);
+      if (!this.take(accepted, start, nl)) return; // fatal on a TERMINATED frame → retain/scan nothing more
+      if (!this.emit(true)) return;
       start = nl + 1;
     }
-    if (start < chunk.length) this.take(chunk, start, chunk.length); // fatal on an UNTERMINATED frame
+    if (start < accepted.length && !this.take(accepted, start, accepted.length)) return;
+    if (acceptedLength < chunk.length) {
+      this.fail(
+        "total-limit",
+        this.maxTotalBytes,
+        this.maxTotalBytes + 1,
+        `stdout exceeded the ${this.maxTotalBytes}-byte total stream limit (framing failed → UNCERTAIN; no protocol authority)`
+      );
+    }
   }
 
   /** Copy `chunk[from,to)` into the frame's slabs. Returns false once the frame has gone fatal. */
@@ -127,7 +433,12 @@ export class RawFramer {
     if (len === 0) return true;
     this.seen += len;
     if (this.seen > this.maxFrameBytes) {
-      this.fail(this.seen);
+      this.fail(
+        "oversize",
+        this.maxFrameBytes,
+        this.seen,
+        `stdout record exceeded the ${this.maxFrameBytes}-byte frame limit (framing failed → UNCERTAIN; no protocol authority)`
+      );
       return false;
     }
     let off = from;
@@ -189,7 +500,16 @@ export class RawFramer {
   /** Decode the frame ONCE and fan the identical string — and its exact raw bytes and stream offset —
    *  to every sink. The offset accounting is exact: every byte of the stream belongs to exactly one
    *  frame or to the newline that terminates it. */
-  private emit(terminated: boolean): void {
+  private emit(terminated: boolean): boolean {
+    if (this.frameIndex >= this.maxFrames) {
+      this.fail(
+        "frame-count-limit",
+        this.maxFrames,
+        this.frameIndex + 1,
+        `stdout exceeded the ${this.maxFrames}-frame stream limit (framing failed → UNCERTAIN; no protocol authority)`
+      );
+      return false;
+    }
     const { raw, leasedSlab } = this.assemble();
     const text = raw.toString("utf8");
     const offset = this.consumed;
@@ -207,17 +527,18 @@ export class RawFramer {
         this.cachedSmallSlab = leasedSlab;
       }
     }
+    return true;
   }
 
   /** A record exceeded the ceiling. This is FATAL uncertainty: we emit NOTHING (a bounded prefix could
    *  be a complete, valid terminal record — the wave-8d A1 contradiction), drop everything retained, and
    *  stop accepting bytes. The caller reaps the child and fails the turn closed. */
-  private fail(observed: number): void {
+  private fail(kind: FrameFatal["kind"], limit: number, observed: number, detail: string): void {
     this.fatalState = {
-      kind: "oversize",
-      limitBytes: this.maxFrameBytes,
+      kind,
+      limitBytes: limit,
       observedBytes: observed,
-      detail: `stdout record exceeded the ${this.maxFrameBytes}-byte frame limit (framing failed → UNCERTAIN; no protocol authority)`
+      detail
     };
     this.reset(); // never retain, never emit, never parse a byte of it
   }
@@ -327,6 +648,10 @@ export type StreamOutcome = {
   /** The whole-stream protocol verdict. Undefined when the stream went fatal (framing failure ⇒ no
    *  terminal/success/limit/cost/fallback authority) or when no provider normalizer was supplied. */
   verdict?: NormalizedTurn;
+  /** Exact structured ACP/Pi terminal derived by the selected shipped codec. */
+  adapterResult?: AdapterTerminalResult;
+  /** Canonical replay identity that selected the parser for this stream. */
+  adapterIdentity?: AdapterCallIdentity;
   /** The bounded display tail. */
   tail: string;
   /** Frames the framer accepted and fanned to both sinks. */
@@ -342,26 +667,180 @@ export class StdoutStream {
   private readonly framer: RawFramer;
   private readonly tail: BoundedTail;
   private readonly norm: StreamingNormalizer | undefined;
+  private readonly adapterCodec: Readonly<{
+    push(frame: CodecFrame): readonly NormalizedAdapterEvent[];
+    finish(): AdapterTerminalResult;
+  }> | undefined;
+  private readonly adapterIdentity: AdapterCallIdentity | undefined;
+  private requestAdapterCancel: (() => boolean) | undefined;
   private frames = 0;
   private outcome: StreamOutcome | undefined;
 
-  constructor(opts: { maxFrameBytes: number; tailCap: number; normalizer?: StreamingNormalizer }) {
-    this.norm = opts.normalizer;
+  constructor(opts: {
+    maxFrameBytes: number;
+    maxTotalBytes?: number;
+    maxFrames?: number;
+    tailCap: number;
+    normalizer?: StreamingNormalizer;
+    adapter?: AdapterCallIdentity;
+    onAdapterEvent?: (event: NormalizedAdapterEvent) => void;
+    protocolDriver?: AdapterProtocolDriver;
+  }) {
+    if (opts.normalizer && opts.adapter) throw new TypeError("stdout stream must select either a legacy normalizer or an adapter identity");
+    this.adapterIdentity = opts.adapter ? resolveAdapterCallIdentity(opts.adapter) : undefined;
+    if (this.adapterIdentity?.correlation.kind === "oneshot") {
+      this.norm = createStreamingNormalizer(this.adapterIdentity.correlation.providerKind);
+    } else {
+      this.norm = opts.normalizer;
+    }
+    const emit = opts.onAdapterEvent
+      ? (event: NormalizedAdapterEvent) => {
+          try {
+            opts.onAdapterEvent!(event);
+          } catch {
+            // Observation cannot mutate protocol or settlement authority.
+          }
+        }
+      : undefined;
+    if (this.adapterIdentity?.correlation.kind === "acp-v1") {
+      const correlation = this.adapterIdentity.correlation;
+      if ("sessionId" in correlation) {
+        this.adapterCodec = new AcpV1TurnCodec({
+          sessionId: correlation.sessionId,
+          promptRequestId: correlation.promptRequestId,
+          onEvent: emit
+        });
+      } else {
+        const driver = opts.protocolDriver;
+        if (driver && driver.request.kind !== "acp-v1") throw new TypeError("ACP identity requires an ACP protocol driver");
+        let cancel: AcpCancelStateMachine | undefined;
+        let cancelPending = false;
+        if (driver) {
+          this.requestAdapterCancel = () => {
+            cancelPending = true;
+            const request = cancel?.request();
+            if (request?.outbound) driver.write(request.outbound);
+            return true;
+          };
+        }
+        this.adapterCodec = new AcpV1SessionCodec({
+          initializeRequestId: correlation.initializeRequestId,
+          newSessionRequestId: correlation.newSessionRequestId,
+          promptRequestId: correlation.promptRequestId,
+          ...(this.adapterIdentity.replay.adapterId === "grok"
+            ? { decodeInitializeResponse: decodeGrokInitializeResponse }
+            : {}),
+          onEvent: (event) => {
+            emit?.(event);
+            if (driver && event.kind === "permission") {
+              const allow = driver.request.kind === "acp-v1" &&
+                driver.request.permissionPolicy === "allow-once" &&
+                event.allowOnceOptionId !== undefined;
+              driver.write(serializeAcpPermissionResponse({
+                requestId: event.permissionId,
+                outcome: allow ? "allow-once" : "cancelled",
+                ...(allow ? { allowOnceOptionId: event.allowOnceOptionId } : {})
+              }));
+            }
+          },
+          onInitialized: driver ? () => driver.write(serializeAcpNewSession({
+            requestId: correlation.newSessionRequestId,
+            cwd: driver.request.kind === "acp-v1" ? driver.request.cwd : "",
+            ...(driver.request.kind !== "acp-v1" || driver.request.sessionMeta === undefined
+              ? {}
+              : { meta: driver.request.sessionMeta })
+          })) : undefined,
+          onSessionReady: driver ? (session) => {
+            driver.write(serializeAcpPrompt({
+              requestId: correlation.promptRequestId,
+              sessionId: session.sessionId,
+              text: driver.request.kind === "acp-v1" ? driver.request.promptText : ""
+            }));
+            cancel = new AcpCancelStateMachine(session.sessionId);
+            if (cancelPending) {
+              const request = cancel.request();
+              if (request.outbound) driver.write(request.outbound);
+            }
+          } : undefined,
+          onPromptTerminal: driver ? () => driver.close() : undefined
+        });
+      }
+    } else if (this.adapterIdentity?.correlation.kind === "pi-rpc") {
+      const correlation = this.adapterIdentity.correlation;
+      if ("sessionId" in correlation) {
+        this.adapterCodec = new PiRpcTurnCodec({
+          sessionId: correlation.sessionId,
+          promptRequestId: correlation.promptRequestId,
+          onEvent: emit
+        });
+      } else {
+        const driver = opts.protocolDriver;
+        if (driver && driver.request.kind !== "pi-rpc") throw new TypeError("Pi identity requires a Pi protocol driver");
+        let turnReady = false;
+        let cancelPending = false;
+        const cancel = driver && correlation.cancelRequestId ? new PiCancelStateMachine(correlation.cancelRequestId) : undefined;
+        if (driver && cancel) {
+          this.requestAdapterCancel = () => {
+            cancelPending = true;
+            if (turnReady) {
+              const request = cancel.request();
+              if (request.outbound) driver.write(request.outbound);
+            }
+            return true;
+          };
+        }
+        this.adapterCodec = new PiRpcSessionCodec({
+          stateRequestId: correlation.stateRequestId,
+          statisticsBeforeRequestId: correlation.statisticsBeforeRequestId,
+          promptRequestId: correlation.promptRequestId,
+          statisticsAfterRequestId: correlation.statisticsAfterRequestId,
+          ...(correlation.cancelRequestId ? { cancelRequestId: correlation.cancelRequestId } : {}),
+          onEvent: emit,
+          onStateReady: driver ? () => driver.write(serializePiGetSessionStats(correlation.statisticsBeforeRequestId)) : undefined,
+          onStatisticsReady: driver ? () => {
+            driver.write(serializePiPrompt({
+              requestId: correlation.promptRequestId,
+              message: driver.request.kind === "pi-rpc" ? driver.request.promptText : ""
+            }));
+            turnReady = true;
+            if (cancelPending && cancel) {
+              const request = cancel.request();
+              if (request.outbound) driver.write(request.outbound);
+            }
+          } : undefined,
+          onAgentSettled: driver ? () => driver.write(serializePiGetSessionStats(correlation.statisticsAfterRequestId)) : undefined,
+          onComplete: driver ? () => driver.close() : undefined
+        });
+      }
+    }
     this.tail = new BoundedTail(opts.tailCap);
-    this.framer = new RawFramer(opts.maxFrameBytes, (f) => {
-      this.frames += 1;
-      // The SAME decoded frame reaches both sinks. They cannot disagree about what was framed.
-      this.tail.accept(f.text, f.terminated);
-      // The normalizer additionally receives the frame's exact raw bytes and stream offset, so when it
-      // ACCEPTS a canonical terminal record it can bind its verdict to those exact bytes (hashing them
-      // in this one pass) instead of to a re-serialization of the verdict it derived.
-      this.norm?.pushLine(f.text, f);
-    });
+    this.framer = new RawFramer(
+      opts.maxFrameBytes,
+      (f) => {
+        this.frames += 1;
+        // The SAME decoded frame reaches both sinks. They cannot disagree about what was framed.
+        this.tail.accept(f.text, f.terminated);
+        // The normalizer additionally receives the frame's exact raw bytes and stream offset, so when it
+        // ACCEPTS a canonical terminal record it can bind its verdict to those exact bytes (hashing them
+        // in this one pass) instead of to a re-serialization of the verdict it derived.
+        this.norm?.pushLine(f.text, f);
+        this.adapterCodec?.push(f);
+      },
+      {
+        maxTotalBytes: opts.maxTotalBytes,
+        maxFrames: opts.maxFrames ?? (this.adapterCodec ? MAX_STREAM_FRAMES : Number.MAX_SAFE_INTEGER)
+      }
+    );
   }
 
   push(buf: Buffer): void {
     if (this.outcome !== undefined) return; // push-after-finish is safe and ignored
     this.framer.push(buf);
+  }
+
+  /** Request the adapter's one bounded cooperative cancel command; idempotent by codec state. */
+  requestCancel(): boolean {
+    return this.requestAdapterCancel?.() ?? false;
   }
 
   /** The framing fatal, decided at the exact overflowing byte — final before finalization reads it. */
@@ -394,6 +873,20 @@ export class StdoutStream {
     return stream.finish();
   }
 
+  /** Replay one exact durable adapter grammar through the same raw framer used live. */
+  static replayAdapter(
+    identity: AdapterCallIdentity,
+    pump: (push: (chunk: Buffer) => void) => void
+  ): StreamOutcome {
+    const stream = new StdoutStream({
+      maxFrameBytes: MAX_FRAME_BYTES,
+      tailCap: 1,
+      adapter: identity
+    });
+    pump((chunk) => stream.push(chunk));
+    return stream.finish();
+  }
+
   /** Finalize once (idempotent): flush the final unterminated frame, then produce the outcome. */
   finish(): StreamOutcome {
     if (this.outcome !== undefined) return this.outcome;
@@ -405,6 +898,8 @@ export class StdoutStream {
       // valid-looking record) before the fatal frame, but the stream as a whole was never framed, so it
       // can carry no acceptance, cost, or fallback authority.
       verdict: fatal !== undefined ? undefined : this.norm?.finish(),
+      adapterResult: fatal !== undefined ? undefined : this.adapterCodec?.finish(),
+      ...(this.adapterIdentity ? { adapterIdentity: this.adapterIdentity } : {}),
       tail: this.tail.value(),
       frames: this.frames
     };

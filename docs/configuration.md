@@ -1,223 +1,351 @@
-# Configuration
+# RelayForge configuration
 
-`loop.config.yaml` is the control plane for your team. Everything lives under one or more `projects`; each project has its own `providers`, `roles`, and `loops`, and works on a single repository via `workingDir`.
+RelayForge configuration is strict, bounded, and fail closed. The canonical
+filename is `relayforge.config.yaml`; `.yml` and `.json` are also accepted.
+Existing `loop.config.yaml`, `loop.config.yml`, and `loop.config.json` remain
+supported compatibility inputs and are not rewritten on load.
+
+## Discovery
+
+Without `--config`, RelayForge walks from the current directory toward the
+filesystem root. At each directory it checks all six supported names. Exactly
+one candidate is adopted. More than one candidate in the same discovered
+directory raises `CONFIG_AMBIGUOUS`; no filename wins by priority.
+
+Use an exact file when needed:
+
+```bash
+relayforge --config /absolute/path/to/relayforge.config.yaml validate
+```
+
+An explicit path bypasses discovery but not parsing, schema, or semantic
+validation. `relayforge init` creates `relayforge.config.yaml` only when no
+supported config is discoverable. `--force` may replace auxiliary starter files;
+it never replaces a config or `.loop` state.
+
+## Complete starter-shaped example
 
 ```yaml
 version: 1
+
 defaults:
-  namespace: loop
+  namespace: relayforge
+  dashboardPort: 4318
+  promptDir: .loop/prompts
   runDir: .loop/runs
-  viewport: true                  # the OPTIONAL tmux viewport (see below)
+  viewport: true
 
 projects:
-  - name: demo-product
+  - name: demo
     brief: brief.md
-    workingDir: .                 # the loop works one repository at a time
+    workingDir: .
     intelligence: PROJECT-INTELLIGENCE.md
     safetyMode: workspace-write
-    providers: { ... }
-    roles: [ ... ]
-    loops: [ ... ]
+
+    providers:
+      primary:
+        type: claude
+        model: opus
+        auth:
+          mode: auto
+      fallback:
+        type: codex
+        fallbackFor: primary
+        cooldownSeconds: 900
+        auth:
+          mode: auto
+
+    roles:
+      - name: pm
+        title: Product planner
+        provider: primary
+        sme: product-manager
+        responsibilities:
+          - Decompose the goal into bounded tasks
+        guardrails:
+          - Do not implement tasks
+      - name: engineer
+        title: Implementer
+        provider: primary
+        sme: engineer
+      - name: qa
+        title: Independent reviewer
+        provider: primary
+        sme: qa
+
+    loops:
+      - name: delivery
+        orchestrator: pm
+        reviewer: qa
+        cadenceMinutes: 30
+        pollSeconds: 8
+        maxIterations: 8
+        maxRepairs: 2
+        verifyStabilityRuns: 3
+        maxSameFailureCount: 2
+        contextTokenBudget: 16000
+        postMergeVerify: true
+        maxParallel: 1
+        budgetMode: unlimited
+        budgetUsd: 0
+        maxCostPerCallUsd: 0
+        allowUnknownCostCalls: 0
+        verify:
+          - npm test
+        provision: []
+        stopWhen:
+          - all tasks done
+          - tests pass
 ```
 
-`safetyMode` accepts only `review` and `workspace-write` (default). The former `full-auto` mode has been **removed** — there is no unsandboxed host mode. The schema is **strict**: unknown keys are rejected by `loop validate`.
+The fallback above is the only allowed fallback shape: a Codex route may name a
+Claude primary. Unknown, self, non-Codex, and non-Claude-target fallbacks fail
+semantic validation.
 
-## The tmux viewport (`defaults.viewport`)
+## Root and defaults
 
-`viewport: true` (the default) lets a run open its optional tmux viewport — one tiled pane per role,
-opened with `loop tmux new`. Set it to `false` and Loop never touches tmux: the loop still runs fully
-headless, and `loop monitor` and the dashboard still show everything.
+`version` must be the number `1`. Unknown fields are rejected at every object
+level.
 
-The `LOOP_TMUX=off` environment variable disables the viewport for a single invocation. It can only
-ever **disable** — it never enables a viewport the config turned off — so a CI job or a test suite can
-guarantee "this process opens no tmux sessions" with one variable. `loop doctor` reports both facts
-(`tmux` = is the binary installed; `tmux-viewport` = is the viewport switched on), because they need
-different fixes.
+`defaults` accepts:
 
-Session names are derived from `namespace`, project, run id, and role, and are always tmux-safe: `.`
-and `:` are rewritten (tmux silently stores them as `_`, which would make two different projects
-collide on one session), and a stable identity hash is appended so distinct runs can never share a
-session. Every Loop-created session is stamped with `@loop-*` ownership metadata — Loop will not adopt,
-capture, or kill a session that lacks it.
+- `namespace`: safe identifier used by owned viewport names; default `loop` for
+  durable compatibility.
+- `dashboardPort`: integer 1–65535; default 4318.
+- `promptDir`: path under the config root; default `.loop/prompts`.
+- `runDir`: path under the config root; default `.loop/runs`.
+- `viewport`: whether the optional tmux viewport may be created; default true.
 
-## Providers
+Configured paths resolve against the directory containing the adopted config
+and may not escape it. Absolute outside paths, `..` escapes, NUL bytes, and
+invalid identifiers fail before access.
 
-```yaml
-providers:
-  frontend:
-    type: claude
-    auth:
-      mode: subscription
-      configured: true
-    args: []
-    promptMode: interactive
-  backend:
-    type: codex
-    effort: medium
-    auth:
-      mode: subscription
-      configured: true
-    args: []
-```
+## Projects
 
-Models are **unpinned by default for Codex and Gemini** — the provider CLI uses its own default so the config never references a model that may not exist. A **Claude** provider is the one exception: it defaults to the `opus` alias (Opus is the primary implementation executor in the routing design), so a Claude turn runs `--model opus` unless you set `model:` to override it. Set `model:` on any provider to pin a specific model.
+Every project has:
 
-Auth modes:
+- `name`: unique bounded identifier;
+- `brief`: project brief path, default `brief.md`;
+- `workingDir`: the one repository used by the live execution path, default `.`;
+- `intelligence`: generated context path, default
+  `PROJECT-INTELLIGENCE.md`;
+- `safetyMode`: `workspace-write` or `review`;
+- `providers`: named provider routes;
+- `roles`: one or more named team roles; and
+- `loops`: autonomy-loop policies.
 
-- `auto`: let `loop auth configure --write` detect local setup.
-- `subscription`: use locally authenticated CLI state, such as prior OAuth/login.
-- `api-key`: use the named env var for API billing.
-- `env`: user still needs to install/login/set an env var.
+`safetyMode` does not disable the OS sandbox. `review` and
+`workspace-write` preserve the same outer containment; reviewers receive an
+inner read-only provider policy. There is no `full-auto` or host-unsandboxed
+mode.
 
-Local setup:
+### Multi-repository fields
 
-```bash
-loop auth status
-loop auth configure --write
-```
+The schema retains project `repositories` and role `repositories` only as
+bounded typed shapes for forward evolution. In 1.0.0-rc.1, semantic validation
+rejects every non-empty use with an actionable error. Configure one repository
+using `workingDir`.
 
-Secret values are never stored. Only the env var name is written.
+Do not treat the presence of multi-repository library/coordinator modules as
+permission to bypass this validation. The CLI and central ControlStore route are
+not enabled for them.
 
-How providers are invoked (the orchestrator sets these deterministically; it rejects conflicting raw `args`):
+## Provider routes
 
-- **Claude** runs headless with `--permission-mode acceptEdits` for implementers and `--permission-mode plan` (read-only) for reviewers. `--dangerously-skip-permissions` is **never** added by default.
-- **Codex** runs `codex exec --sandbox workspace-write` (implementer) / `--sandbox read-only` (reviewer), with reasoning effort via `-c model_reasoning_effort=<minimal|low|medium|high>` (set `effort:`). It never uses `--full-auto` or `--effort`.
-- **Gemini** and **custom** providers carry no provider-native safety claim; their containment is the OS sandbox.
+Common provider fields are:
 
-Explicit opt-in switches (discouraged):
+- `type`: `claude`, `codex`, `gemini`, `custom`, `opencode`, `pi`, or `grok`;
+- `command`: custom/legacy command override where the adapter permits it;
+- `args`: bounded argument list;
+- `model`: provider model where supported;
+- `effort`: Codex reasoning effort where supported;
+- `systemPromptFlag`: Claude legacy system-prompt flag override;
+- `fallbackFor`: allowed only for Codex → Claude;
+- `cooldownSeconds`: fallback recovery delay;
+- `preauthorizingGateway`: evidence claim required for `hard-usd`;
+- `promptMode`: `interactive`, `stdin`, or `argument` where supported;
+- `env`: bounded provider environment overlay where supported; and
+- `auth`: mode, selected environment variable, local configured marker, and
+  notes.
 
-- `dangerouslySkipPermissions: true` (Claude) is an explicit opt-in bypass — **no longer added by default**, discouraged, and **requires an OS sandbox** (if none is available the run fails closed rather than bypassing permissions). `loop init` emits it off. Codex has **no** equivalent in this release: `yolo: true` is **not supported** and `loop validate` now **rejects** it (it never had any effect — a config that set it was silently ignored). Codex's boundary is `exec --sandbox workspace-write` (reviewers `read-only`) plus the OS sandbox. See `docs/safety.md`.
+`auth.mode` is one of `auto`, `subscription`, `api-key`, or `env`. RelayForge
+does not place secrets in the durable control plane or public observations.
+Use `relayforge auth status` and `relayforge doctor` to inspect readiness.
 
-Routing:
+### Claude, Codex, Gemini, and custom
 
-- `fallbackFor: <providerKey>` marks a provider as the fallback for a primary; it is used only on an explicitly-classified usage/rate/quota limit of the primary.
-- `cooldownSeconds` (default 900): how long a rate-limited primary is left in cooldown before it is probed again. `loop init` wires an `opus` (Claude, primary) + `gpt` (Codex, `fallbackFor: opus`) chain when both CLIs are installed.
+These adapters preserve their established non-interactive builders and output
+normalizers while running through one contained transport and settlement path.
 
-Prompt modes:
+- Claude supports the exact audited 2.1.207 contract.
+- Codex supports `>=0.144 <0.145`. `yolo: true` is rejected because it is not
+  an implemented safety contract. Reviewer calls are read-only.
+- Gemini is a legacy contract for supported versions below 1.0.
+- A custom provider must identify a real non-interactive executable contract.
+  Its behavior and truthful usage reporting remain operator responsibility.
 
-- `interactive`: start the agent and show the prompt file path.
-- `stdin`: pipe the generated prompt into the command.
-- `argument`: pass a short instruction pointing to the prompt file.
+`dangerouslySkipPermissions` is a deprecated Claude-only opt-in retained for
+compatibility; it does not remove Bubblewrap/cgroup containment. Prefer the
+default false value.
 
-## Repositories
+### OpenCode native ACP
 
-Multi-repository execution is **not supported** in this release and is rejected by `loop validate` (both a project-level `repositories:` list and a `repositories:` field on a role). Run one repo at a time by setting the project's `workingDir` and starting a separate run per repository.
+The OpenCode descriptor is fixed to the audited 1.18.15 executable behavior and
+ACP wire v1. Its configuration is data-only. The following are forbidden:
+
+- command, raw argument, or environment overrides;
+- prompt-mode, wire, or protocol changes;
+- permission-bypass switches;
+- fallback authority;
+- `effort` and system-prompt flag overrides; and
+- model selection until ACP model-option negotiation is proven.
+
+Readiness requires parent-contained proof of the exact executable, version,
+behavior, wire contract, and role policy. A reviewer additionally requires
+proven inner deny-mutation policy. The ordinary CLI currently has no injection
+surface for this probe evidence; therefore an OpenCode route fails closed as
+unavailable before reservation in normal operation. Required release tests use
+real contained evidence.
+
+### Pi native RPC
+
+The Pi descriptor is fixed to 0.84.1 and RPC JSONL. It also rejects command,
+raw argument, environment, prompt-mode, permission-bypass, and fallback
+overrides. Authentication environment names are closed to the audited provider
+set.
+
+Readiness requires exact parent-contained executable/version/protocol/behavior
+evidence. Reviewer mode requires a content-bound copy of the bundled
+`pi-relayforge-reviewer.mjs` helper and inner read-only behavior. Installation
+or a version string alone is not enough. As with OpenCode, normal CLI execution
+currently reports unavailable before reservation because it does not inject the
+required evidence.
+
+### Grok Build native ACP
+
+The Grok descriptor is fixed to stable 1.0.0 build `3cd0d0cbce` and ACP wire
+v1. Its supported configuration is data-only: optional `model` and
+`auth: { mode: api-key, env: XAI_API_KEY }`. Raw command/argv/env, permission,
+leader/socket, serve/headless, plugin, endpoint, trust/yolo, prompt-mode,
+effort, and fallback overrides are rejected.
+
+The contained parent uses a private empty HOME/GROK_HOME and fixed disables for
+auto-update, web tools, subagents, memory, telemetry, traces, feedback,
+instrumentation, prompt suggestions, and summary side calls. Standing
+instructions use bounded `session/new._meta.systemPromptOverride`; task text
+uses `session/prompt`. Workers remain unattended through parent-controlled ACP
+permission replies that select only a provider-offered `allow_once`; reviewers
+run in `plan` and permission requests are cancelled. RelayForge never emits
+Grok `--yolo`/`--always-approve` or selects a persistent approval. Availability
+additionally requires exact executable,
+stable version/build/channel, ACP lifecycle, configuration isolation,
+network/tool policy, unapproved-upload denial, cancellation, accounting and
+role evidence. An installed executable or initialize response alone is not
+readiness. See the [Grok P4 audit](reference/phase-04-grok-build-addendum.md).
 
 ## Roles
 
-Roles define what each session should do. A role references a provider key and, optionally, an `sme:` discipline that seeds its expert system prompt.
+Each role declares:
 
-```yaml
-roles:
-  - name: implementer
-    title: Implementer
-    provider: frontend
-    sme: fullstack
-```
+- unique safe `name`;
+- human-readable `title`;
+- an existing provider key;
+- optional built-in `sme` discipline;
+- bounded `responsibilities` and `guardrails`; and
+- `autoStart`, default true.
+
+The built-in SME set spans product, architecture, engineering, QA, security,
+operations, release, writing, and other disciplines. Unknown disciplines are
+rejected by the schema.
+
+Role `repositories` must remain empty in this release. The reviewer must exist;
+when a project has multiple roles, it must differ from the loop orchestrator so
+review is independent.
 
 ## Loops
 
-Loop controls live on each project's `loops` entry and are the heart of autonomous execution.
+Important loop controls include:
+
+- `orchestrator`: planning role;
+- `reviewer`: independent review role;
+- `maxIterations`: 1–1000;
+- `maxRepairs`: bounded redispatch count;
+- `verify`: ordered verifier commands;
+- `verifyStabilityRuns`: consecutive green runs required before dispatch;
+- `maxSameFailureCount`: repeated-signature stop threshold;
+- `contextTokenBudget`: bounded approximate context characters;
+- `postMergeVerify`: verify after each accepted integration;
+- `maxParallel`: at most 64 isolated attempts;
+- `pollSeconds` and `cadenceMinutes`: bounded loop timing; and
+- `stopWhen`: planner hints, not acceptance authority.
+
+The binding completion contract is accepted tasks plus deterministic green
+verification. `stopWhen` strings cannot override review or verification.
+
+## Budget modes
+
+| Mode | Contract |
+| --- | --- |
+| `unlimited` | No USD ceiling; other stop rules still apply |
+| `estimated-usd` | Soft post-response accounting; the final in-flight call can overshoot |
+| `hard-usd` | Provable ceiling; every possible route must prove a preauthorizing gateway |
+| `subscription-quota` | Provider quota state without USD accounting |
+
+If `budgetMode` is omitted, normalization selects `estimated-usd` for a positive
+`budgetUsd` and `unlimited` otherwise. A positive budget requires
+`maxCostPerCallUsd > 0` and `maxCostPerCallUsd <= budgetUsd`; RelayForge reserves
+that maximum before each physical call. Direct Claude/Codex-style CLIs are
+post-response and cannot truthfully satisfy `hard-usd` merely by accepting a
+soft budget flag.
+
+If cost is missing, the call remains unknown-cost. A positive budget refuses
+further unknown spending unless `allowUnknownCostCalls` explicitly permits a
+bounded count.
+
+## Offline provisioning
+
+A loop may configure up to 32 provisioning specifications:
 
 ```yaml
-loops:
-  - name: delivery-loop
-    cadenceMinutes: 30
-    maxIterations: 8
-    stopWhen:
-      - all tasks done
-      - tests pass
-    pollSeconds: 8
-    orchestrator: pm
-    reviewer: qa
-    maxRepairs: 2
-    verifyStabilityRuns: 3
-    maxSameFailureCount: 2
-    contextTokenBudget: 16000
-    verify: []
-    provision:
-      - path: node_modules
-        requiredExecutables:
-          - .bin/tsc
-    postMergeVerify: true
-    maxParallel: 2
-    budgetUsd: 0
-    maxCostPerCallUsd: 0    # REQUIRED when budgetUsd > 0 (> 0 and <= budgetUsd)
-    allowUnknownCostCalls: 0
+provision:
+  - path: .toolchain
+    requiredExecutables:
+      - bin/project-tool
 ```
 
-Field reference:
+The parent validates source and destination identities and copies an existing
+local tree into integration, attempt, and review worktrees before readiness.
+Paths, aliases, overlap, symlinks, special files, size, entry count, depth, and
+required executable identity are checked by the same validator used by config,
+doctor, and execution.
 
-- `cadenceMinutes`: per-task headless timeout
-- `maxIterations`: hard cap on loop rounds
-- `stopWhen`: **advisory** free-text "done" hints, surfaced to the planner when it decomposes the goal. They are NOT loop gates — completion is decided by independent review plus the deterministic verifier, which no hint can weaken or substitute for. There are no reserved/special values (an earlier draft listed `review complete` / `pull request opened`; no such conditions are interpreted, and there is no pull-request integration in this release).
-- `pollSeconds`: delay between iterations
-- `orchestrator`: role used for decomposition and orchestrator duties
-- `reviewer`: role used as independent reviewer (must differ from the orchestrator when the project has more than one role)
-- `maxRepairs`: max failed attempts before escalation
-- `verifyStabilityRuns`: repeat verifier runs required to confirm stable green state
-- `maxSameFailureCount`: stop when the same failure signature repeats this many times
-- `contextTokenBudget`: budget for each iteration's context snapshot (characters)
-- `verify`: ordered list of verifier commands (run in sequence; all must pass). Empty = auto-detect the project's test then build command from PROJECT-INTELLIGENCE.
-- `provision`: bounded offline dependency trees copied from the selected project's `workingDir`
-  into every loop-owned worktree before it can become ready. See [Offline worktree
-  provisioning](#offline-worktree-provisioning).
-- `postMergeVerify`: re-run verifier immediately after accepted merge
-- `maxParallel`: max simultaneous role dispatches per round. Each task always runs in its own git worktree; isolation is mandatory and cannot be disabled.
-- `budgetUsd`: stop if total estimated USD spend reaches this limit (0 = unlimited). Budgets are checked before every planner/worker/reviewer call; when a provider reports no cost, spend is recorded as unknown, never silently zero.
-- `maxCostPerCallUsd`: the per-call reservation cap. **Required whenever `budgetUsd > 0`** — it must be `> 0` and `<= budgetUsd`. A positive budget with no per-call cap **fails closed before the planner** (the run ends `blocked`), because without a cap every call would have to reserve the entire budget, making the budget a one-call limit rather than a real ceiling. Leave it `0` only when `budgetUsd` is `0` (unlimited).
-- `allowUnknownCostCalls` (default 0): under a positive `budgetUsd`, the run **fails closed** when providers report unknown cost more than this many times, so an unmetered provider can't silently blow past the budget.
-- `budgetMode` (default `estimated-usd`): `estimated-usd` is a soft post-response ledger (the direct CLIs report cost only after each turn); `subscription-quota` meters no USD (do not set `budgetUsd`); `unlimited` disables the USD budget. `hard-usd` — a provable pre-authorized ceiling — is **not available in this release**: it requires a real preauthorizing billing-gateway adapter (server-side cap, idempotency key, authoritative receipt), which is not integrated, so selecting it **fails closed**. The `preauthorizingGateway` flag is reserved for that future adapter and does not by itself enable `hard-usd`.
+Provisioning never downloads, runs a package manager, executes lifecycle
+scripts, or mutates the source tree. Empty `provision` disables the copy gate.
+Large valid trees can still cost time and disk.
 
-## Offline worktree provisioning
+## Environment compatibility
 
-`provision` makes an already-installed local dependency tree available inside isolated Git
-worktrees without running an installer. It is configured per loop as a list of strict objects:
+Use the public names in new automation:
 
-```yaml
-loops:
-  - name: delivery-loop
-    provision:
-      - path: node_modules
-        requiredExecutables:
-          - .bin/tsc
-          - .bin/vitest
-      - path: vendor
+| Public | Legacy alias | Meaning |
+| --- | --- | --- |
+| `RELAYFORGE_TMUX=off` | `LOOP_TMUX=off` | Disable the optional viewport for one invocation |
+| `RELAYFORGE_TMUX_SOCKET` | `LOOP_TMUX_SOCKET` | Select the tmux socket name |
+| `RELAYFORGE_SANDBOX` | `LOOP_SANDBOX` | Select the supported sandbox backend policy |
+
+The tmux override can disable, never enable, a config-disabled viewport. If
+both names in a pair are set, their values must agree or startup fails. Other
+internal test and release variables are not public runtime configuration.
+
+## Validation workflow
+
+```bash
+relayforge validate
+relayforge doctor
+relayforge run "Check configuration" --json
 ```
 
-An absent or empty list disables provisioning. A loop may contain at most 32 specs; each spec has
-one canonical repository-relative `path` and an optional bounded `requiredExecutables` list. Those
-executable paths are relative to that spec, so `.bin/tsc` above means
-`node_modules/.bin/tsc`. Validation rejects absolute, rooted, backslash, traversal, duplicate,
-case-alias, overlapping, and Git/Loop control paths rather than normalizing ambiguous input.
-
-Provisioning is a parent-owned readiness gate for **all three worktree roles**:
-
-- the integration worktree used for accepted merges and deterministic verification;
-- each isolated implementation-attempt worktree;
-- each independent review checkout.
-
-A worktree is not runnable while its dependencies are being staged. RelayForge builds a private
-staging tree, validates it completely, and only then publishes it into the worktree. A provider,
-reviewer, or verifier may start only after the worktree is ready. A configured source that is
-missing, unreadable, not a real directory, unsafe, or lacks a `requiredExecutables` marker blocks
-the run; it is never downgraded to a warning. `loop doctor` reports the affected loop and path and
-performs only this same read-only source inspection—it does not create staging or destination
-state, and an eligible result is not a promise that a later filesystem copy cannot fail.
-
-The operation is deliberately offline and inert:
-
-- it does not run package managers, lifecycle hooks, setup scripts, or any child process;
-- it performs no network access and uses no package-registry credentials;
-- it never uses hardlinks or shares a writable dependency directory with the human checkout;
-- it prefers filesystem copy-on-write clones and otherwise copies bytes into distinct files;
-- it accepts only constrained relative symlinks whose lexical and physical targets remain inside
-  the configured source tree; absolute, dangling, cyclic, or escaping links block readiness.
-
-Current limitations are intentional. Provisioning copies existing local bytes; it does not resolve
-or install dependencies, refresh lockfiles, deduplicate copies across worktrees, or execute trusted
-repository setup hooks. Large trees can therefore consume copy time and, where filesystem reflinks
-are unavailable, additional disk space. `requiredExecutables` is a readiness marker for a contained
-executable file—it is not a general command probe and doctor never executes it. Prepare the source
-tree in the selected `workingDir` before starting the loop, then use `loop doctor` to verify its
-eligibility.
+The run command remains a no-provider dry run unless `--execute` is present.
+`doctor` reports unavailable capabilities rather than treating a skipped probe
+as success. Fix every error before authorizing execution; warnings should be
+understood and recorded.

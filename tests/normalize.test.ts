@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createStreamingNormalizer, normalizeTurn } from "../src/normalize.js";
+import { getBuiltinAdapterDescriptor } from "../src/providers.js";
 
 // Real-shaped Claude Code 2.1.207 stream-JSON: the stream ALWAYS begins with a `system`/`init`
 // record carrying a `tools` array AND the authoritative `session_id`. In the real dialect every
@@ -23,6 +24,94 @@ function claudeStream(records: Array<Record<string, unknown>>): string {
 }
 
 const INIT = { type: "system", subtype: "init", tools: ["Task", "Bash", "Edit"], model: "claude-opus-4", cwd: "/tmp", session_id: "s1" };
+
+describe("descriptor-selected legacy normalizers", () => {
+  it("binds each provider to its characterized normalizer version", () => {
+    expect(getBuiltinAdapterDescriptor("claude").normalizer).toEqual({ id: "claude-stream-json-2.1.207", version: 1 });
+    expect(getBuiltinAdapterDescriptor("codex").normalizer).toEqual({ id: "codex-json-0.144.0", version: 1 });
+    expect(getBuiltinAdapterDescriptor("gemini").normalizer).toEqual({ id: "gemini-raw-v1", version: 1 });
+    expect(getBuiltinAdapterDescriptor("custom").normalizer).toEqual({ id: "custom-raw-v1", version: 1 });
+  });
+
+  it("preserves Gemini/custom raw text and structured terminal verdicts exactly", () => {
+    for (const provider of ["gemini", "custom"] as const) {
+      expect(normalizeTurn(provider, "  final text  \n")).toEqual({
+        provider,
+        finalText: "final text",
+        hasTerminal: true,
+        success: true,
+        subtype: undefined,
+        explicitLimit: false,
+        usd: 0,
+        costReported: false
+      });
+
+      const terminal = JSON.stringify({
+        subtype: "success",
+        is_error: false,
+        result: "structured final",
+        total_cost_usd: 0.25,
+        usage: { input_tokens: 3, output_tokens: 4 }
+      });
+      expect(normalizeTurn(provider, terminal)).toEqual({
+        provider,
+        finalText: "structured final",
+        hasTerminal: true,
+        success: true,
+        subtype: "success",
+        explicitLimit: false,
+        usd: 0.25,
+        costReported: true,
+        inputTokens: 3,
+        outputTokens: 4
+      });
+
+      const malformedCost = normalizeTurn(provider, JSON.stringify({ result: "no", total_cost_usd: -1 }));
+      expect(malformedCost).toMatchObject({
+        provider,
+        finalText: "no",
+        hasTerminal: false,
+        success: false,
+        explicitLimit: false,
+        usd: 0,
+        costReported: false
+      });
+    }
+  });
+
+  it("selects the same descriptor grammar for batch and streaming verdicts", () => {
+    const cases = [
+      {
+        provider: "claude" as const,
+        lines: [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "s1", tools: [] }),
+          JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "claude final", session_id: "s1" })
+        ]
+      },
+      {
+        provider: "codex" as const,
+        lines: [
+          JSON.stringify({ type: "thread.started", thread_id: "t1" }),
+          JSON.stringify({ type: "turn.started" }),
+          JSON.stringify({ type: "item.completed", item: { id: "a1", type: "agent_message", text: "codex final" } }),
+          JSON.stringify({
+            type: "turn.completed",
+            usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 2, reasoning_output_tokens: 0 }
+          })
+        ]
+      },
+      { provider: "gemini" as const, lines: [JSON.stringify({ result: "gemini final", is_error: false })] },
+      { provider: "custom" as const, lines: ["custom final"] }
+    ];
+
+    for (const { provider, lines } of cases) {
+      const batch = normalizeTurn(provider, `${lines.join("\n")}\n`);
+      const streaming = createStreamingNormalizer(provider);
+      for (const line of lines) streaming.pushLine(line);
+      expect(streaming.finish()).toEqual(batch);
+    }
+  });
+});
 
 describe("normalizeTurn — Claude stream-JSON", () => {
   it("returns the TERMINAL assistant text, never the init tools array", () => {

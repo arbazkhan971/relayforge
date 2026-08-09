@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config/load.js";
-import { prepareRun, runAutonomyLoop, writeRolePrompts, type LoopRunState } from "../src/orchestrator.js";
+import { finalLoopState, prepareRun, runAutonomyLoop, writeRolePrompts, type LoopRunState } from "../src/orchestrator.js";
 import { registerOwnedTemp } from "./global-teardown.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -159,13 +159,8 @@ export async function runOnce(options: HarnessOptions & { execute: boolean; runI
   // Planning happens INSIDE runAutonomyLoop (after the lease, clean gate, and containment gate) —
   // never pre-planned here, so the loop's fail-closed boundary is exercised faithfully.
   const reports = await runAutonomyLoop(ctx, {}, { execute: options.execute });
-  const state = JSON.parse(execReadState(ctx.statePath)) as LoopRunState;
+  const state = finalLoopState(ctx);
   return { repoDir, runId, state, reports };
-}
-
-import { readFileSync } from "node:fs";
-function execReadState(path: string): string {
-  return readFileSync(path, "utf8");
 }
 
 /** Read the git log of a branch in a repo (subject lines). */

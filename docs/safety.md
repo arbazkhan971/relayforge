@@ -1,69 +1,141 @@
-# Safety
+# RelayForge safety model
 
-Two layers contain execution: an **isolated git worktree** so your checkout is never touched, and an **OS sandbox** for untrusted verifier commands. A git worktree is *not* a host sandbox — it only isolates the working tree and branch — so Loop Orchestrator does not treat it as a security boundary for running untrusted commands.
+RelayForge treats coding-agent output as untrusted. A disposable Git worktree
+isolates branches, but it is not a host sandbox. Executing runs therefore use a
+parent-owned chain of strict config, leases, OS containment, authenticated
+launch, bounded protocol transport, independent review, deterministic
+verification, exact process-scope cleanup, and settlement replay.
 
-## The isolation model
+## Before execution
 
-- Execution requires a **git repository with a clean working tree**. The loop refuses otherwise with an actionable message.
-- Execution **never** modifies, resets, cleans, checks out, or merges into your checked-out branch or working tree. Your checkout is left completely untouched.
-- Work happens in loop-owned git worktrees **outside** the repo (isolation is always on and mandatory):
-  - a dedicated **integration branch** `loop/<project>/<run-id>/integration`, branched from the base commit, accumulates accepted work and is re-verified;
-  - each task attempt runs in its own **throwaway attempt worktree/branch**, discarded on reject.
-- At the end, accepted work is **left on the run branch** for a human to review and merge (`git log loop/<project>/<run-id>/integration`, then open a PR). Nothing is auto-merged to `main`.
+`relayforge run` is a dry run unless `--execute` is present. An executing run
+requires a valid unambiguous config, a clean Git target, a supported sandbox,
+and exclusive config/run authority. Failure occurs before a provider can see a
+prompt when these preconditions are not proven.
 
-## Provider permissions
+Use `relayforge doctor` before spending tokens. It reports host/config/provider
+readiness, but a CLI on PATH or successful `--version` is not native-adapter
+compatibility evidence.
 
-- Providers run without host permission bypass by default. Claude implementers use `--permission-mode acceptEdits` and reviewers `--permission-mode plan` (read-only). Codex uses `exec --sandbox workspace-write` (implementer) / `--sandbox read-only` (reviewer), with reasoning effort via `-c model_reasoning_effort=<minimal|low|medium|high>` — never `--full-auto` or `--effort`. Gemini and custom providers make no provider-native safety claim; their containment is the OS sandbox.
-- `dangerouslySkipPermissions` (Claude) is an explicit opt-in, **no longer added by default**, discouraged, and **requires an OS sandbox** — if none is available the run fails closed rather than running Claude with `--dangerously-skip-permissions`. `loop init` emits it off. Codex's `yolo` is **not supported** and is **rejected** by `loop validate` (it had no effect); Codex is contained by `exec --sandbox` plus the OS sandbox.
+## Worktree and Git boundaries
 
-## The OS sandbox for provider and verifier commands
+- The operator's checkout is an anchor and is never reset, cleaned, checked
+  out, or merged into by an executing run.
+- Each attempt uses a disposable worktree outside the checkout. Accepted work
+  accumulates on `.loop` protocol branches for human review.
+- Parent Git calls neutralize hooks, external diff, filesystem monitor,
+  credential helper and pager execution. Provider-writable roots exclude host
+  Git configuration.
+- Dirty or advanced owned worktrees are preserved or surfaced for recovery;
+  cleanup does not destroy unclassified work.
 
-**Every** physical provider turn (planner, implementer, reviewer) **and** every verifier command runs inside an **OS sandbox** — Linux `bwrap` (bubblewrap) or macOS `sandbox-exec` — with:
+## OS containment and process ownership
 
-- **no network** for verifiers (agents keep network to reach the model API),
-- **no inherited secrets** (the environment is scrubbed to a small allowlist; host tokens/CI secrets never reach an agent or its shelled-out commands), and
-- **no host writes** outside the disposable checkout.
+Every provider and verifier uses the same parent-owned containment launcher.
+On the strongest Linux path, Bubblewrap confines mounts and a delegated cgroup
+v2 scope bounds and owns the complete child tree. A nonce-authenticated
+pre-exec handshake proves executable identity, physical working directory and
+scope membership before prompt/credential release.
 
-If **no launchable** sandbox mechanism is available, a `loop run --execute` **fails closed before the planner** — no provider or verifier ever launches, the run ends `blocked`, and it can never reach `done`. There is **no** production environment variable that lifts this: containment or nothing. `loop doctor` reports (and fails) when no sandbox is launchable.
+Providers retain network access for their approved model API. Verifiers run
+without network. Both receive a scrubbed environment and cannot write outside
+their allowed worktree and narrow private adapter state. If the required OS or
+cgroup capability is absent, execution fails closed; there is no production
+unsandboxed override.
 
-> **Honest limitation (this release).** The official `@anthropic-ai/sandbox-runtime` library is **not** integrated yet — there is no `srt` CLI. On a host where `bwrap` cannot launch (e.g. a nested container without unprivileged user namespaces) and no macOS `sandbox-exec` exists, `loop run --execute` fails closed. Tests exercise the loop via an **imported** trusted-runner injection (never an env var); production has no way to reach that path, so it cannot obtain `done` without a real boundary.
+Cancellation first uses the provider's structured cancel/abort where proven,
+then the central exact-scope reaper. Success requires a proven-empty owned
+scope. A PID guess, child exit, EOF, or timeout is not cleanup evidence.
 
-## Trust and correctness
+## Adapter and credential policy
 
-- Agents **cannot** write the authoritative board, run state, or cost ledger — the parent orchestrator owns all coordination state. Agents just make their code change and report in a final message; the parent decides.
-- Acceptance requires an **independent reviewer** (read-only, strict structured output — malformed output fails closed as a rejection) plus a **deterministic verifier** that runs commands in an explicit order.
-- A change that turns a green suite red is reverted, and test/CI files are hashed to detect an agent weakening its own grader (reward-hacking guard).
-- A real `--execute` run is **done** (exit 0) only when every task is accepted *and* the final ordered verifier is green; if every task is accepted but there is no green verifier the run is **unverified** (exit non-zero). A successful dry-run ends in status **planned** (exit 0). Rejected, escalated, cancelled, stopped, unverified, and budget-exhausted runs all exit non-zero.
-- `loop stop <run>` cancels the running loop (a parent-owned cancellation flag) and kills its tmux sessions. Only sessions **this** project+run created are killed — they are matched by stamped `@loop-*` ownership metadata, never by a name substring, so a session you opened yourself (or another project's) is never reaped. The same rule governs `loop tmux kill` and `loop tmux prune`.
+Descriptors and codecs are pure. They cannot spawn, choose a shell, widen
+filesystem/network policy, download a package, or mint cost/fallback/settlement
+authority. The parent resolves and content-binds the exact executable, selects
+the role before reservation, serializes prompt bytes, frames output once, and
+replays the durable transcript during settlement.
 
-## Recommended Guardrails
+- Claude and Codex receive their characterized inner workspace/read-only
+  modes; outer containment remains authoritative.
+- Gemini and custom make no stronger provider-native safety claim.
+- OpenCode and Pi require exact executable/version/protocol/behavior evidence;
+  Pi reviewers also bind the shipped read-only helper.
+- Grok requires `XAI_API_KEY`; RelayForge does not reuse ambient subscription
+  or managed configuration. It forces a private empty HOME/GROK_HOME, disables
+  update, telemetry, trace/feedback upload, memory, subagents and web tools,
+  forbids leader/serve/headless/plugin/endpoint/always-approve/yolo surfaces,
+  and still requires distinct behavioral configuration, network/tool and
+  no-unapproved-upload evidence. Environment flags alone are not proof.
+  Unattended workers receive only an exact parent-selected ACP `allow_once`;
+  reviewers receive no approval, and persistent options are never selectable.
 
-- Dry-run (`loop run` without `--execute`) until the plan and config look right.
-- Keep production branches protected and review the run branch before merging.
-- Require PR review for database migrations, auth, billing, and security changes.
-- Use read-only or staging databases during end-to-end testing.
-- Avoid secrets in `loop.config.yaml`; prefer environment variables. `loop auth configure --write` stores auth metadata only, not secret values.
-- Instruct agents never to modify test files or CI config to make checks pass, and to avoid destructive operations in every role prompt.
+Never store a secret in YAML. Use the named provider environment variable. The
+scrubber admits only the closed provider allowlist; public control-room DTOs
+exclude credentials and environment values.
 
-## Dashboard safety
+## Review, verification, and settlement
 
-The dashboard is unauthenticated, so it binds to `127.0.0.1` (loopback only), validates run/session ids against path traversal, only exposes tmux sessions **this project owns** — decided by the session's stamped `@loop-*` identity, not by a name substring, so a project called `demo` can no longer list or screen-scrape a session belonging to `demo-api` — and redacts environment variables and secrets from `/api/config` and logs.
+An agent cannot accept its own work. A separate reviewer sees a content-bound
+candidate under a read-only outer boundary and, where supported, an inner
+provider policy. Malformed review output rejects. Verifier commands run in a
+fixed order in the no-network verifier sandbox; configured stability runs must
+all pass.
 
-## Database Safety
+Provider output is byte- and frame-bounded. A terminal must be complete,
+correlated and accepted by the versioned grammar. Missing usage/cost/limits are
+unknown, never zero. Generic error text or model prose never authorizes paid
+fallback. The settlement kernel rereads the private fsynced transcript with
+the exact adapter/contract/wire/codec/normalizer identity before releasing a
+reservation.
 
-For local and staging testing:
+## Durable control, steering, and privacy
 
-- Use disposable seed data.
-- Block writes to production databases from local environments.
-- Prefer feature-specific test accounts.
-- Require explicit human approval for migrations and backfills.
+SQLite is the canonical post-cutover run history and projection source. The
+foreground control service binds `127.0.0.1` and is read-only HTTP/SSE. It
+validates Host/Origin, methods, bodies, IDs, cursors and byte bounds. Public
+observations are normalized and redacted; raw transcripts, PTY bytes, prompts,
+tool arguments and secrets are not public DTOs.
 
-## Public Repo Hygiene
+Steering is admission for a future immutable attempt prompt. It does not alter
+an already-running provider and does not prove inclusion, delivery, reading or
+compliance. Its mutation endpoint is a private run-scoped Unix socket owned by
+the active parent, not HTTP or tmux.
 
-Do not commit:
+## Budgets
 
-- Private repository names
-- Customer names
-- Access tokens
-- Internal URLs
-- Real production credentials
+- `unlimited` sets no USD ceiling.
+- `estimated-usd` is a reservation/accounting tripwire and may overshoot by an
+  in-flight request.
+- `hard-usd` requires a proven preauthorizing gateway; direct CLIs do not
+  qualify.
+- `subscription-quota` tracks provider quota without pretending it is USD.
+
+A positive budget requires a positive per-call reservation bound. Unknown cost
+fails closed unless the explicitly bounded unknown-call allowance permits it.
+
+## Offline provisioning
+
+Provisioning copies already-present local dependency trees into owned
+worktrees. It never downloads packages, runs installers or lifecycle scripts,
+or mutates the source tree. Copies are bounded and revalidated against source
+identity. Operators must budget the disk and time cost and keep secrets out of
+provisioned trees.
+
+## Current product boundary
+
+Single-repository execution is live. Until the multi-repository P6 route is
+fully enabled and gated, non-empty repository groups remain rejected by
+semantic validation; library/coordinator modules are not permission to bypass
+that failure. SCM publication/observation/reconciliation components likewise
+do not imply that ordinary `relayforge run` automatically creates or repairs a
+pull request.
+
+Recommended operating practice:
+
+1. run dry first and inspect the plan;
+2. protect production branches and review the integration candidate;
+3. use disposable test data and staging credentials;
+4. require human approval for auth, billing, migrations and production data;
+5. keep provider, Bubblewrap, cgroup and credential setup operator-managed;
+6. stop and investigate any recovery-required, uncertain settlement, stale
+   cursor, identity mismatch, or surviving scope.

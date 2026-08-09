@@ -2,14 +2,14 @@
 
 Audited 2026-08-09. No reference checkout was modified.
 
-## Reference matrix
+## Reference Matrix
 
-| Repository | Audited commit | Strongest relevant behavior | Material weakness | License | Reuse |
-| --- | --- | --- | --- | --- | --- |
-| `agent-worktree` | `eb309652` | Safe branch reuse, reflink file copy, no-follow walk, submodule and wrapper UX, focused tests | Skips every symlink (breaking npm `.bin`), trusts unsandboxed hooks, non-atomic metadata, cleanup can hide failures | MIT | `PORTED_IMPLEMENTATION` |
-| `overstory` | `ff38f3f7` | Post-create validation, rollback, nested-child guard, doctor/reconciliation | Archived; forceful cleanup and PID-reuse risk; tracked-file validation rejects valid empty repos | MIT | `ARCHITECTURAL_INSPIRATION` with selective ports |
-| `awslabs/cli-agent-orchestrator` | `38527f47` | Bounded Git subprocesses, nested path identity, duplicated environment validation and allowlisting | Worktrees are an early Phase-1 feature; destructive forced removal; no setup or reconcile lifecycle | Apache-2.0 plus NOTICE | `PORTED_IMPLEMENTATION` for bounded runners/environment policy |
-| `agtx` | `ce617fab` | Canonical-project/config-hash trust gate | Deletes branches on retry, follows some nested links, setup has no timeout, cleanup errors are hidden | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` |
+| Repository | Relevant implementation | Strength | Weakness | License | Reuse decision |
+|---|---|---|---|---|---|
+| `agent-worktree` `eb309652` | Branch reuse, reflink copy, no-follow walk, submodules, wrapper UX, and focused copy/hook tests | Strongest narrow dependency-copy mechanics in the group | Skips every symlink, trusts unsandboxed hooks, uses non-atomic metadata, and can hide cleanup failures | MIT | `ARCHITECTURAL_INSPIRATION`; behavior independently implemented, no source/test port |
+| `overstory` `ff38f3f7` | Post-create validation, rollback, nested-child guard, doctor, reconciliation, and regression tests | Strong consistency checks and repair-oriented UX | Archived; forceful cleanup and PID-reuse risk; tracked-file validation rejects valid empty repositories | MIT | `ARCHITECTURAL_INSPIRATION`; no selective source ports were adopted |
+| `awslabs/cli-agent-orchestrator` `38527f47` | Bounded Git subprocesses, nested path identity, environment validation/allowlisting, and real worktree tests | Strong bounded-runner and environment-policy evidence | Early worktree feature; destructive forced removal; no setup or reconciliation lifecycle | Apache-2.0 plus NOTICE | `ARCHITECTURAL_INSPIRATION`; no source/test port |
+| `agtx` `ce617fab` | Canonical-project/config-hash trust gate and setup/copy tests | Useful future hook-trust identity | Deletes branches on retry, follows some links, has no setup timeout, and hides cleanup errors | Apache-2.0 | `IDEA_ONLY` for a future hook-trust design |
 
 Approximate subsystem quality scores were `agent-worktree` 82/100,
 Overstory 80/100 (before its archival discount), AWS CAO 68/100, and agtx
@@ -75,7 +75,35 @@ presence of a tracked file, because empty commits are legitimate.
   `:300-466`, and `:577-680`.
 - Trust hardening commit `875dfaf`.
 
-## Chosen synthesis
+## Chosen design
+
+### Best implementation discovered
+
+`agent-worktree` is the best dependency-copy baseline; Overstory has the best
+post-create validation/reconciliation ideas; AWS CAO has the best bounded Git
+and environment boundary; agtx contributes only a future trust-gate idea.
+
+### Why
+
+The inspected source and tests expose complementary strengths. The preliminary
+port candidates were not needed: RelayForge can preserve its local authority
+and independently implement the useful behavior while adding stricter link,
+readiness, recovery, and cleanup semantics.
+
+### What RelayForge will reuse
+
+`ARCHITECTURAL_INSPIRATION` from `agent-worktree`, Overstory, and AWS CAO;
+`IDEA_ONLY` from agtx. No upstream source, tests, comments, or distinctive
+structure were ported or copied.
+
+### What RelayForge will change
+
+RelayForge admits only internally contained relative links, gates every
+consumer on provisioning readiness, uses durable intent/generations/leases,
+keeps cleanup failures repairable, and does not run repository hooks in the
+initial provisioning boundary.
+
+### How RelayForge will improve it
 
 Use agent-worktree's narrow copy sandbox and reflink-first behavior as the
 baseline; independently implement internal-only symlink preservation so local

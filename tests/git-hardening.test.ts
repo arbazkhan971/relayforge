@@ -138,14 +138,14 @@ describe("agents are never given writable git configuration", () => {
     registerOwnedTemp(home);
     // Create every candidate the old list bound writable, so `existsSync` cannot hide a regression.
     for (const dir of [".claude", ".codex", ".gemini", ".cache", ".config", ".config/git"]) {
-      mkdirSync(join(home, dir), { recursive: true });
+      mkdirSync(join(home, dir), { recursive: true, mode: 0o700 });
     }
     writeFileSync(join(home, ".gitconfig"), "[user]\n  name = t\n");
     process.env.HOME = home;
 
     const work = mkdtempSync(join(tmpdir(), "loop-work-"));
     registerOwnedTemp(work);
-    const { writableRoot, extraWritable } = providerWritableRoots(work);
+    const { writableRoot, extraWritable } = providerWritableRoots(work, "claude");
 
     expect(writableRoot).toBe(work);
     // Nothing git can read configuration from may be writable by an agent.
@@ -157,9 +157,12 @@ describe("agents are never given writable git configuration", () => {
       // …and no bind may CONTAIN git's XDG config dir.
       expect(resolve(home, ".config/git").startsWith(`${root}/`)).toBe(false);
     }
-    // The provider credential/cache dirs it legitimately needs are still there.
+    // Only the selected provider's exact state is present; cross-provider state and a broad cache
+    // are not capabilities of a Claude turn.
     expect(extraWritable).toContain(resolve(home, ".claude"));
-    expect(extraWritable).toContain(resolve(home, ".codex"));
+    expect(extraWritable).not.toContain(resolve(home, ".codex"));
+    expect(extraWritable).not.toContain(resolve(home, ".gemini"));
+    expect(extraWritable).not.toContain(resolve(home, ".cache"));
   });
 });
 

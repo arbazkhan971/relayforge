@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.0.0-rc.1] - 2026-08-09
+
+RelayForge's first release candidate establishes the new public identity while
+preserving durable compatibility.
+
+- Renamed the npm package, primary executable, help/version/config/init surface
+  and public exports to RelayForge. `loop` and `loop-orchestrator`, legacy
+  `loop.config.*`, `.loop/` storage and documented `LOOP_*` variables remain v1
+  compatibility protocol; ambiguous configs or conflicting env aliases fail.
+- Added the durable SQLite control plane, strict migration/recovery,
+  loopback-only read REST/SSE service, private service ownership, bounded
+  projections and normalized privacy-preserving control room.
+- Added durable future-boundary steering with generation/run fencing and a
+  private parent-owned Unix socket. Admission never claims live terminal
+  injection or provider compliance.
+- Added durable SCM fact, publication, observation, reconciliation and evidence
+  components without claiming automatic ordinary-run PR automation.
+- Added pure adapter registry and single contained transport/settlement replay
+  for seven provider types. OpenCode ACP, Pi RPC and Grok Build ACP remain
+  fail-closed without exact executable/version/protocol/role/behavior evidence;
+  Grok is API-key-only and additionally private-config/network-tool/no-upload
+  gated.
+- Added bounded normalized observation ingestion and control-room DTOs that do
+  not expose raw transcripts, prompts, tool arguments or credentials.
+- Added multi-repository identity, DAG/scheduling, worktree-group,
+  candidate/CAS/compensation, verification, integration/publication and
+  canonical-journal components. Operator enablement is documented exactly as
+  implemented; no partial multi-repository execution is implied.
+- Strengthened delegated cgroup containment, authenticated launch, exact scope
+  cleanup, replay-bound settlement, offline provisioning and required-host
+  release gates.
+- Added deterministic tarball inventory, clean-installed package/bin/export/
+  service smoke, registry preflight/convergence policy and release evidence
+  manifest. External npm publication, GitHub release/tag publication and
+  repository rename were not performed by these source changes.
+
 ## Unreleased — containment hardening + honest docs
 
 Cross-wave completion pass: closed real containment gaps, made the run→exit contract un-bypassable,

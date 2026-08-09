@@ -194,23 +194,49 @@ Assessment:
 
 Node core reinforces two lessons: EOF behavior needs explicit characterization, and downstream pause cannot retroactively bound a large current chunk's record fan-out.
 
-## Reference matrix
+## Reference Matrix
 
-| Implementation | Reuse / scan | Bound and decoder | Backpressure / ownership | Fatal-tail authority | Reuse classification |
+| Repository | Relevant implementation | Strength | Weakness | License | Reuse decision |
 |---|---|---|---|---|---|
-| RelayForge current | 64 KiB slabs; scan each chunk once; drops slab per short frame | Exact raw bytes; decode once; LF only | Synchronous borrowed raw; source always copied | Typed fatal invalidates entire stream verdict | `LOCAL_AUTHORITY` |
-| Agent Orchestrator browser bridge | Decoded string concatenation | 1/8 MiB after decode; StringDecoder | Awaited writes; owned strings | Reconnect; no EOF tail; prior work survives | `REFERENCE_ONLY` |
-| Agent Orchestrator terminal | 32 KiB reusable read scratch, copied delivery | Binary messages; 1 MiB WS read limit | Bounded 1024 queue, cancel on overflow; owned async copies | Connection cancellation | `REFERENCE_ONLY` |
-| OpenAI Codex MCP | Reusable `BytesMut`, scan cursor/memchr | Exact raw pending line, 8/1 MiB; byte JSON | Awaited serialized writes; owned split records | Offender dropped/closed, but earlier lines delivered | `REFERENCE_ONLY` |
-| Tokio `LinesCodec` | Reusable `BytesMut`, scan cursor/memchr | Exact raw max; strict UTF-8; strips CR | Demand-driven polling; owned output | Codec discards/recover; wrapper terminates locally | `REFERENCE_ONLY` |
-| `split2` | Decoded string concat/split | Optional decoded-unit max; StringDecoder | Node Transform; owned strings | Error or skip/recover | `REFERENCE_ONLY` |
-| Node core `readline` | Chunk-local decoded split plus pending string | No maximum; StringDecoder; broader separators | Async iterator pauses with fixed queue; owned strings | None | `REFERENCE_ONLY` |
+| RelayForge current | `RawFramer`: 64 KiB owned slabs, one-pass scan, exact raw-byte cap, LF-only framing, synchronous borrowed evidence, and whole-stream fatal authority | Strongest authority semantics and existing characterization suite | Drops a slab after every tiny frame, causing pathological allocation churn | MIT | `NOT_USED` as an upstream; local authority is optimized in place |
+| Untrivial Agent Orchestrator `f65c48e` | Browser JSONL bridge plus terminal transport: decoded-string framing, awaited writes, reusable read scratch, owned async delivery, bounded queue, and overflow cancellation | Best explicit async ownership and overload policy in the coding-agent references | Browser path concatenates decoded strings and lacks exact raw-byte/EOF/fatal-tail semantics; terminal path is not an LF authority framer | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` |
+| OpenAI Codex `646f7c0` | Remote MCP stdio reusable `BytesMut`, scan cursor/memchr, raw pending-line cap, awaited writes, and owned records | Strong reusable-storage and scan-reuse implementation | Drops/closes the offender but preserves earlier work; semantics differ from RelayForge whole-stream authority | Apache-2.0 plus NOTICE | `ARCHITECTURAL_INSPIRATION` |
+| Tokio `tokio-util` `adf736a` | `LinesCodec` reusable `BytesMut`, memchr scan, exact maximum, demand-driven polling, and owned output | Mature bounded line-codec mechanics and tests | Strict UTF-8, CR stripping, and skip/recover behavior conflict with RelayForge's raw-byte and fatal semantics | MIT | `ARCHITECTURAL_INSPIRATION` |
+| `mcollina/split2` `ccbd199` | StringDecoder-based transform splitting with optional maximum | Small mature Node streaming comparator | Decoded-unit accounting and recover/skip modes do not preserve exact raw-byte authority | ISC | `IDEA_ONLY` |
+| Node.js `45ecaadd` | Core readline chunk-local splitting, StringDecoder, async iteration, pause/resume, and EOF behavior | Mature decoder and iterator behavior | No record maximum, broader separators, queue overshoot, and no fatal-tail authority | Node permissive terms with bundled notices | `IDEA_ONLY` |
 
 The matrix answers the audit's central question: Codex and Tokio solve reusable storage and scan reuse better, and Agent Orchestrator makes async overload/ownership more explicit, but none preserves RelayForge's combined raw-byte cap, source-copy isolation, synchronous evidence lease, and whole-stream fatal authority. Consequently none is suitable for direct adoption.
 
 ## Chosen design
 
-### Minimal optimization
+### Best implementation discovered
+
+RelayForge's existing `RawFramer` remains the strongest semantic
+implementation. Codex and Tokio are best for reusable storage/scan mechanics,
+and Agent Orchestrator is best for explicit async ownership and overload
+policy, but none preserves the complete local authority contract.
+
+### Why
+
+The measured defect is slab lifetime, not scanning. A one-slot leased slab
+fixes six-million-line allocation churn while preserving exact raw-byte caps,
+copy isolation, callback lifetime, decoder behavior, offsets, EOF, and
+whole-stream fatal authority.
+
+### What RelayForge will reuse
+
+Only `ARCHITECTURAL_INSPIRATION` for reusable-buffer lifetime, scan reuse, and
+bounded overload concepts; `IDEA_ONLY` for split2/Node comparisons. No upstream
+source, pseudocode, constants, comments, or tests are copied.
+
+### What RelayForge will change
+
+Change only the local slab lifetime: cache at most one inactive small slab and
+lease an emitted slab until the synchronous callback finishes. Do not adopt
+decoded-string accounting, CR stripping, recover-after-oversize, async payload
+ownership, or partial-stream authority.
+
+### How RelayForge will improve it
 
 Add a single cached small slab to `RawFramer` and preserve all public behavior:
 
@@ -232,7 +258,7 @@ or explicitly extend diagnostics if `retainedBytes()` is intended to report capa
 
 Expected allocation shape for the `"i\n"` workload changes from approximately six million 64 KiB allocations (about 366 GiB cumulative) to one hot slab in steady state, while retaining the same one-byte copy, one decode, and one callback per frame.
 
-### RelayForge improvement beyond the minimal fix
+### Additional future improvement
 
 Replace the normalizer-facing mutable borrowed `Buffer` in a future, separately reviewed change with a synchronous evidence capability, for example an `exactRef()` closure owned by the framer that returns `{ sha256, bytes, startOffset, endOffsetExclusive, frameIndex }` while the lease is live. The normalizer could parse `text` and request exact evidence only for a terminal candidate without ever receiving mutable raw storage. This would make mutation/retention misuse structurally harder and make future slab reuse safer without hashing every nonterminal frame.
 

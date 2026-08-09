@@ -63,20 +63,56 @@ license obligations, exact provenance, and modification notices.
   provision state.
 - The tmux restart command assumes window/pane index zero.
 
-## Reuse decision
+## Reference Matrix
 
-| Area | Classification | RelayForge decision |
-| --- | --- | --- |
-| Worktree lifecycle | `PORTED_IMPLEMENTATION` | Independently port conservative recovery behavior into explicit reconciled state machines. |
-| Temp-index preservation | `PORTED_IMPLEMENTATION` | Adopt the behavior with stronger failure classes and generation/CAS markers. |
-| Windows removal retry | `MODIFIED_COPY` candidate | Only after exact file provenance and attribution are recorded. |
-| Reaper/recovery | `ARCHITECTURAL_INSPIRATION` | Add leases, event history, durable repair state, and deterministic reconciliation. |
-| Doctor | `IDEA_ONLY` | Retain stable text/JSON semantics but substantially expand checks. |
-| Provisioning | `NOT_USED` | Build a safe, versioned, observable provisioning mechanism instead. |
-| Tests | `ARCHITECTURAL_INSPIRATION` | Independently reproduce behavioral coverage. |
+| Repository | Relevant implementation | Strength | Weakness | License | Reuse decision |
+|---|---|---|---|---|---|
+| Untrivial-ai/agent-orchestrator `f65c48e` | Git worktree adapter, temporary-index preservation, session-manager recovery, reaper, doctor, provisioning, and their focused tests | Strong conservative Git recovery, preservation without mutating the user's index, typed Git failures, and useful boot-recovery characterization | String lifecycle state, best-effort cleanup, English-stderr classification, non-atomic multi-repository behavior, weak provisioning, and incomplete doctor reconciliation | Apache-2.0; no root NOTICE or sampled file headers | `ARCHITECTURAL_INSPIRATION`; RelayForge independently implemented the selected behavior and copied no source or tests |
+| AgentWrapper/agent-orchestrator legacy URL | Redirects to the same GitHub repository ID, commit, and tree | Preserves repository-transfer provenance | Not an independent implementation | Apache-2.0 | `NOT_USED` as a distinct reference |
+
+The earlier research candidates are reconciled to the landed provenance here:
+no worktree, preservation, Windows-removal, reaper, doctor, provisioning, or
+test expression was copied or ported. The final classifications are:
+
+| Area | Reuse decision | RelayForge decision |
+|---|---|---|
+| Worktree lifecycle and temporary-index preservation | `ARCHITECTURAL_INSPIRATION` | Independently implement conservative recovery and preservation with explicit state, generations, and CAS markers. |
+| Windows removal retry | `NOT_USED` | No upstream fragment was adopted. |
+| Reaper/recovery and tests | `ARCHITECTURAL_INSPIRATION` | Independently reproduce behavior with leases, event history, durable repair state, and deterministic reconciliation. |
+| Doctor | `IDEA_ONLY` | Retain only the general stable text/JSON diagnostic principle and substantially expand the checks. |
+| Provisioning | `NOT_USED` | Build a safe, versioned, observable mechanism instead. |
 | AgentWrapper alias | `NOT_USED` | Record only as the legacy repository URL. |
 
-## RelayForge improvements required
+## Chosen design
+
+### Best implementation discovered
+
+Within this single-reference deep dive, Agent Orchestrator has the strongest
+practical conservative worktree recovery and temporary-index preservation.
+The complete Phase 00 audit compares it with the independent worktree
+implementations needed for the final synthesis.
+
+### Why
+
+Its source and tests cover stale registration, branch side effects, dirty
+preservation, recovery uncertainty, and runtime prerequisites. Those behaviors
+are directly relevant, while its lifecycle, provisioning, and reconciliation
+gaps make wholesale adoption unsuitable.
+
+### What RelayForge will reuse
+
+Only `ARCHITECTURAL_INSPIRATION`: target-specific recovery, distinct safe and
+force-destroy concepts, temporary-index preservation, failed-liveness-as-
+unknown behavior, and equivalent independently authored characterization tests.
+
+### What RelayForge will change
+
+RelayForge uses explicit state machines, append-only facts, generations,
+leases, typed operational/content-conflict outcomes, bounded provisioning, and
+deterministic reconciliation. It does not copy the Windows retry or raw-shell
+provisioning implementations.
+
+### How RelayForge will improve it
 
 1. Explicit lifecycle state machines, append-only events, generations, and
    task/worktree leases.

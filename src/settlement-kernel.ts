@@ -1,11 +1,25 @@
 import { closeSync, constants as fsConstants, fstatSync, openSync, readSync } from "node:fs";
 import { createHash } from "node:crypto";
-import type { CallBinding, KernelFallbackDraft, KernelSettlementDraft, LedgerKernelAccess } from "./ledger.js";
+import {
+  adapterEvidenceIdentity,
+  type CallBinding,
+  type KernelFallbackDraft,
+  type KernelSettlementDraft,
+  type LedgerKernelAccess
+} from "./ledger.js";
 import { MoneyError, nanoToUsd, usdToNano, formatNano } from "./money.js";
 import type { NormalizedTurn, ProviderKind, TerminalFrameRef } from "./normalize.js";
+import type { AdapterTerminalResult, CodecFrameReference } from "./adapters/codec.js";
+import type { GrokEgressEvidenceBinding } from "./adapters/grok-egress-contract.js";
 import { assertConfinedRealPath } from "./runtime.js";
 import { parseScopeId, reapProofOf, scopeIdOf } from "./scope.js";
-import { StdoutStream, type FrameFatal } from "./streaming.js";
+import {
+  StdoutStream,
+  resolveAdapterCallIdentity,
+  sameAdapterCallIdentity,
+  type AdapterCallIdentity,
+  type FrameFatal
+} from "./streaming.js";
 
 /**
  * THE SETTLEMENT KERNEL (wave-9: genuine SUCCESS, and a genuine usage REJECTION).
@@ -115,6 +129,12 @@ export type CompletedChildCall = {
   /** The whole-stream verdict the LIVE framer produced. Re-derived here from the durable bytes; a
    *  disagreement between the two is exactly what this kernel exists to catch. */
   streamedVerdict?: NormalizedTurn;
+  /** Exact shipped grammar selected before launch, echoed by the live transport. */
+  adapterIdentity?: AdapterCallIdentity;
+  /** Structured ACP/Pi terminal from that exact grammar. */
+  adapterResult?: AdapterTerminalResult;
+  /** Exact parent-proxy evidence produced only after the socket is re-statted and drained. */
+  grokEgressEvidence?: GrokEgressEvidenceBinding;
 };
 
 export type SettlementOutcome =
@@ -135,6 +155,7 @@ type TranscriptEvidence = {
   bytes: number;
   fatal?: FrameFatal;
   verdict?: NormalizedTurn;
+  adapterResult?: AdapterTerminalResult;
 };
 
 /**
@@ -146,7 +167,12 @@ type TranscriptEvidence = {
  * we own with exactly one link: a symlinked component, a swapped inode, a hardlink alias, or a
  * group/other-accessible mode all mean a byte we are about to trust could have been planted.
  */
-function reReadTranscript(root: string, path: string, providerKind: ProviderKind): TranscriptEvidence {
+function reReadTranscript(
+  root: string,
+  path: string,
+  providerKind: ProviderKind | undefined,
+  adapterIdentity: AdapterCallIdentity | undefined
+): TranscriptEvidence {
   const confined = assertConfinedRealPath(root, path); // throws on escape / symlinked component
   const fd = openSync(confined, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   try {
@@ -165,7 +191,8 @@ function reReadTranscript(root: string, path: string, providerKind: ProviderKind
     const buf = Buffer.allocUnsafe(READ_CHUNK);
     // ONE pass: hash the bytes and feed the SAME bytes to the production pipeline. Memory stays bounded
     // by the framer's ceiling regardless of transcript size.
-    const outcome = StdoutStream.replay(providerKind, (push) => {
+    if (!adapterIdentity && !providerKind) throw new Error("the call has no replay grammar");
+    const pump = (push: (chunk: Buffer) => void) => {
       for (;;) {
         const n = readSync(fd, buf, 0, buf.length, bytes);
         if (n <= 0) break;
@@ -174,14 +201,18 @@ function reReadTranscript(root: string, path: string, providerKind: ProviderKind
         bytes += n;
         push(chunk);
       }
-    });
+    };
+    const outcome = adapterIdentity
+      ? StdoutStream.replayAdapter(adapterIdentity, pump)
+      : StdoutStream.replay(providerKind!, pump);
     return {
       dev: st.dev.toString(),
       ino: st.ino.toString(),
       sha256: hash.digest("hex"),
       bytes,
       fatal: outcome.fatal,
-      verdict: outcome.verdict
+      verdict: outcome.verdict,
+      adapterResult: outcome.adapterResult
     };
   } finally {
     try {
@@ -198,11 +229,21 @@ function sameFrame(a: TerminalFrameRef | undefined, b: TerminalFrameRef | undefi
   return a.sha256 === b.sha256 && a.bytes === b.bytes && a.offset === b.offset && a.index === b.index;
 }
 
+function sameCodecFrame(a: CodecFrameReference | undefined, b: CodecFrameReference | undefined): boolean {
+  if (a === undefined || b === undefined) return false;
+  return a.sha256 === b.sha256 &&
+    a.bytes === b.bytes &&
+    a.offset === b.offset &&
+    a.index === b.index &&
+    a.terminated === b.terminated;
+}
+
 /** What the orchestrator hands the kernel: a completed call plus the exact stdin that was delivered. The
  *  LEDGER supplies the `access` capability separately — a caller never gets to name it. */
 export type CompletedCallSettlement = {
   bind: CallBinding;
-  providerKind: ProviderKind;
+  /** Legacy compatibility only; new calls derive the dialect from bind.adapter. */
+  providerKind?: ProviderKind;
   stdinDelivered: Buffer;
   result: CompletedChildCall;
 };
@@ -222,11 +263,65 @@ export type CompletedCallSettlement = {
  */
 export function settleCompletedCall(access: LedgerKernelAccess, args: CompletedCallSettlement): SettlementOutcome {
   const { bind, providerKind, stdinDelivered, result } = args;
+  let verifiedEgress: GrokEgressEvidenceBinding | undefined;
 
   const uncertain = (reason: string): SettlementOutcome => {
-    access.settleUncertain(bind); // the FULL worst case is retained; nothing is authorized
+    access.settleUncertain(bind, verifiedEgress); // the FULL worst case is retained; nothing is authorized
     return { kind: "uncertain", reason };
   };
+
+  let adapterIdentity: AdapterCallIdentity | undefined;
+  if (bind.adapter !== undefined) {
+    try {
+      adapterIdentity = resolveAdapterCallIdentity(bind.adapter);
+    } catch (error) {
+      return uncertain(`the reservation names an unsupported adapter replay grammar: ${(error as Error).message}`);
+    }
+    if (!result.adapterIdentity) return uncertain("the live transport did not bind the selected adapter replay grammar");
+    let liveIdentity: AdapterCallIdentity;
+    try {
+      liveIdentity = resolveAdapterCallIdentity(result.adapterIdentity);
+    } catch (error) {
+      return uncertain(`the live transport reported an unsupported adapter replay grammar: ${(error as Error).message}`);
+    }
+    if (!sameAdapterCallIdentity(adapterIdentity, liveIdentity)) {
+      return uncertain("the live transport adapter replay grammar does not match the reservation");
+    }
+    if (
+      adapterIdentity.correlation.kind === "oneshot" &&
+      providerKind !== undefined &&
+      providerKind !== adapterIdentity.correlation.providerKind
+    ) {
+      return uncertain("the legacy provider dialect argument contradicts the adapter replay binding");
+    }
+  } else if (result.adapterIdentity !== undefined) {
+    return uncertain("the live transport used an adapter grammar that was not bound before reservation");
+  }
+  if (bind.egress !== undefined) {
+    const observed = result.grokEgressEvidence;
+    const values = observed ? [
+      observed.policySha256,
+      observed.probeReceiptSha256,
+      observed.decisionLogSha256,
+      observed.socketIdentitySha256,
+      observed.cleanupSha256
+    ] : [];
+    if (
+      adapterIdentity?.replay.adapterId !== "grok" ||
+      !observed ||
+      values.some((value) => !/^[a-f0-9]{64}$/u.test(value)) ||
+      observed.policySha256 !== bind.egress.policySha256 ||
+      observed.probeReceiptSha256 !== bind.egress.probeReceiptSha256 ||
+      observed.socketIdentitySha256 !== bind.egress.socketIdentitySha256
+    ) return uncertain("the exact Grok egress decision/socket/cleanup evidence does not match the reserved network authority");
+    verifiedEgress = observed;
+  } else if (result.grokEgressEvidence !== undefined) {
+    return uncertain("the live call produced Grok egress evidence without a pre-reserved network authority");
+  }
+  const replayProviderKind = adapterIdentity?.correlation.kind === "oneshot"
+    ? adapterIdentity.correlation.providerKind
+    : providerKind;
+  if (!adapterIdentity && replayProviderKind === undefined) return uncertain("the call has no bound transcript replay grammar");
 
   // ---- 1. the transport, end to end -----------------------------------------------------------
   // The exit CODE is deliberately NOT a gate here: a canonical usage rejection legitimately exits
@@ -274,7 +369,7 @@ export function settleCompletedCall(access: LedgerKernelAccess, args: CompletedC
   }
   let evidence: TranscriptEvidence;
   try {
-    evidence = reReadTranscript(access.transcriptRoot, result.transcriptPath, providerKind);
+    evidence = reReadTranscript(access.transcriptRoot, result.transcriptPath, replayProviderKind, adapterIdentity);
   } catch (error) {
     return uncertain(`the durable transcript could not be re-read as confined evidence: ${(error as Error).message}`);
   }
@@ -287,23 +382,16 @@ export function settleCompletedCall(access: LedgerKernelAccess, args: CompletedC
 
   // ---- 5. the verdict, RE-DERIVED from those bytes, must AGREE with the live one -----------------
   if (evidence.fatal) return uncertain(`replaying the durable transcript went fatal: ${evidence.fatal.detail}`);
-  const replayed = evidence.verdict;
-  const live = result.streamedVerdict;
-  if (!replayed || !live) return uncertain("the turn produced no whole-stream verdict");
-  if (!replayed.hasTerminal) return uncertain("the durable transcript holds no accepted terminal record");
-  if (!sameFrame(replayed.terminalFrame, live.terminalFrame)) {
-    return uncertain("the terminal frame re-derived from the durable transcript is not the one the live stream accepted");
-  }
-  if (replayed.success !== live.success || replayed.explicitLimit !== live.explicitLimit || replayed.costReported !== live.costReported || replayed.usd !== live.usd) {
-    return uncertain("the verdict re-derived from the durable transcript disagrees with the live one");
-  }
-  const frame = replayed.terminalFrame!;
-  if (frame.offset + frame.bytes > evidence.bytes) {
-    return uncertain("the terminal frame does not lie within the transcript that carries it");
-  }
-  // The evidence every authority is derived from — measurements, not conclusions.
-  const derived = { providerKind, scope, transcriptDev: evidence.dev, transcriptIno: evidence.ino, transcriptSha256: evidence.sha256, transcriptBytes: evidence.bytes };
-  const terminal = { terminalSha256: frame.sha256, terminalBytes: frame.bytes, terminalOffset: frame.offset };
+  const replayGrammar = adapterIdentity ? adapterEvidenceIdentity(adapterIdentity) : replayProviderKind!;
+  const derivedBase = {
+    providerKind: replayGrammar,
+    scope,
+    transcriptDev: evidence.dev,
+    transcriptIno: evidence.ino,
+    transcriptSha256: evidence.sha256,
+    transcriptBytes: evidence.bytes,
+    ...(verifiedEgress ? { egress: verifiedEgress } : {})
+  };
 
   /** Present a derived draft to ONE of the ledger's mints. A refusal is never a cheaper outcome: the
    *  ledger appended nothing, so the call must still reach its terminal settlement — the worst case. */
@@ -327,6 +415,70 @@ export function settleCompletedCall(access: LedgerKernelAccess, args: CompletedC
     }
     return ok;
   };
+
+  if (adapterIdentity && adapterIdentity.correlation.kind !== "oneshot") {
+    const replayedAdapter = evidence.adapterResult;
+    const liveAdapter = result.adapterResult;
+    if (!replayedAdapter || !liveAdapter) return uncertain("the structured adapter turn produced no settled codec result");
+    if (replayedAdapter.status === "uncertain" || liveAdapter.status === "uncertain") {
+      return uncertain("the structured adapter codec did not produce a terminal result");
+    }
+    if (!sameCodecFrame(replayedAdapter.terminalFrame, liveAdapter.terminalFrame)) {
+      return uncertain("the structured terminal frame re-derived from the durable transcript is not the one accepted live");
+    }
+    if (
+      replayedAdapter.status !== liveAdapter.status ||
+      replayedAdapter.finalText !== liveAdapter.finalText ||
+      replayedAdapter.explicitLimit !== liveAdapter.explicitLimit ||
+      replayedAdapter.diagnosticsDropped !== liveAdapter.diagnosticsDropped ||
+      JSON.stringify(replayedAdapter.usage ?? null) !== JSON.stringify(liveAdapter.usage ?? null)
+    ) {
+      return uncertain("the structured result re-derived from the durable transcript disagrees with the live codec result");
+    }
+    const adapterFrame = replayedAdapter.terminalFrame;
+    if (adapterFrame.offset + adapterFrame.bytes > evidence.bytes) {
+      return uncertain("the structured terminal frame does not lie within the transcript that carries it");
+    }
+    if (replayedAdapter.status !== "success") {
+      return uncertain(`the structured adapter settled ${replayedAdapter.status}; it carries no cost or fallback authority`);
+    }
+    if (result.code !== 0) return uncertain(`the structured adapter reported success but exited ${result.code}, not 0`);
+    const costUsd = replayedAdapter.usage?.costUsd;
+    if (costUsd === undefined) return uncertain("the structured adapter reported no durable USD cost");
+    let nano: bigint;
+    try {
+      nano = usdToNano(costUsd, "adapter-reported cost");
+    } catch (error) {
+      return uncertain(`the adapter-reported cost is not exact fixed-point money: ${(error as Error).message}`);
+    }
+    const usdNano = formatNano(nano);
+    const draft: KernelSettlementDraft = {
+      ...derivedBase,
+      terminalSha256: adapterFrame.sha256,
+      terminalBytes: adapterFrame.bytes,
+      terminalOffset: adapterFrame.offset,
+      usdNano
+    };
+    return mint(() => access.attestAndSettle(bind, draft), { kind: "trusted", usd: nanoToUsd(nano), usdNano });
+  }
+
+  const replayed = evidence.verdict;
+  const live = result.streamedVerdict;
+  if (!replayed || !live) return uncertain("the turn produced no whole-stream verdict");
+  if (!replayed.hasTerminal) return uncertain("the durable transcript holds no accepted terminal record");
+  if (!sameFrame(replayed.terminalFrame, live.terminalFrame)) {
+    return uncertain("the terminal frame re-derived from the durable transcript is not the one the live stream accepted");
+  }
+  if (replayed.success !== live.success || replayed.explicitLimit !== live.explicitLimit || replayed.costReported !== live.costReported || replayed.usd !== live.usd) {
+    return uncertain("the verdict re-derived from the durable transcript disagrees with the live one");
+  }
+  const frame = replayed.terminalFrame!;
+  if (frame.offset + frame.bytes > evidence.bytes) {
+    return uncertain("the terminal frame does not lie within the transcript that carries it");
+  }
+  // The evidence every authority is derived from — measurements, not conclusions.
+  const derived = derivedBase;
+  const terminal = { terminalSha256: frame.sha256, terminalBytes: frame.bytes, terminalOffset: frame.offset };
 
   // ---- 6a. A GENUINE SUCCESS → `accounted-terminal`: the actual, provider-reported cost ----------
   if (replayed.success) {
@@ -358,7 +510,7 @@ export function settleCompletedCall(access: LedgerKernelAccess, args: CompletedC
   // Fallback authority is a CLAUDE-dialect claim. No other provider's state machine may ever set
   // `explicitLimit` (Codex is the fallback and never falls back further), but this is asserted rather
   // than assumed: authority to spend a second provider's money is not inherited by a future dialect.
-  if (providerKind !== "claude") return uncertain(`a ${providerKind} turn can never authorize a fallback (only a canonical Claude rejection can)`);
+  if (replayProviderKind !== "claude") return uncertain(`a ${replayProviderKind} turn can never authorize a fallback (only a canonical Claude rejection can)`);
   if (replayed.success) return uncertain("a successful turn can never authorize a fallback");
   // The one durable record that authorizes the fallback must be located in THESE bytes, and it must be
   // the very frame the live stream accepted. A transcript mutated to plant (or to move) a rejection

@@ -19,7 +19,7 @@ export type ProviderAuthStatus = {
   notes: string[];
 };
 
-const providerDefaults: Record<string, { commands: string[]; envs: string[] }> = {
+const providerDefaults: Record<ProviderConfig["type"], { commands: string[]; envs: string[] }> = {
   claude: {
     commands: ["claude"],
     envs: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
@@ -35,6 +35,18 @@ const providerDefaults: Record<string, { commands: string[]; envs: string[] }> =
   custom: {
     commands: [],
     envs: []
+  },
+  opencode: {
+    commands: ["opencode"],
+    envs: []
+  },
+  pi: {
+    commands: ["pi"],
+    envs: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"]
+  },
+  grok: {
+    commands: ["grok"],
+    envs: ["XAI_API_KEY"]
   }
 };
 
@@ -47,15 +59,20 @@ export function getAuthStatus(project: ProjectConfig): ProviderAuthStatus[] {
     const configuredEnv = provider.auth.env;
     const apiKeyEnv = configuredEnv ?? defaults.envs.find((env) => Boolean(process.env[env]));
     const apiKeySet = Boolean(apiKeyEnv && process.env[apiKeyEnv]);
-    const recommendedMode = apiKeySet ? "api-key" : commandPath ? "subscription" : "env";
+    const apiKeyOnly = provider.type === "grok";
+    const recommendedMode = apiKeySet ? "api-key" : commandPath && !apiKeyOnly ? "subscription" : "env";
     const notes: string[] = [];
 
     if (apiKeySet) {
       notes.push(`Using ${apiKeyEnv} from environment.`);
+    } else if (commandPath && apiKeyOnly) {
+      notes.push(`Local ${provider.type} CLI found, but RelayForge requires XAI_API_KEY and does not reuse ambient subscription or managed configuration.`);
     } else if (commandPath) {
       notes.push(`Using local ${provider.type} CLI authentication state.`);
     } else if (provider.type !== "custom") {
-      notes.push(`Install ${defaults.commands.join(" or ")} or set one of: ${defaults.envs.join(", ")}.`);
+      notes.push(defaults.envs.length > 0
+        ? `Install ${defaults.commands.join(" or ")} or set one of: ${defaults.envs.join(", ")}.`
+        : `Install ${defaults.commands.join(" or ")}.`);
     }
 
     return {
@@ -91,7 +108,12 @@ export function configureLocalAuth(loaded: LoadedConfig, projectName: string): P
   for (const status of statuses) {
     const provider = rawProviders[status.providerName];
     if (!provider) continue;
-    if (status.commandPath && !provider.command) provider.command = status.command;
+    // Native structured adapters always resolve their canonical executable from behavioral probe
+    // evidence. Persisting a command override would make the newly written config invalid and would
+    // bypass that identity gate, so auth setup records only mode/env state for them.
+    if (status.commandPath && !provider.command && status.type !== "opencode" && status.type !== "pi" && status.type !== "grok") {
+      provider.command = status.command;
+    }
     provider.auth = {
       mode: status.recommendedMode,
       env: status.apiKeyEnv,

@@ -1,4 +1,46 @@
 import { ProviderConfig } from "./config/schema.js";
+import { claudeAdapterDescriptor } from "./adapters/builtins/claude.js";
+import { codexAdapterDescriptor } from "./adapters/builtins/codex.js";
+import { customAdapterDescriptor } from "./adapters/builtins/custom.js";
+import { geminiAdapterDescriptor } from "./adapters/builtins/gemini.js";
+import {
+  buildOpenCodeConfigOverlay,
+  opencodeAdapterDescriptor,
+  OPENCODE_CONFIG_CONTENT_ENV
+} from "./adapters/builtins/opencode.js";
+import { buildPiInvocationArguments, piAdapterDescriptor } from "./adapters/builtins/pi.js";
+import {
+  buildGrokInvocationArguments,
+  buildGrokPrivateEnvironment,
+  grokAdapterDescriptor
+} from "./adapters/builtins/grok.js";
+import type { AdapterDescriptor } from "./adapters/types.js";
+
+export type BuiltinProviderKind = ProviderConfig["type"];
+
+/**
+ * The immutable, compile-time set of existing provider descriptors.
+ *
+ * Values are recursively frozen by `defineAdapterDescriptor`; the record is
+ * frozen here as well so configuration can select a shipped contract but can
+ * never replace or mutate one.
+ */
+export const builtinAdapterDescriptors: Readonly<Record<BuiltinProviderKind, AdapterDescriptor>> = Object.freeze({
+  claude: claudeAdapterDescriptor,
+  codex: codexAdapterDescriptor,
+  gemini: geminiAdapterDescriptor,
+  custom: customAdapterDescriptor,
+  grok: grokAdapterDescriptor,
+  opencode: opencodeAdapterDescriptor,
+  pi: piAdapterDescriptor
+});
+
+/** Select the one shipped descriptor before invoking a legacy behavior state machine. */
+export function getBuiltinAdapterDescriptor(provider: BuiltinProviderKind): AdapterDescriptor {
+  const descriptor = builtinAdapterDescriptors[provider];
+  if (!descriptor) throw new Error(`Unknown built-in provider adapter: ${JSON.stringify(provider)}.`);
+  return descriptor;
+}
 
 export type ProviderCommand = {
   command: string;
@@ -32,6 +74,12 @@ export type AgentRequest = {
   systemPromptFile: string;
   systemPromptText: string;
   readOnly?: boolean;
+  /** Parent-created private session directory required by the native Pi RPC adapter. */
+  sessionDirectory?: string;
+  /** Canonical path of the shipped Pi reviewer helper, required for read-only roles. */
+  reviewerHelperPath?: string;
+  /** Parent-created private state directory required by stateful native adapters. */
+  adapterStateDirectory?: string;
 };
 
 /** Claude Code's flag that loads a system prompt from a file (headless). */
@@ -75,7 +123,10 @@ const CONFLICTING_ARGS: Record<ProviderConfig["type"], RegExp[]> = {
   ],
   codex: [/^--sandbox$/, /^-s$/, /^--full-auto$/, /^--dangerously-bypass-approvals-and-sandbox$/, /^--dangerously-bypass-hook-trust$/, /^--effort$/, /^-c$/, /^--config$/, /^--json$/, /^--yolo$/, /^--ephemeral$/, /^--model$/, /^-m$/],
   gemini: [/^--yolo$/, /^--approval-mode$/, /^--output-format$/],
-  custom: []
+  custom: [],
+  opencode: [/.*/],
+  pi: [/.*/],
+  grok: [/.*/]
 };
 
 /** True if `arg` matches `re`, treating a `--flag=value` equals-form the same as `--flag`. */
@@ -87,6 +138,24 @@ function matchesArg(re: RegExp, arg: string): boolean {
 
 /** Reject conflicting/unsafe args the user configured before we build the command. */
 export function assertSafeArgs(provider: ProviderConfig): void {
+  if (provider.type === "opencode" || provider.type === "pi" || provider.type === "grok") {
+    if (provider.command !== undefined) {
+      throw new Error(`Provider "${provider.type}" uses only its canonical installed executable; command overrides are forbidden.`);
+    }
+    if (Object.keys(provider.env).length !== 0) {
+      throw new Error(`Provider "${provider.type}" environment is parent-controlled; raw env overrides are forbidden.`);
+    }
+    if (
+      provider.effort !== undefined ||
+      provider.systemPromptFlag !== undefined ||
+      provider.dangerouslySkipPermissions ||
+      provider.yolo ||
+      provider.promptMode !== "interactive" ||
+      provider.fallbackFor !== undefined
+    ) {
+      throw new Error(`Provider "${provider.type}" contains an option outside its shipped controlled-option contract.`);
+    }
+  }
   const patterns = CONFLICTING_ARGS[provider.type] ?? [];
   for (const arg of provider.args) {
     if (patterns.some((re) => matchesArg(re, arg))) {
@@ -134,7 +203,17 @@ const PROVIDER_ENV_ALLOW: Record<ProviderConfig["type"], RegExp[]> = {
   claude: [/^ANTHROPIC_API_KEY$/, /^ANTHROPIC_AUTH_TOKEN$/, /^CLAUDE_CODE_[A-Z0-9_]+$/, /^ANTHROPIC_BASE_URL$/, /^ANTHROPIC_MODEL$/],
   codex: [/^OPENAI_API_KEY$/, /^OPENAI_BASE_URL$/, /^CODEX_[A-Z0-9_]+$/, /^OPENAI_ORG(ANIZATION)?$/],
   gemini: [/^GEMINI_API_KEY$/, /^GOOGLE_API_KEY$/, /^GOOGLE_APPLICATION_CREDENTIALS$/, /^GOOGLE_CLOUD_PROJECT$/],
-  custom: []
+  custom: [],
+  opencode: [/^OPENCODE_CONFIG_CONTENT$/],
+  pi: [
+    /^ANTHROPIC_API_KEY$/,
+    /^ANTHROPIC_AUTH_TOKEN$/,
+    /^OPENAI_API_KEY$/,
+    /^OPENAI_BASE_URL$/,
+    /^GEMINI_API_KEY$/,
+    /^GOOGLE_API_KEY$/
+  ],
+  grok: [/^XAI_API_KEY$/]
 };
 
 /**
@@ -144,18 +223,33 @@ const PROVIDER_ENV_ALLOW: Record<ProviderConfig["type"], RegExp[]> = {
  */
 export function buildProviderEnv(provider: ProviderConfig, req: AgentRequest, source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
-  const allow = [...BASE_ENV_ALLOW.map((n) => new RegExp(`^${n}$`)), ...(PROVIDER_ENV_ALLOW[provider.type] ?? [])];
-  if (provider.auth?.env) allow.push(new RegExp(`^${provider.auth.env.replace(/[^A-Za-z0-9_]/g, "")}$`));
+  // Pi can speak to several model backends, but one turn is allowed to receive exactly the
+  // credential selected by its closed `auth.env` field. Passing every ambient provider key would
+  // let a Pi tool or compromised runtime read credentials for unrelated adapters. OpenCode carries
+  // its selected credential only inside the parent-constructed OPENCODE_CONFIG_CONTENT overlay.
+  const providerAllow = provider.type === "pi"
+    ? provider.auth?.env === undefined
+      ? []
+      : [new RegExp(`^${provider.auth.env.replace(/[^A-Za-z0-9_]/g, "")}$`)]
+    : PROVIDER_ENV_ALLOW[provider.type] ?? [];
+  const allow = [...BASE_ENV_ALLOW.map((n) => new RegExp(`^${n}$`)), ...providerAllow];
+  if (provider.type !== "pi" && provider.auth?.env) {
+    allow.push(new RegExp(`^${provider.auth.env.replace(/[^A-Za-z0-9_]/g, "")}$`));
+  }
   for (const [k, v] of Object.entries(source)) {
     if (v === undefined) continue;
     if (/^LC_[A-Z]+$/.test(k) || allow.some((re) => re.test(k))) env[k] = v;
   }
   // Config-provided provider env wins over anything inherited.
   for (const [k, v] of Object.entries(provider.env ?? {})) env[k] = v;
-  // Role markers a custom adapter can branch on.
-  env.LOOP_ROLE = req.role;
-  env.LOOP_READONLY = req.readOnly ? "1" : "0";
-  env.LOOP_SYSTEM_PROMPT_FILE = req.systemPromptFile;
+  // Preserve the established marker contract for legacy one-shot adapters. Structured native
+  // adapters receive their role/system data on their typed protocol/config channels instead and
+  // therefore receive no unrelated RelayForge metadata in their environment.
+  if (provider.type !== "opencode" && provider.type !== "pi" && provider.type !== "grok") {
+    env.LOOP_ROLE = req.role;
+    env.LOOP_READONLY = req.readOnly ? "1" : "0";
+    env.LOOP_SYSTEM_PROMPT_FILE = req.systemPromptFile;
+  }
   return env;
 }
 
@@ -169,27 +263,32 @@ function combinedPrompt(req: AgentRequest): string {
  */
 export function buildProviderCommand(provider: ProviderConfig, promptFile: string): ProviderCommand {
   assertSafeArgs(provider);
+  const descriptor = getBuiltinAdapterDescriptor(provider.type);
   const req: AgentRequest = { role: "implementer", task: "", systemPromptFile: promptFile, systemPromptText: "" };
   const env = buildProviderEnv(provider, req);
 
-  if (provider.type === "custom") {
+  if (descriptor.id === "custom") {
     if (!provider.command) throw new Error("Custom provider requires a command.");
     return { command: provider.command, args: provider.args, env };
   }
 
-  if (provider.type === "claude") {
+  if (descriptor.id === "claude") {
     const args = ["--permission-mode", "acceptEdits", ...provider.args];
     if (provider.model) args.push("--model", provider.model);
     if (provider.promptMode === "argument") args.push("-p", `Read ${promptFile} and execute the task.`);
     return { command: provider.command ?? "claude", args, env };
   }
 
-  if (provider.type === "codex") {
+  if (descriptor.id === "codex") {
     const args = ["exec", "--sandbox", "workspace-write", ...provider.args];
     if (provider.model) args.push("--model", provider.model);
     if (provider.effort) args.push("-c", codexEffortConfig(provider.effort));
     if (provider.promptMode === "argument") args.push(`Read ${promptFile} and execute the task.`);
     return { command: provider.command ?? "codex", args, env };
+  }
+
+  if (descriptor.id === "opencode" || descriptor.id === "pi" || descriptor.id === "grok") {
+    throw new Error(`Provider "${descriptor.id}" is a structured headless adapter and has no interactive viewport command.`);
   }
 
   const args = [...provider.args];
@@ -210,11 +309,16 @@ export function buildProviderCommand(provider: ProviderConfig, promptFile: strin
  *  - Gemini/custom carry NO provider-native safety claim; their containment is the OS sandbox.
  *  - The returned env is complete and scrubbed — spawn it verbatim.
  */
-export function buildHeadlessCommand(provider: ProviderConfig, req: AgentRequest): ProviderCommand {
+export function buildHeadlessCommand(
+  provider: ProviderConfig,
+  req: AgentRequest,
+  sourceEnvironment: NodeJS.ProcessEnv = process.env
+): ProviderCommand {
   assertSafeArgs(provider);
-  const env = buildProviderEnv(provider, req);
+  const descriptor = getBuiltinAdapterDescriptor(provider.type);
+  const env = buildProviderEnv(provider, req, sourceEnvironment);
 
-  if (provider.type === "claude") {
+  if (descriptor.id === "claude") {
     // Always the canonical flag — an arbitrary `systemPromptFlag` override is rejected in
     // assertSafeArgs, so there is no transport escape route here.
     const flag = CLAUDE_SYSTEM_PROMPT_FILE_FLAG;
@@ -245,7 +349,7 @@ export function buildHeadlessCommand(provider: ProviderConfig, req: AgentRequest
     return { command: provider.command ?? "claude", args, env, stdin: `/goal ${req.task}` };
   }
 
-  if (provider.type === "codex") {
+  if (descriptor.id === "codex") {
     // Installed Codex 0.144.0 headless contract: `exec` reads the prompt from STDIN (`-`), emits
     // JSON, and runs EPHEMERAL (no persisted session). Reasoning effort via TOML `-c` override.
     const args = ["exec", "--sandbox", req.readOnly ? "read-only" : "workspace-write", "--json", "--ephemeral"];
@@ -255,13 +359,52 @@ export function buildHeadlessCommand(provider: ProviderConfig, req: AgentRequest
     return { command: provider.command ?? "codex", args, env, stdin: combinedPrompt(req) };
   }
 
-  if (provider.type === "gemini") {
+  if (descriptor.id === "gemini") {
     const args = ["-p", combinedPrompt(req)];
     if (provider.model) args.push("--model", provider.model);
     // Gemini has no verified provider-native sandbox in this release; containment is the OS
     // sandbox the orchestrator wraps around it. We do NOT pass an "auto-approve" flag.
     args.push("--output-format", "json", ...provider.args);
     return { command: provider.command ?? "gemini", args, env };
+  }
+
+  if (descriptor.id === "opencode") {
+    const overlay = buildOpenCodeConfigOverlay({
+      role: req.readOnly ? "reviewer" : "worker",
+      systemPrompt: req.systemPromptText,
+      existingConfigContent: env[OPENCODE_CONFIG_CONTENT_ENV]
+    });
+    return {
+      command: "opencode",
+      args: [...descriptor.invocationPolicy.fixedArguments],
+      env: { ...env, ...overlay }
+    };
+  }
+
+  if (descriptor.id === "pi") {
+    return {
+      command: "pi",
+      args: [...buildPiInvocationArguments({
+        role: req.readOnly ? "reviewer" : "worker",
+        sessionDirectory: req.sessionDirectory ?? "",
+        ...(req.readOnly ? { reviewerHelperPath: req.reviewerHelperPath } : {}),
+        systemPrompt: req.systemPromptText,
+        ...(provider.model === undefined ? {} : { model: provider.model })
+      })],
+      env
+    };
+  }
+
+  if (descriptor.id === "grok") {
+    const stateDirectory = req.adapterStateDirectory ?? "";
+    return {
+      command: "grok",
+      args: [...buildGrokInvocationArguments({
+        role: req.readOnly ? "reviewer" : "worker",
+        ...(provider.model === undefined ? {} : { model: provider.model })
+      })],
+      env: { ...env, ...buildGrokPrivateEnvironment(stateDirectory) }
+    };
   }
 
   if (!provider.command) throw new Error("Custom provider requires a command.");

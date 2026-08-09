@@ -2,8 +2,8 @@
 
 ## Scope and gate verdict
 
-This audit is the research gate for P0(2) in
-[`ROADMAP-AO-PARITY.md`](../../ROADMAP-AO-PARITY.md). It asks how RelayForge can
+This audit is the packaged research gate for P0(2), governed by
+[ADR 001](../adr/001-verifier-cgroup-delegation.md). It asks how RelayForge can
 let a Bubblewrap-confined verifier create nested cgroup-v2 scopes without
 exposing the host hierarchy, weakening the existing process-settlement proof,
 or silently dropping containment on an unsupported host.

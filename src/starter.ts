@@ -20,7 +20,7 @@ export function detectInstalledProviders(): Exclude<StarterProvider, "custom">[]
 }
 
 /**
- * Choose the provider `loop init` should wire the starter to: the caller's explicit override
+ * Choose the provider `relayforge init` should wire the starter to: the caller's explicit override
  * if given, else the first installed CLI in preference order, else claude as a safe default
  * the user can adjust. Returns the choice plus whether it was actually detected as installed.
  */

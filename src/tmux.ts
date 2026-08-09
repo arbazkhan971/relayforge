@@ -8,6 +8,7 @@ import { buildRolePrompt } from "./prompts.js";
 import { writeStateFileDurable } from "./runtime.js";
 import { PaneSpec, SessionIdentity, TmuxClient } from "./tmux-client.js";
 import { isSafeTmuxName, sessionName } from "./tmux-name.js";
+import { resolveRelayForgeEnvironment } from "./identity.js";
 
 /**
  * The tmux VIEWPORT — optional, observational, and never load-bearing for run correctness.
@@ -32,12 +33,12 @@ export type SessionInfo = {
 let client: TmuxClient | undefined;
 
 /**
- * The process-wide tmux client. `LOOP_TMUX_SOCKET` points it at a PRIVATE tmux server — which is how
+ * The process-wide tmux client. `RELAYFORGE_TMUX_SOCKET` (legacy: `LOOP_TMUX_SOCKET`) points it at a PRIVATE tmux server — which is how
  * the CLI smoke tests drive the real `loop tmux` commands end to end without ever creating a session
  * on the developer's default server.
  */
 export function tmuxClient(): TmuxClient {
-  if (!client) client = new TmuxClient({ socket: process.env.LOOP_TMUX_SOCKET || undefined });
+  if (!client) client = new TmuxClient({ socket: resolveRelayForgeEnvironment("TMUX_SOCKET") || undefined });
   return client;
 }
 
@@ -47,12 +48,12 @@ export function setTmuxClientForTests(next: TmuxClient | undefined): void {
 }
 
 /**
- * Is the OPTIONAL viewport usable at all? `LOOP_TMUX=off` disables it (the test suite sets this so
+ * Is the OPTIONAL viewport usable at all? `RELAYFORGE_TMUX=off` (legacy: `LOOP_TMUX=off`) disables it
  * runs never open real sessions), and it is off when tmux is not installed. It can never affect run
  * correctness or `done`.
  */
 export function tmuxAvailable(): boolean {
-  if (process.env.LOOP_TMUX === "off") return false;
+  if (resolveRelayForgeEnvironment("TMUX") === "off") return false;
   return tmuxClient().installed();
 }
 
@@ -161,7 +162,7 @@ export function sessionExists(session: string): boolean {
 export function attachSession(session: string): number {
   if (!isSafeTmuxName(session)) throw new Error(`Invalid session name ${JSON.stringify(session)}.`);
   if (!tmuxAvailable()) {
-    throw new Error("tmux is not installed (or LOOP_TMUX=off). tmux is an optional viewport — install it to attach, or use `loop monitor`.");
+    throw new Error("tmux is not installed (or RELAYFORGE_TMUX=off). tmux is an optional viewport — install it to attach, or use `relayforge monitor`.");
   }
   const c = tmuxClient();
   if (!c.identityOf(session)) {

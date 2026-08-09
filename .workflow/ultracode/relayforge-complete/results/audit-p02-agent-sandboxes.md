@@ -37,7 +37,7 @@ The local research clones were under `/home/arbaz/.relayforge-references`. Open 
 
 ## Reference Matrix
 
-| Repository | Relevant implementation | Strength | Weakness / gap for P0.2 | License | Reuse decision |
+| Repository | Relevant implementation | Strength | Weakness | License | Reuse decision |
 |---|---|---|---|---|---|
 | Untrivial Agent Orchestrator | PR #3550 transient systemd user scope, exact unit state and cgroup-wide kill policy | Deterministic OS-owned lifetime; rejects unsupported backend; `setsid` canary | Unmerged; no `Delegate=yes`, private cgroup namespace, writable mount, controller/exhaustion bounds, or restart reconciliation | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` |
 | Scion | Docker/Podman `--memory`, `--memory-reservation`, `--cpus`; K8s resource/security contexts | Strong outer-runtime abstraction; real outage-driven default and many tests | No child-subtree delegation; known rootless/cgroup-v1 probe gap; outer caps only | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` |
@@ -45,10 +45,10 @@ The local research clones were under `/home/arbaz/.relayforge-references`. Open 
 | tsk | Nested Podman/Docker build path, controller probe | Practical nested build ergonomics and real DIND smoke | Nested mode disables memory/CPU limits; hard-coded systemd paths and permissive unknown fallback; no delegation | MIT | `IDEA_ONLY` (negative example) |
 | OpenSandbox | bwrap cgroup namespace; blocked native gate; authenticated child identity; bounded status parsing | Best fail-closed bwrap launch/identity sequencing | `--unshare-cgroup` only; generic binds can expose paths; no delegated ownership/limits/cleanup tests | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` |
 | Anthropic SRT | Outer bwrap plus inner user/PID/mount namespace and cap-drop ordering | Strong nested-namespace and root-capability bug history | No cgroup namespace, resource controls, or writable subtree at all | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` |
-| containerd | Runtime `cgroup_writable`; private cgroupns; rw cgroup mount; real mkdir integration test | Strongest completed end-to-end container integration | Runtime-wide toggle; v2 check only; no explicit `nsdelegate` rejection, depth/descendant bound, or boundary/escape tests | Apache-2.0 | `ARCHITECTURAL_INSPIRATION`; candidate independent port of behavior |
-| runc | Safe ownership predicate, kernel delegation allowlist, private-subtree mount fallback, integration matrix | Strongest low-level, working ownership/mount primitive | Container-runtime assumptions; no exhaustion bounds; tests stop at ownership rather than nested resource enforcement | Apache-2.0 | `ARCHITECTURAL_INSPIRATION`; candidate `PORTED_IMPLEMENTATION` only if ledgered before code |
-| Kubernetes KEP-5474 | `nsdelegate`, explicit capability/API, fail closed, parent depth/descendant limits | Best threat model and test plan; measured node-exhaustion evidence | Design only; alpha slipped; runtime work incomplete | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` |
-| Bubblewrap | `--unshare-cgroup` / `CLONE_NEWCGROUP` | Correct private cgroup namespace primitive | Does not perform delegation, ownership, resource bounding, or lifecycle reconciliation; no cgroup-focused test found | LGPL-2.0-or-later | `NOT_USED` as code; invoke binary only |
+| containerd | Runtime `cgroup_writable`; private cgroupns; rw cgroup mount; real mkdir integration test | Strongest completed end-to-end container integration | Runtime-wide toggle; v2 check only; no explicit `nsdelegate` rejection, depth/descendant bound, or boundary/escape tests | Apache-2.0 | `ARCHITECTURAL_INSPIRATION`; bug/behavior characterization only, with no source or test port |
+| runc | Safe ownership predicate, kernel delegation allowlist, private-subtree mount fallback, integration matrix | Strongest low-level, working ownership/mount primitive | Container-runtime assumptions; no exhaustion bounds; tests stop at ownership rather than nested resource enforcement | Apache-2.0 | `ARCHITECTURAL_INSPIRATION`; RelayForge independently implemented the behavior and copied no source or tests |
+| Kubernetes KEP-5474 | `nsdelegate`, explicit capability/API, fail closed, parent depth/descendant limits | Best threat model and test plan; measured node-exhaustion evidence | Design only; alpha slipped; runtime work incomplete | Apache-2.0 | `IDEA_ONLY`; Kubernetes capability/error code is separately `ARCHITECTURAL_INSPIRATION` |
+| Bubblewrap | `--unshare-cgroup` / `CLONE_NEWCGROUP` | Correct private cgroup namespace primitive | Does not perform delegation, ownership, resource bounding, or lifecycle reconciliation; no cgroup-focused test found | LGPL-2.0-or-later | `IDEA_ONLY` for the external CLI/ABI; no source copied |
 
 ## Source, tests, design, and history evidence
 
@@ -222,6 +222,30 @@ This means the missing feature is **not merely another writable bind**. The veri
 
 No single upstream is adequate. This combination fits RelayForge’s event history, explicit state, task lease, policy, observability, crash recovery, and deterministic settlement better than adopting a container runtime wholesale.
 
+### Why
+
+Containerd and runc prove the writable private-subtree primitive; Kubernetes
+documents the missing structural safety bounds; OpenSandbox provides the
+strongest pre-exec identity gate; and cplt demonstrates that advertised Linux
+capability must be a required CI condition. Each omits at least one RelayForge
+authority or recovery requirement, so the synthesis is stronger than any one
+implementation.
+
+### What RelayForge will reuse
+
+Only `ARCHITECTURAL_INSPIRATION` and `IDEA_ONLY` behavior: exact descendant
+mounting, kernel delegation-file ownership, `nsdelegate`, structural limits,
+authenticated pre-exec sequencing, and mandatory capability tests. Bubblewrap
+is invoked as an external executable; no upstream source, tests, rules, or
+configuration are copied.
+
+### What RelayForge will change
+
+The capability is verifier-only and parent-owned; identity is bound to a
+durable lease, device/inode, process incarnation, and inherited directory FD;
+limits are immutable; cleanup and restart reconciliation are explicit facts;
+and domain-controller delegation is excluded from P0.2 rather than simulated.
+
 ### Required invariants
 
 1. **Explicit verifier-only capability.** Writable cgroups are never a general `extraWritable` path and never enabled for ordinary provider turns. A typed policy capability authorizes it only for verifier-owned nested provider/settlement execution.
@@ -248,7 +272,7 @@ No single upstream is adequate. This combination fits RelayForge’s event histo
 7. Release READY. Normal RelayForge provider/verifier execution and existing settlement evidence continue unchanged; the outer scope’s recursive state includes every nested cgroup.
 8. Teardown/restart reconciliation uses the outer inode-pinned scope and lease. Nested names are untrusted details and removed bottom-up.
 
-### How RelayForge improves upstream
+### How RelayForge will improve it
 
 - Over containerd/runc: per-verifier typed capability instead of runtime-wide config; `nsdelegate` rejection; descendant/depth bounds; durable lease/inode reconciliation; bwrap-specific gate; stronger escape and cleanup tests.
 - Over Kubernetes KEP: an implementable local control-plane contract now, with durable ownership and settlement evidence rather than pod-only lifecycle; exact fixed defaults can be validated under RelayForge workload tests.
@@ -272,7 +296,7 @@ No single upstream is adequate. This combination fits RelayForge’s event histo
 - Negative root: cannot change delegation-root `memory.max`, `memory.swap.max`, `cpu.max`, `pids.max`, cpuset files, or `cgroup.max.*`; cannot disable parent policy controllers.
 - Escape: parent and sibling cgroups are absent/inaccessible; host `/sys/fs/cgroup` source path is hidden; a PID outside the PID namespace cannot be moved; `CAP_SYS_ADMIN` is absent; remount attempts fail.
 - Bounding: create cgroups until `cgroup.max.descendants` rejects exactly at the configured boundary; nesting fails at `cgroup.max.depth`; the node remains healthy.
-- Limits: nested memory/pids/CPU constraints actually affect descendants while outer ceilings remain effective.
+- Organizational-boundary proof: verifier-created descendants remain under the immutable outer CPU/memory/pids ceilings. Per-descendant domain-controller limits are explicitly outside P0.2 and require the separate supervisor/payload design rather than a swallowed `EBUSY`.
 - Cleanup: `setsid`, double-fork, orphan, fork bomb, child-created nested scopes, stopped tasks, and normal exit all leave the outer scope removed or an explicit unresolved durable fact—never a false settlement proof.
 - Crash recovery: kill RelayForge at each gate boundary, restart, validate lease/inode, reclaim only its own stale tree, and never kill a recycled/foreign cgroup.
 - Mount regression: snapshot host cgroup2 mount options before/after success and every failure; `nsdelegate` and `memory_recursiveprot` must never be stripped (containerd #12952).
@@ -291,12 +315,13 @@ No code was copied in this audit. All product reuse decisions are currently arch
 
 | Source | Classification now | If implementation ports code later |
 |---|---|---|
-| AO / Scion / OpenSandbox / SRT / containerd / runc / Kubernetes | `ARCHITECTURAL_INSPIRATION` | Before any port, change the ledger classification to `PORTED_IMPLEMENTATION` or `MODIFIED_COPY`, identify exact files/commits, preserve Apache-2.0 notices/headers as applicable, and run license review |
-| cplt | `ARCHITECTURAL_INSPIRATION` | Preserve MIT copyright/license for copied substantial portions |
+| AO / Scion / OpenSandbox / SRT / containerd / runc / Kubernetes capability/error implementation | `ARCHITECTURAL_INSPIRATION` | Landed implementation is independent; preserve exact pins and zero-copy provenance. Any later copying requires a new ledger/license decision before the change. |
+| Kubernetes KEP-5474 | `IDEA_ONLY` | Design/exhaustion evidence only; never represent it as completed upstream behavior. |
+| cplt | `ARCHITECTURAL_INSPIRATION` | Required-capability test behavior only; no source or test copied. |
 | tsk | `IDEA_ONLY` / negative behavior reference | No code planned |
-| Bubblewrap | `NOT_USED` as source; external executable invocation | Do not copy LGPL C into RelayForge; normal process invocation does not make RelayForge a derivative |
+| Bubblewrap | `IDEA_ONLY` for the external CLI/ABI | Do not copy LGPL C into RelayForge; normal process invocation does not make RelayForge a derivative |
 
-Required future `docs/upstream-sources.md` entries should name at minimum:
+The canonical `docs/upstream-sources.md` implementation record now names at minimum:
 
 - “Verifier-owned nested cgroup delegation”: containerd `internal/cri/{server/container_create.go,opts/spec_linux_opts.go}` and integration test; runc `spec_linux.go`, `rootfs_linux.go`, delegation tests; Kubernetes KEP-5474.
 - “Bwrap gated launch identity”: OpenSandbox `bwrap_linux.go`, `lifecycle_linux.go`, and lifecycle tests.
@@ -309,10 +334,18 @@ Required future `docs/upstream-sources.md` entries should name at minimum:
 
 **Does another open-source infrastructure implementation do it better? Yes.** Containerd+runc have the strongest completed implementation of the actual writable-private-subtree primitive. Kubernetes KEP-5474 has the strongest safety design, particularly `nsdelegate` enforcement and descendant/depth bounds, but remains incomplete. RelayForge should implement the synthesis above and treat any argv-only `--unshare-cgroup` + writable bind solution as insufficient.
 
-## Verification still needed during implementation
+## Implementation verification resolution
 
-- Confirm exact Bubblewrap version requirements for `--unshare-cgroup`, `--block-fd`, and `--json-status-fd` on supported distributions.
-- Validate the root-empty/workload-leaf sequence against real bwrap monitor/child placement; do not assume the monitor and workload share one cgroup.
-- Select conservative, documented default values for `cgroup.max.descendants` and `cgroup.max.depth` from measured RelayForge nested test needs; Kubernetes intentionally leaves exact alpha values TBD.
-- Confirm behavior on kernels where `/sys/kernel/cgroup/delegate` adds future files and when controllers are threaded/domain-incompatible.
-- Establish whether the implementation can remain in TypeScript with safe dirfd/openat2/native mount support or needs a small audited native launcher. Security must decide this, not implementation convenience.
+| Former open item | Resolution and current evidence | Scoped future matrix |
+|---|---|---|
+| Bubblewrap flag/version support | Resolved for the required runner by physical executable identity plus the behavioral capability probe; help/version text alone is never readiness. On 2026-08-09 the canonical `/usr/bin/bwrap` composition passed strict cgroup namespace, FD bind, gated launch, status, and cleanup characterization on kernel `6.17.0-1021-gcp`. | Additional distributions and Bubblewrap builds may be added as separately required runners. An uncharacterized build remains a typed unsupported capability, never a weaker fallback. |
+| Monitor/workload placement and root-empty assumption | Resolved by narrowing P0.2 to organizational descendants and proving the actual FD3/4/5 launcher, private namespace root, exact membership, child lifecycle, root-policy denial, and settlement. Domain-controller enablement at a populated boundary is explicitly not promised. | Domain-controller delegation requires the documented supervisor/payload topology, a separate ADR, and new real integration tests. |
+| Structural-limit defaults | Resolved: ADR 001 ratifies `cgroup.max.descendants=256` and `cgroup.max.depth=16`; the required-host test created exactly each boundary and proved the next `mkdir` fails with `EAGAIN`. The actual nested suites fit within those limits. | Revisit only with measured RelayForge workload evidence and a reviewed ADR; the jailed process can never raise the limits. |
+| Future kernel delegation files and domain/threaded controllers | Resolved for P0.2 by reading the kernel delegation allowlist, validating every admitted entry, behaviorally probing the composed jail, and failing closed on incompatible state. Domain-controller policy remains out of scope. | Add new delegation files only after parser/ownership characterization; add controller support only through the separate controller-delegation design. |
+| Implementation language and launcher boundary | Resolved as an independently authored TypeScript parent/Linux adapter plus a fixed, identity-bound `/bin/sh` FD-gated launcher ABI. Canonical shell/stat/Bubblewrap/Node identities are cached by runtime identity and revalidated before spawn. | A native launcher is not required by the current characterized contract. Any future replacement requires equivalent identity, crash, spoofing, and cleanup gates. |
+
+Required-host evidence recorded for this resolution is 21/21 capability and
+limit tests, 46/46 nested transport/launch/settlement tests, and 193/193
+streaming, fallback, receipt, resume, cost, ledger, and containment tests, with
+zero capability skips. Broader platform coverage is an additive compatibility
+matrix, not an unresolved release claim.

@@ -1,141 +1,98 @@
-import type { Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { describe, expect, it } from "vitest";
-import { createDashboardServer, redactConfig, redactSecrets, sanitizeRun } from "../src/dashboard/server.js";
-import type { ProjectConfig } from "../src/config/schema.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config/load.js";
+import { startControlService, type ControlServiceHandle } from "../src/control/service.js";
 
-describe("dashboard security helpers", () => {
-  it("sanitizeRun rejects path traversal and separators", () => {
-    expect(sanitizeRun("run-2026")).toBe("run-2026");
-    expect(sanitizeRun("../etc")).toBeUndefined();
-    expect(sanitizeRun("a/b")).toBeUndefined();
-    expect(sanitizeRun("..")).toBeUndefined();
-    expect(sanitizeRun(null)).toBeUndefined();
-  });
+const roots: string[] = [];
+const handles: ControlServiceHandle[] = [];
 
-  it("redactConfig masks provider env values and secret-shaped fields", () => {
-    const redacted = redactConfig({ providers: { a: { env: { ANTHROPIC_API_KEY: "sk-secret" }, apiToken: "t0ken" } } }) as any;
-    expect(redacted.providers.a.env.ANTHROPIC_API_KEY).toBe("[redacted]");
-    expect(redacted.providers.a.apiToken).toBe("[redacted]");
-  });
-
-  it("redactSecrets scrubs tokens and env assignments in free text", () => {
-    expect(redactSecrets("export API_KEY=sk-abc12345")).toContain("[redacted]");
-    expect(redactSecrets("token ghp_0123456789012345678901")).toContain("[redacted]");
-  });
+afterEach(async () => {
+  for (const handle of handles.splice(0).reverse()) await handle.shutdown();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("dashboard server access control", () => {
-  it("redacts /api/config and refuses non-project sessions", async () => {
-    const server = createDashboardServer({
-      project: projectWithSecret(),
-      namespace: "loop",
+describe("dashboard control-origin security", () => {
+  it("does not expose the legacy raw config/log APIs or configuration secrets", async () => {
+    const loaded = configWithSecret();
+    const handle = await startControlService(loaded, {
       port: 0,
-      listSessions: () => [{ name: "loop-demo-run-1-dev", project: "demo", run: "run-1", role: "dev" }],
-      capturePane: () => "secret TOKEN=sk-leak"
+      allowEphemeralPortForTests: true,
+      borrowedSources: { projects: () => [{ project: "demo", runs: [] }] }
     });
-    const port = await listen(server);
-    try {
-      const config = await getJson(`http://127.0.0.1:${port}/api/config`);
-      expect(JSON.stringify(config)).not.toContain("sk-realsecret");
-      // Non-project session is refused (403).
-      const bad = await fetch(`http://127.0.0.1:${port}/api/logs?session=loop-other-run-9-x`);
-      expect(bad.status).toBe(403);
-      // Project session is allowed but redacted.
-      const good = await getJson(`http://127.0.0.1:${port}/api/logs?session=loop-demo-run-1-dev`);
-      expect(JSON.stringify(good)).not.toContain("sk-leak");
-    } finally {
-      await close(server);
+    handles.push(handle);
+    const base = handle.address.url;
+
+    for (const legacy of ["/api/config", "/api/logs?session=anything", "/api/status", "/api/board"]) {
+      const response = await fetch(base + legacy);
+      expect(response.status, legacy).toBe(404);
+      expect(await response.text(), legacy).not.toContain("sk-realsecret");
     }
+    const html = await fetch(`${base}/`).then((response) => response.text());
+    const status = await fetch(`${base}/api/v1/status`).then((response) => response.text());
+    expect(html).not.toContain("sk-realsecret");
+    expect(status).not.toContain("sk-realsecret");
+    expect(status).not.toContain("OPENAI_API_KEY");
   });
 
-  it("a DIFFERENT project's session is never exposed, even when its name contains this project's name", async () => {
-    // The old filter asked `session.includes("-demo-")`. The session of a project called `demo-api` is
-    // named `loop-demo-api-…`, which CONTAINS `-demo-` — so project `demo`'s dashboard listed and
-    // screen-scraped project `demo-api`'s session. Ownership is now decided by the STAMPED identity.
-    const server = createDashboardServer({
-      project: projectWithSecret(), // name: "demo"
-      namespace: "loop",
+  it("uses a nonce-only dashboard CSP while keeping API CSP at default-src none", async () => {
+    const loaded = configWithSecret();
+    const handle = await startControlService(loaded, {
       port: 0,
-      listSessions: () => [
-        { name: "loop-demo-run-1-dev", project: "demo", run: "run-1", role: "dev" },
-        { name: "loop-demo-api-run-1-dev", project: "demo-api", run: "run-1", role: "dev" }
-      ],
-      capturePane: () => "other project's output"
+      allowEphemeralPortForTests: true,
+      borrowedSources: { projects: () => [{ project: "demo", runs: [] }] }
     });
-    const port = await listen(server);
-    try {
-      const status = await getJson<{ sessions: string[] }>(`http://127.0.0.1:${port}/api/status`);
-      expect(status.sessions).toEqual(["loop-demo-run-1-dev"]);
+    handles.push(handle);
+    const root = await fetch(`${handle.address.url}/`);
+    const html = await root.text();
+    const csp = root.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("connect-src 'self'");
+    expect(csp).not.toContain("unsafe-inline");
+    const nonce = /script-src 'nonce-([^']+)'/u.exec(csp)?.[1];
+    expect(nonce).toBeTruthy();
+    expect(html).toContain(`<script nonce="${nonce}">`);
+    expect(html).toContain(`<style nonce="${nonce}">`);
 
-      const leak = await fetch(`http://127.0.0.1:${port}/api/logs?session=loop-demo-api-run-1-dev`);
-      expect(leak.status).toBe(403);
-    } finally {
-      await close(server);
-    }
+    const api = await fetch(`${handle.address.url}/api/v1/status`);
+    const apiCsp = api.headers.get("content-security-policy") ?? "";
+    expect(apiCsp).toContain("default-src 'none'");
+    expect(apiCsp).not.toContain("nonce-");
+    expect(api.headers.get("cache-control")).toBe("no-store");
+    expect(api.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(api.headers.get("x-frame-options")).toBe("DENY");
   });
 
-  it("enforces GET-only, 400 invalid run, 404 unknown API, and security headers", async () => {
-    const server = createDashboardServer({ project: projectWithSecret(), namespace: "loop", port: 0, listSessions: () => [], capturePane: () => "" });
-    const port = await listen(server);
-    try {
-      // Non-GET is rejected.
-      const post = await fetch(`http://127.0.0.1:${port}/api/board`, { method: "POST" });
-      expect(post.status).toBe(405);
-
-      // An invalid run id is a 400 (not a silent latest-run fall-through).
-      const badRun = await fetch(`http://127.0.0.1:${port}/api/board?run=../etc`);
-      expect(badRun.status).toBe(400);
-
-      // Unknown API path is a 404.
-      const unknown = await fetch(`http://127.0.0.1:${port}/api/does-not-exist`);
-      expect(unknown.status).toBe(404);
-
-      // Security headers + no-store are present.
-      const ok = await fetch(`http://127.0.0.1:${port}/api/status`);
-      expect(ok.headers.get("cache-control")).toBe("no-store");
-      expect(ok.headers.get("x-content-type-options")).toBe("nosniff");
-      expect(ok.headers.get("x-frame-options")).toBe("DENY");
-    } finally {
-      await close(server);
+  it("keeps the dashboard and every API route read-only", async () => {
+    const loaded = configWithSecret();
+    const handle = await startControlService(loaded, {
+      port: 0,
+      allowEphemeralPortForTests: true,
+      borrowedSources: { projects: () => [{ project: "demo", runs: [] }] }
+    });
+    handles.push(handle);
+    for (const path of ["/", "/api/v1/health", "/api/v1/status", "/api/v1/runs?project=demo"]) {
+      const response = await fetch(handle.address.url + path, { method: "POST" });
+      expect(response.status, path).toBe(405);
+      expect(response.headers.get("allow"), path).toBe("GET, HEAD");
     }
   });
 });
 
-async function listen(server: Server): Promise<number> {
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  return (server.address() as AddressInfo).port;
-}
-async function close(server: Server) {
-  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-}
-async function getJson(url: string) {
-  const response = await fetch(url);
-  return response.json();
-}
-
-function projectWithSecret(): ProjectConfig {
-  return {
-    name: "demo",
-    brief: "brief.md",
-    workingDir: ".",
-    safetyMode: "workspace-write",
-    providers: {
-      dev: {
-        type: "codex",
-        args: [],
-        dangerouslySkipPermissions: false,
-        yolo: false,
-        auth: { mode: "auto", configured: false },
-        promptMode: "interactive",
-        env: { OPENAI_API_KEY: "sk-realsecret" }
-      }
-    },
-    repositories: [],
-    roles: [{ name: "dev", title: "Developer", provider: "dev", repositories: [], responsibilities: [], guardrails: [], autoStart: true }],
-    loops: []
-  };
+function configWithSecret() {
+  const root = mkdtempSync(join(tmpdir(), "relayforge-dashboard-security-"));
+  roots.push(root);
+  const path = join(root, "loop.config.yaml");
+  writeFileSync(path, `version: 1
+projects:
+  - name: demo
+    providers:
+      dev:
+        type: codex
+        env:
+          OPENAI_API_KEY: sk-realsecret
+    roles:
+      - { name: dev, title: Developer, provider: dev }
+`);
+  return loadConfig(path);
 }

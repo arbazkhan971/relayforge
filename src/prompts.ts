@@ -100,7 +100,7 @@ export function buildRolePrompt(loaded: LoadedConfig, project: ProjectConfig, ro
     `## Project Intelligence (you are trained on this project)`,
     intel
       ? `The following is auto-detected knowledge of this codebase. Ground every decision in it — especially the commands.\n\n${intel.trim()}`
-      : "_No PROJECT-INTELLIGENCE.md found. Run \`loop learn\` first, or inspect the repo before acting._",
+      : "_No PROJECT-INTELLIGENCE.md found. Run \`relayforge learn\` first, or inspect the repo before acting._",
     ``,
     `## Assigned Repositories`,
     repos.length

@@ -16,7 +16,8 @@ files as required by the applicable license.
 
 ## Baseline streaming-framer performance correction
 
-Audit: [RawFramer tiny-frame allocation audit](../.workflow/ultracode/relayforge-complete/results/audit-streaming-framer-performance.md)
+Source-tree evidence packet: `.workflow/ultracode/relayforge-complete/results/audit-streaming-framer-performance.md`
+(intentionally not included in the npm package).
 
 RelayForge's existing exact raw-byte ceiling, source-copy ownership, synchronous
 borrowed-frame lifetime, and whole-stream fatal-authority rules remain the local
@@ -50,6 +51,256 @@ No upstream expression was copied. RelayForge improves the surveyed designs for
 this boundary by preserving exact input-byte authority and making the cached
 slab unavailable during reentrant callbacks, with allocation-count, mutation,
 throw, cap, RSS, and real-child regressions.
+
+## Phase 01 — durable control-plane facts and derived activity
+
+Packaged phase decision: [Phase 01 control-plane audit](reference/phase-01-control-plane-audit.md).
+
+### Transactional local coding-agent state
+
+Reference: [Untrivial-ai/agent-orchestrator](https://github.com/Untrivial-ai/agent-orchestrator)
+
+- Audited commit: `f65c48e296e20a816221a4003c75a5f0387967ec`
+- Files studied: SQLite initialization/migrations, conversation and cleanup
+  stores/tests, CDC poller/change-log/SSE tests, domain session facts, pure
+  status derivation/tests, lifecycle integration tests, and architecture plans.
+- Issues/PRs studied: #2928, #3472, #3475, #3491, #3710, #3711.
+- License: Apache-2.0; no root NOTICE or incompatible sampled file header found.
+- Reuse: `ARCHITECTURAL_INSPIRATION`. RelayForge independently implements a
+  canonical event history plus transactional projections, generation fencing,
+  and pure views; no Go/SQL/test/comment text is copied.
+
+### Canonical history and rebuild
+
+Reference: [temporalio/temporal](https://github.com/temporalio/temporal)
+
+- Audited commit: `023cb7d861b6cc0e139564b2faaf10c106a7f37d`.
+- Files studied: history architecture/lifecycle, event store/builder/factory,
+  mutable-state rebuilder/tests, persistence history manager/tests, deletion,
+  scavenging, and history cleanup integration tests; PRs #2532 and #11353.
+- License: MIT with Temporal/Uber copyright notices; unrelated separately
+  licensed subtrees are not used.
+- Reuse: `ARCHITECTURAL_INSPIRATION` for history-as-authority and verified
+  projection rebuild. Distributed sharding/branches/replication are `NOT_USED`.
+
+### Generation, freshness, and cursor expiration
+
+Reference: [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes)
+
+- Audited commit: `94c136764292cc5fac976c0de6587daaea56410f`.
+- Files studied: metadata identity/version/generation, condition helpers/tests,
+  watch-cache history/storage, etcd watcher/tests, deployment sync/status
+  tests, issue #138774, and PR #140860.
+- License: Apache-2.0 with relevant Apache file headers.
+- Reuse: `ARCHITECTURAL_INSPIRATION` for immutable identity, observed
+  generation, sequence freshness, and typed expired-cursor/relist behavior.
+
+### Retention and idempotency references with restricted current terms
+
+- [restatedev/restate](https://github.com/restatedev/restate), commit
+  `f26577320b8be42b7a754d20932e881f06988876`: journal lifecycle/purge,
+  restart-as-new, deduplication, durability tracking, snapshots/tests, and PRs
+  #5076/#5091/#5145 were studied. Current BSL-1.1 terms are not approved for
+  reuse. Classification: `IDEA_ONLY`; no code, tests, comments, schema, or
+  distinctive structure may be copied.
+- [inngest/inngest](https://github.com/inngest/inngest), commit
+  `ce19803e185b791121352a77601216abc25ee7be`: lifecycle history, state
+  interfaces/tests, duplicate-finalization and pause-idempotency tests,
+  retention guidance, and PRs #4668/#4672 were studied. Current SSPL/future
+  Apache terms are not permissive for this implementation. Classification:
+  `IDEA_ONLY` / history design `NOT_USED`.
+
+### Node SQLite adapter
+
+Reference: [WiseLibs/better-sqlite3](https://github.com/WiseLibs/better-sqlite3)
+
+- Compatibility pin audited: published `v12.11.1` at
+  `4cbc39ca582fecb6b51dd920dfdd338ba4b72230` (Node 20 supported); later
+  `v12.12.0` tag `38f111acfacced350ac17e62944ba9a4dbd176e5`
+  was inspected but is not published to npm; current v13 head
+  `dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb` requires Node 22.
+- Transaction/savepoint, WAL checkpoint, integrity tests, package metadata,
+  and license were inspected.
+- License: MIT; no NOTICE found.
+- Reuse decision: exact published `better-sqlite3@12.11.1` and
+  `@types/better-sqlite3@9.6.0` are approved as `DIRECT_DEPENDENCY` entries when
+  the SQLite store lands. No library source is copied; RelayForge owns schema,
+  durability pragmas, reducer, recovery, and migration behavior.
+
+### Loopback daemon, REST, and durable SSE
+
+Research artifacts:
+
+- source-tree detail packet
+  `.workflow/ultracode/relayforge-complete/results/audit-p1-loopback-transport.md`
+  (not packaged)
+- [combined P1 phase decision](reference/phase-01-control-plane-audit.md)
+
+Reference: [Untrivial-ai/agent-orchestrator](https://github.com/Untrivial-ai/agent-orchestrator)
+
+- Audited commit: `f65c48e296e20a816221a4003c75a5f0387967ec`.
+- Files/tests studied: daemon configuration/server/run-file/stale handling,
+  frontend attach logic, CDC event/poller/broadcaster, SSE controller/tests,
+  renderer event transport/tests, CLI docs and daemon architecture.
+- History/issues/PRs studied: daemon skeleton `59a654a`, durable SSE
+  `a9b08cd`, attach behavior `cbd2a1b`, PRs #2185 and #2847.
+- Evidence used: literal loopback bind, bind-before-run-file, run-file/health
+  agreement, thin CLI, subscribe-before-replay, durable sequence, overlap
+  deduplication, slow-stream close and browser reconnect/refetch.
+- RelayForge changes: crash-released lifetime lease; PID start-token check;
+  durably published private run-file; GET/HEAD-only DTOs; floor/expiry and
+  replay-byte contract; shared bounded redaction; typed recovery failures.
+- License: Apache-2.0; root license, copyright 2026 Untrivial; no root NOTICE at
+  the audited pin.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; no Go/TypeScript source, tests, comments,
+  schema or distinctive layout copied.
+
+Reference: [kurrent-io/kcap-cli](https://github.com/kurrent-io/kcap-cli)
+
+- Audited commit: `b90b59ee53baf854cb8c2afa48ae49c3ef0cb8a7`.
+- Files/tests studied: daemon lifetime/start locks, lock paths, process-start
+  token, commands and lock contention/reacquire/stale/incarnation/wait tests.
+- History/issues/PRs studied: issue #457; PRs #147, #243 and #347.
+- Evidence used: stable lock inode, kernel crash release, fresh instance,
+  PID-plus-start identity, serialized starts and read-only doctor semantics.
+- License: Kurrent License v1, not approved as a copying basis.
+- Reuse: `IDEA_ONLY`; zero source, test, comment, naming or layout copying.
+
+Reference: [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes)
+
+- Audited commit: `94c136764292cc5fac976c0de6587daaea56410f`.
+- Files/tests studied: retry watcher, watch-cache history, cache watcher and
+  their focused retry/expiry/slow-consumer tests.
+- Issues/PRs studied: issues #90058 and #102718; PR #91822.
+- Evidence used: monotonically advancing cursor, explicit history expiry and
+  relist, bounded history/channels, and closing unresponsive watchers.
+- License: Apache-2.0.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; no Kubernetes types, status text, cache
+  implementation or test text copied.
+
+Reference: [QwenLM/qwen-code](https://github.com/QwenLM/qwen-code)
+
+- Audited commit: `3e731cda8b073d058d8970ae8ffbfdc58021faba`.
+- Files/tests studied: ACP event bus/tests, serve SSE route/cursor parser/tests,
+  daemon TypeScript SDK parser/transport/tests and serve command.
+- Issues/PRs studied: issues #3803 and #4175; PR #4236.
+- Evidence used: strict cursor and epoch, synchronous subscription, replay
+  event/byte/frame/subscriber bounds, explicit resync and slow-client eviction.
+- RelayForge change: use durable run epoch/sequence rather than an in-memory
+  ring as authority.
+- License: Apache-2.0 with sampled SPDX/Qwen copyright headers.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; no event-bus/parser code or constants
+  copied.
+
+Supporting reference: [daintreehq/daintree](https://github.com/daintreehq/daintree)
+
+- Audited commit: `a5c2dae192f18378e80b97d378f6015f8eda45d7`.
+- Files/tests studied: MCP HTTP lifecycle, readiness probe, bounded tool-call
+  result and focused tests.
+- Evidence used: exact loopback Host/Origin admission, bounded readiness and
+  UTF-8 output ceilings.
+- Gap: Electron-owned lifecycle and protocol SSE are not durable run replay.
+- License: Apache-2.0.
+- Reuse: `SUPPORTING_REFERENCE`; no code copied.
+
+## Phase 02 — parent-owned durable session steering
+
+Research artifacts:
+
+- source-tree detail packet
+  `.workflow/ultracode/relayforge-complete/results/audit-p2-session-steering.md`
+  (not packaged)
+- [combined P2 decision](reference/phase-02-session-steering-audit.md)
+
+### Durable prompt admission and boundary inclusion
+
+Reference: [anomalyco/opencode](https://github.com/anomalyco/opencode)
+
+- Audited commit: `38e10eb1408feb700021b8e8766fb0ab41bf84e2`.
+- Files/tests studied: session input/schema/projector, runner boundary, three
+  inbox/event migrations, context design, prompt/runner/server API tests.
+- History/issues/PRs studied: PR #33443 / commit `f48f24e`; discussion #32157.
+- Evidence used: stable ID exact-retry conflict, durable admitted inbox,
+  sequence cutoff, atomic prompt projection, later-arrival exclusion,
+  concurrency, replay and failure-preservation tests.
+- RelayForge changes: parent-only authority; run/session/task/attempt generation;
+  blocked/exited refusal; immutable attempt prompt bytes/hash; no live turn;
+  truthful `included` rather than provider cognition.
+- License: MIT; no root NOTICE or incompatible relevant header found.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; no source, schema, tests or comments copied.
+
+### Coding-agent activity and refusal
+
+Reference: [Untrivial-ai/agent-orchestrator](https://github.com/Untrivial-ai/agent-orchestrator)
+
+- Audited commit: `f65c48e296e20a816221a4003c75a5f0387967ec`.
+- Files/tests studied: activity/status domain, session guard, lifecycle/session
+  manager, tmux adapter, architecture and focused state/race tests.
+- History/issues/PRs studied: issue #2342; PR #2357 / commit `e867496`.
+- Evidence used: distinct waiting/blocked/exited states, final fail-closed
+  recheck, and characterization of terminal submission/dialog races.
+- Rejected implementation: chunked tmux input, sleep/Enter retries, or any
+  active-turn mutation.
+- License: Apache-2.0.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; terminal delivery code `NOT_USED`.
+
+### Workflow command lifecycle
+
+Reference: [temporalio/temporal](https://github.com/temporalio/temporal)
+
+- Audited commit: `023cb7d861b6cc0e139564b2faaf10c106a7f37d`.
+- Files/tests studied: Signal/Update API and state machine, workflow-update
+  design, history and end-to-end update/signal tests.
+- History/issues/PRs studied: PRs #4313, #6513, #6485 and #9614; issue #5833.
+- Evidence used: request-ID deduplication, boundary scheduling, staged durable
+  terminology, completed-target refusal and explicit admission-not-processing.
+- RelayForge improvement: persist admission, refusal, withdrawal and inclusion
+  rather than relying on a process-local pre-acceptance registry.
+- License: MIT.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; distributed/speculative machinery not used.
+
+### Bounded coding-agent envelope and CAS
+
+Reference: [google/scion](https://github.com/google/scion)
+
+- Audited commit: `91c26b343a26b7697f9432de5792cd7372b391a6`.
+- Files/tests studied: message types/format, prompt buffer, store models,
+  broker-dispatch CAS/store/tests, broker/handlers/reconcile and message designs.
+- History/issues studied: commits `559df61`, `43aaabb`, `5851bf9`, `06f4fec`,
+  `eeee331`; issue #370 and PR #305.
+- Evidence used: complete scoped identity, character/encoded-byte bounds,
+  compare-and-swap, stuck-queue detection/expiry and cross-project regression.
+- Rejected implementation: marking dispatched before external effect,
+  in-memory debounce, agent authors/broadcasts and tmux delivery.
+- License: Apache-2.0 with Google file headers; no root NOTICE found.
+- Reuse: `ARCHITECTURAL_INSPIRATION` for envelope/bounds/tests only.
+
+### Pending/progress/cancel operator UX
+
+Reference: [daintreehq/daintree](https://github.com/daintreehq/daintree)
+
+- Audited commit: `eb989c7613db8ff9dc948775291f56e42c5ada3a`.
+- Files/tests studied: context-injection hook, terminal-input action/targeting,
+  activity controller/display mapping and architecture/recovery notes.
+- History/issues studied: commits `02d91bd`, `51070e6`, `723716b`, `b1dd773`;
+  issues #11346 and #10034.
+- Evidence used: explicit target, visible pending/progress/cancel state and
+  subscribe-then-immediate-recheck race handling.
+- RelayForge changes: durable P1 queue, exact generation target, pure activity,
+  future prompt inclusion and read-only dashboard.
+- License: Apache-2.0 plus root NOTICE/trademark restrictions.
+- Reuse: `ARCHITECTURAL_INSPIRATION` for UX only; no code or assets copied.
+
+### Staged role/context references
+
+- [stellarlinkco/myclaude](https://github.com/stellarlinkco/myclaude), commit
+  `f2e75c1263a2d5f09cdc4bb3dfe3635c635ff296`: workflow skill, topology,
+  prompt/resume/tests/design inspected. AGPL-3.0. `IDEA_ONLY` for staged
+  workflow language; code/tests `NOT_USED`.
+- [OpenBMB/ChatDev](https://github.com/OpenBMB/ChatDev), commit
+  `4fb2db0ea90375ce1059f44fe03ffbd191a7a169`: structured role messages,
+  graph edges, WebSocket handler/tests and execution docs inspected.
+  Apache-2.0. `IDEA_ONLY`; transient agent-authored messaging is not used.
 
 ## Phase 00 — worktree dependency provisioning
 
@@ -297,6 +548,29 @@ Decision: [ADR 001](adr/001-verifier-cgroup-delegation.md)
 
 All entries in this section are behavioral or architectural research. No
 upstream source, test, comment, or documentation text was copied.
+
+### RelayForge implementation record
+
+- Reuse classification for all entries below:
+  `ARCHITECTURAL_INSPIRATION` or `IDEA_ONLY`; no `DIRECT_COPY`,
+  `MODIFIED_COPY`, or `PORTED_IMPLEMENTATION`.
+- Independently implemented files:
+  - `src/cgroup-delegation.ts`
+  - `src/cgroup-delegation-linux.ts`
+  - integration hooks in `src/scope.ts`, `src/orchestrator.ts`,
+    `src/sandbox.ts`, and `src/doctor.ts`
+  - focused core, Linux, transport, recovery, and sandbox tests
+- RelayForge improvements over the strongest adjacent implementations:
+  parent-owned structural limits with exact readback and exhaustion tests;
+  runtime-identity-keyed behavioral capability; canonical shell/stat/bwrap/Node
+  identity revalidation; nonce-authenticated FD3/4/5 launch; versioned
+  device/inode/PID/startticks recovery evidence; deduplicated settlement; and
+  real nested provider/settlement suite execution through the shared bounded
+  verifier transport.
+- Required-host evidence (2026-08-09): exact behavior and limit suite 21/21;
+  nested transport/launch/settlement 46/46; nested
+  streaming/fallback/receipt/resume/cost/ledger/containment 193/193; zero
+  capability skips.
 
 ### Primary process-containment baseline
 
@@ -572,3 +846,694 @@ Reference: [Linux kernel](https://github.com/torvalds/linux)
 - Reuse: `IDEA_ONLY`; documented ABI semantics only
 
 No kernel code or selftest text was copied.
+
+## Phase 03 — trusted SCM publication and feedback
+
+The full comparison and source/test/history evidence is recorded in
+[the Phase 03 audit](reference/phase-03-scm-feedback-audit.md). P3 approves no
+direct, modified or ported upstream source.
+
+### Continuous SCM observation and feedback deduplication
+
+Reference: [Untrivial-ai/agent-orchestrator](https://github.com/Untrivial-ai/agent-orchestrator)
+
+- Audited commit: `f65c48e296e20a816221a4003c75a5f0387967ec`
+- Files studied:
+  - `backend/internal/ports/scm_observations.go`
+  - `backend/internal/ports/scm_actions.go`
+  - `backend/internal/domain/pr.go`
+  - `backend/internal/observe/scm/observer.go`
+  - `backend/internal/adapters/scm/github/provider.go`
+  - `backend/internal/adapters/scm/github/observer_provider.go`
+  - `backend/internal/adapters/scm/github/merge_action.go`
+  - `backend/internal/lifecycle/reactions.go`
+  - `backend/internal/lifecycle/manager.go`
+  - `backend/internal/storage/sqlite/store/pr_facts.go`
+  - `backend/internal/storage/sqlite/store/pr_store.go`
+  - PR/check/review SQLite queries and migrations
+- Tests studied:
+  - `backend/internal/observe/scm/observer_test.go`
+  - `backend/internal/integration/scm_observer_test.go`
+  - `backend/internal/adapters/scm/github/provider_test.go`
+  - `backend/internal/adapters/scm/github/merge_action_test.go`
+  - SCM sections of `backend/internal/lifecycle/manager_test.go`
+  - `backend/internal/storage/sqlite/store/pr_facts_test.go`
+- Issues/history studied: PR/commit `#3619` / `3f7b528` (complete check
+  fingerprint/pagination); issue/PR `#2656` / `#2678` (forced max-age refresh);
+  PR `#2799` (retain independent feedback on conflict-read error); foreign-PR
+  attribution around `#3262`; review-injection policy PR `#3709`
+- Evidence used: explicit fetch authority, independent semantic fact buckets,
+  guards plus forced freshness, failed-check fingerprints/log tails, partial
+  review merging, persisted reaction signatures, fork/stack identity, expected-
+  head mutation and fail-closed readiness
+- License: Apache-2.0; root license inspected, no separate root NOTICE observed
+- Reuse: `ARCHITECTURAL_INSPIRATION`
+
+No Go, SQL, migration, test, message or UI source was copied.
+
+`AgentWrapper/agent-orchestrator` redirected to the same repository, commit and
+tree. It is `NOT_USED` as a distinct reference and does not count as another
+implementation.
+
+### Idempotent PR publication and explicit review-feedback work
+
+Reference: [doordash-oss/agentic-orchestrator](https://github.com/doordash-oss/agentic-orchestrator)
+
+- Audited commit: `101ca9a416371c4d9db0935cf4aef73f77551366`
+- Files studied:
+  - `internal/github/client.go`, `rest.go`, and `graphql.go`
+  - `internal/git/publish.go` and `review.go`
+  - `internal/orchestrator/publish.go`
+  - `internal/server/review_feedback_fetch.go`
+  - `internal/feature/review_feedback_store.go`
+  - `internal/feature/review_feedback_outcomes.go`
+  - review-feedback child workflow and desktop integration
+- Tests studied: corresponding GitHub/Git publish/review tests, feature child/
+  store/outcome tests, server fetch tests, E2E review-feedback journey and desktop
+  publish/review recovery journeys
+- History studied: initial public import `b5082af`, draft publication `947c241`,
+  pipelined child workflows `4dbd261`, current desktop commit `101ca9a`
+- Evidence used: credentials per host, typed API, Link pagination, 422 existing-PR
+  recovery, default base branch, every review surface, durable addressed IDs,
+  deterministic recoverable review child and publication UX
+- Rejected behavior: unbounded pagination, ordinary unleased push, substring-
+  based existing-PR recovery without RelayForge's durable exact intent
+- License: Apache-2.0; root `NOTICE.txt` and DoorDash file headers inspected
+- Reuse: `ARCHITECTURAL_INSPIRATION`
+
+No Go, test, prompt, UI or workflow source was copied.
+
+### GitHub check aggregation and client semantics
+
+Reference: [cli/cli](https://github.com/cli/cli)
+
+- Audited commit: `9fc0f70e0ef97446de9166febce546e955675bc3`
+- Files/tests studied:
+  - `pkg/cmd/pr/checks/checks.go`, `aggregate.go`, `output.go`
+  - `pkg/cmd/pr/checks/checks_test.go`, `output_test.go`
+  - `pkg/cmd/pr/create/create.go`, `create_test.go`
+  - `pkg/cmd/pr/review/review.go`, `review_test.go`
+- History studied: watch/exit behavior `8253280`; workflow/event dedup fixes
+  `dea1af1` and `d46f47e`; cancellation bucket `decbbd2`; all-cancelled summary
+  `cce391b`; identical head/base refusal `9daa22e`; fork-base behavior `2b5c3b5`
+- Evidence used: complete check-rollup pagination, newest-run dedup keys,
+  pass/fail/pending/skipping/cancel semantics, required-only behavior and PR
+  head/base/fork characterization
+- Gap: an ephemeral presentation client, not a durable observer or controller
+- License: MIT, Copyright GitHub, Inc. 2019
+- Reuse: `ARCHITECTURAL_INSPIRATION`
+
+No Go source, GraphQL text, tests, fixtures or output text was copied.
+
+## Phase 04 — capability adapter registry and structured transports
+
+The source/test/history comparison and subsystem decisions are recorded in the
+[Phase 04 adapter-registry audit](reference/phase-04-adapter-registry-audit.md).
+P4 approves no direct or modified source copy. Descriptors remain unable to
+spawn or mint authority; the existing contained transport and settlement replay
+remain the sole execution/evidence path.
+
+### Registry and role decomposition
+
+Reference: [Untrivial-ai/agent-orchestrator](https://github.com/Untrivial-ai/agent-orchestrator)
+
+- Audited commit: `f65c48e296e20a816221a4003c75a5f0387967ec`
+- Files/tests studied: root/agent/chatdriver registries, agent/reviewer ports,
+  OpenCode and Pi reviewers, ACP/native-ACP/OpenCode-ACP/Codex-app-server
+  drivers, backend architecture documentation, registry/driver/live tests.
+- History/issues/PRs studied: #3484, #3386, #3358 and #3709.
+- Evidence used: separate worker/reviewer contracts, optional capabilities,
+  exact installed-binary reuse, stable constructors, and cross-registry tests.
+- License: Apache-2.0; no root NOTICE found at the pin.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; no Go/TypeScript source, test text,
+  prompts, configuration, or comments copied.
+
+`AgentWrapper/agent-orchestrator` resolved to this exact commit and tree. It is
+`NOT_USED` as a distinct reference and does not count as another implementation.
+
+### OpenCode native ACP
+
+Reference: [anomalyco/opencode](https://github.com/anomalyco/opencode)
+
+- Audited commit: `38e10eb1408feb700021b8e8766fb0ab41bf84e2`;
+  package `opencode` 1.18.15.
+- Files/tests studied: ACP CLI/service/event/session/permission/usage source and
+  the relevant `packages/opencode/test/acp/*.test.ts` suites.
+- History/issues/PRs studied: issue #22795; PRs #40422, #40450 and #41312.
+- Evidence used: provider-owned ACP v1 stdio, session/cancel/permission
+  semantics, update draining, detailed usage/context/cost with omission, and
+  the need to prove its internal loopback in the real network jail.
+- License: MIT, Copyright 2025 opencode; no NOTICE found.
+- Reuse: `ARCHITECTURAL_INSPIRATION`. RelayForge will independently implement
+  the descriptor and keep absent accounting unknown.
+
+### ACP compatibility contract
+
+Reference: [agentclientprotocol/agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol)
+
+- Audited commit: `1fc9d6ce50263b08e8d52847138ec249209b06f2`;
+  stable wire v1, schema artifact 1.20.0.
+- Files/tests/design studied: v1 schema/meta/changelog and initialization,
+  prompt, cancellation, usage, permission and transport documents; v2
+  migration/lifecycle RFDs; schema generation/tests.
+- Evidence used: negotiated wire version distinct from artifact version,
+  capability absence semantics, cancellation draining/races, optional usage,
+  and the explicit statement that protocol roots/permissions are not a sandbox.
+- License: Apache-2.0; no root NOTICE found.
+- Reuse: `ARCHITECTURAL_INSPIRATION`. Any SDK use is a future dependency
+  decision, not approved source copying. ACP is a transport kind, not a
+  provider adapter.
+
+### Codex app-server mapping and cancellation
+
+Reference: [agentclientprotocol/codex-acp](https://github.com/agentclientprotocol/codex-acp)
+
+- Audited commit: `145ebba5d2030b4aa6d19cbb89d190b7b498d454`;
+  package `@agentclientprotocol/codex-acp` 1.1.14.
+- Files/tests studied: JSON-RPC connection/app-server client, ACP client/server,
+  event/approval/mode/token/rate/quota mappers, generated types, and the broad
+  `src/__tests__/CodexACPAgent` fixture/E2E suite.
+- History studied: PR #377 and its canonical-workspace regression tests.
+- Evidence used: provider event mapping, accounting provenance, typed read-only
+  policy, and pre-start/permission/active/late-start cancellation races.
+- Rejected behavior: bundled/download fallback and shell-based explicit-path
+  spawn; the trusted RelayForge launcher retains executable authority.
+- License: Apache-2.0, Copyright 2025 JetBrains; no NOTICE found.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; no TypeScript, generated type, test, or
+  fixture content copied.
+
+### Pi native RPC
+
+Reference: [badlogic/pi-mono](https://github.com/badlogic/pi-mono)
+
+- Audited commit: `936aff00918de1187f085f123c2812d8f2d67745`;
+  package `@earendil-works/pi-coding-agent` 0.84.1.
+- Files/tests studied: RPC types/mode/client/JSONL source, session statistics,
+  CLI isolation flags, and JSONL/prompt-response/process-exit/regression tests.
+- History studied: PR #7394 and commits `8eda4f5` and `0524d68`.
+- Evidence used: strict LF framing, request IDs, prompt/steer/follow-up/abort,
+  cumulative statistics, child-failure rejection, and ambient-feature disable
+  controls.
+- Rejected behavior: the reference client's fixed startup delay. RelayForge
+  requires exact semver plus live `get_state` and `get_session_stats` behavior.
+- License: MIT, Copyright 2025 Mario Zechner; no NOTICE found.
+- Reuse: `PORTED_IMPLEMENTATION` only for an independently written public
+  wire-compatible dialect. No upstream code, test, fixture, or comments copied.
+
+### Public lifecycle and conformance corpus
+
+Reference: [openclaw/acpx](https://github.com/openclaw/acpx)
+
+- Audited commit: `5ef9b5849e137310a1c6f6e06d82ca606c2d8fb3`;
+  package `acpx` 0.13.0.
+- Files/tests studied: registry, ACP process/client, public runtime contract,
+  events/probe, lifecycle/turn manager, conformance profile, 21 JSON cases,
+  runner, and registry/runtime/permission/cancel/process tests.
+- History/issues/PRs studied: commits `5ef9b58` and `77715c8`, PR #407, and
+  OpenClaw issues #28708, #51345 and #48136.
+- Evidence used: bounded live events separated from a post-cleanup terminal
+  Promise, real behavioral probing, accounting omission, data-driven cases,
+  and bridge/identity failure taxonomy.
+- Rejected behavior: alpha/draft cancellation divergence, optional real tests,
+  network package fallback, and command overrides.
+- License: MIT, Copyright 2025 OpenClaw Team; no NOTICE found.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; conformance cases will be independently
+  authored rather than copied.
+
+### Deferred ACP candidate
+
+Reference: [QwenLM/qwen-code](https://github.com/QwenLM/qwen-code)
+
+- Audited commit: `f3ba99f545e97cff48ecb6af7ea1ea7971d8a6e4`;
+  package `@qwen-code/qwen-code` 0.21.8.
+- Files/tests studied: native ACP agent/session/events/permissions/history/
+  worktree source and tests, ACP bridge/process registry/NDJSON/transcript
+  replay, stream-JSON adapters, and CLI/sandbox integrations.
+- History studied: PRs #8790 and #8762 plus environment/trust fixes.
+- Evidence used: a strong future ACP target and usage as a typed side channel,
+  not model-visible transcript material.
+- License: Apache-2.0 with sampled file SPDX headers; no root NOTICE found.
+- Reuse: `IDEA_ONLY` for P4. Qwen is deferred until OpenCode native ACP and Pi
+  native RPC prove the registry is transport-neutral.
+
+### Grok Build native ACP addendum
+
+Reference: [xai-org/grok-build](https://github.com/xai-org/grok-build)
+
+- Audited public source commit:
+  `8a14c91d88875a831a38b3a066b1683116bcb31c`, 2026-08-09; canonical
+  Apache-2.0 repository with `third_party/NOTICE`.
+- Separately characterized installed runtime: stable `1.0.0`, build
+  `3cd0d0cbce`. The installed build identity is not represented as the public
+  mirror HEAD and is content-revalidated before launch.
+- Files/tests studied: CLI/agent parser, ACP server/session implementation,
+  config precedence, telemetry/trace/feedback/update paths, hermetic ACP test
+  support, built-binary/EOF/permission/session/auth tests and changelogs.
+- Evidence used: canonical persistent `grok agent --no-leader stdio`, ACP v1,
+  bounded session `systemPromptOverride`, native cancellation, private state
+  roots and first-party privacy-disable profile.
+- Required hardening: API-key-only auth; private empty HOME/GROK_HOME; fixed
+  updater/web-tool/subagent/memory/telemetry/trace/feedback disables; no
+  leader/serve/headless/plugin/trust/yolo/endpoint/raw controls; and explicit
+  behavioral configuration/network-tool/no-upload evidence.
+- Adjacent references inspected: current Grok plugin stdio/permission/readonly/
+  cancellation issues, an independent privacy-hard-off fork, Hermes Agent and
+  Agent Shell ACP integrations, the existing AO/OpenCode/ACP/acpx P4 corpus,
+  and both user-requested RelayForge branches.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; RelayForge's descriptor, evidence
+  evaluator, invocation mapping and ACP fixtures are independently authored.
+  No Rust, tests, comments, prompts or third-party vendored source was copied.
+
+Full findings: [Grok Build P4 addendum](reference/phase-04-grok-build-addendum.md).
+
+The implemented P4 registry retained these reuse classifications; the later
+Grok egress research is recorded in its append-only section below. No
+descriptor loads executable third-party code, spawns a provider, or bypasses
+the single contained transport/settlement authority.
+
+## Phase 05 live observability and control room — 2026-08-09
+
+The complete source/test comparison and scoring are in the [Phase 05
+audit](reference/phase-05-live-observability-audit.md), with the decision in
+[ADR 006](adr/006-live-observability-control-room.md). No implementation was
+copied during this research packet. The classes below constrain later work.
+
+### AO transcript source integrity
+
+Reference: [Untrivial-ai/agent-orchestrator](https://github.com/Untrivial-ai/agent-orchestrator)
+
+- Audited commit: `f65c48e296e20a816221a4003c75a5f0387967ec`,
+  2026-08-09.
+- Files/tests studied: `backend/internal/observe/usage/ingestor.go`, coordinator,
+  watcher and parser sources; integration/unit tests for replacement,
+  same-inode rewrite, mutation during read, restart, quiescent tail, conflict,
+  watcher rebuild and parser-state persistence.
+- History/issues/PRs studied: PR #3709, issue #3309 and current issue/PR surface.
+- Evidence used: pinned descriptor identity, source generation, byte cursor and
+  checkpoint digest, post-read verification, bounded reads/discard, incomplete
+  tail preservation and atomic cursor/event apply.
+- License: Apache-2.0; no NOTICE observed.
+- Reuse: `ARCHITECTURAL_INSPIRATION`. Independently implement
+  the state machine around RelayForge types and P1 storage; never expose the raw
+  source or its path.
+
+### Typed indexed observation projection
+
+Reference: [doordash-oss/agentic-orchestrator](https://github.com/doordash-oss/agentic-orchestrator)
+
+- Audited commit: `101ca9a416371c4d9db0935cf4aef73f77551366`,
+  2026-08-09.
+- Files/tests studied: `internal/server/sse.go`, `session_model.go`, SSE,
+  session-output, output-client and read-API contract tests.
+- Evidence used: typed row-indexed output, re-emission of a mutable partial tail,
+  metadata-only output activity, bounded/coalesced subscribers and
+  snapshot/subscribe race tests.
+- Rejected behavior: process-memory replay and unrestricted assistant display
+  prose. RelayForge retains durable P1 SSE and a narrower parent-authored DTO.
+- License: Apache-2.0 plus `NOTICE.txt`.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; any later copying requires explicit
+  license and NOTICE handling.
+
+### Activity UX and generation-fenced snapshots
+
+Reference: [sstraus/tuicommander](https://github.com/sstraus/tuicommander)
+
+- Audited commit: `ce097a40de6c3624b84b475b23be1bb95624bd7c`,
+  2026-08-06, v1.7.2.
+- Files/tests studied: `src/hooks/useAgentPolling.ts`, `src/stores/terminals.ts`,
+  ActivityDashboard, Rust SSE route, polling/cap/last-activity tests.
+- Evidence used: serialized/coalesced polling, captured session/revision fences,
+  stable activity rows and bounded command blocks.
+- Rejected behavior: live-only broadcast SSE and path/raw-terminal-rich fields.
+- License: Apache-2.0; no NOTICE observed.
+- Reuse: `ARCHITECTURAL_INSPIRATION`, limited to independently
+  implemented UX and race concepts.
+
+### Bounded lazy presentation ring
+
+Reference: [coding-by-feng/ai-agent-session-center](https://github.com/coding-by-feng/ai-agent-session-center)
+
+- Audited commit: `ff8e4b2122aff58db12b662060f2939d7fa2f8a3`,
+  2026-08-03.
+- Files/tests studied: both `server/ptyRing.ts` and `electron/ptyRing.ts`, their
+  SSH/PTY consumers and `test/ptyRing.test.ts` parity suite.
+- Evidence used: lazy geometric allocation to a hard cap, wrap, tail retention
+  for a huge append, snapshot/reset and cross-copy parity.
+- Rejected behavior: raw PTY storage or WebSocket delivery as public truth.
+- License: MIT.
+- Reuse: `ARCHITECTURAL_INSPIRATION`, adapted to sanitized typed
+  records plus item/byte/sequence/loss accounting.
+
+### Lifecycle fencing, coalescing and pressure visibility
+
+Reference: [daintreehq/daintree](https://github.com/daintreehq/daintree)
+
+- Audited commit: `a5c2dae192f18378e80b97d378f6015f8eda45d7`,
+  2026-08-09.
+- Files/tests studied: PTY lifecycle ledger, host backpressure, panel-status
+  buffer, activity FSM/temperature, lifecycle-ledger and adversarial/property
+  tests.
+- Evidence used: launch generations, stale-exit rejection, bounded drop tallies,
+  pause/suspend signals, frame coalescing and timestamp/exit guards.
+- Rejected behavior: the large terminal-inference stack as lifecycle authority.
+- License: Apache-2.0 plus NOTICE; Daintree name/logo terms also observed.
+- Reuse: `ARCHITECTURAL_INSPIRATION`, and only for small,
+  independently implemented lifecycle/pressure concepts.
+
+### Event dedup supporting reference
+
+Reference: [simple10/agents-observe](https://github.com/simple10/agents-observe)
+
+- Audited commit: `bb2f6c382cafb4d8111fc3137bab376b3aee11ed`,
+  2026-07-21.
+- Files/tests studied: event signature/admission, SQLite uniqueness,
+  WebSocket/CORS, transcript parsing and their unit/race tests.
+- History studied: issue #22 and its loopback/origin fix history.
+- Evidence used: canonical nested-key signature plus unique-index race handling
+  for external observations without a stable upstream ID.
+- Rejected behavior: live-only unbounded WebSocket and repeated full-file
+  transcript parsing. RelayForge events are not time-bucket deduplicated.
+- License: MIT.
+- Reuse: `ARCHITECTURAL_INSPIRATION` for the narrow dedup concept.
+
+### Headless terminal boundary reference
+
+Reference: [stagewise-io/stagewise](https://github.com/stagewise-io/stagewise)
+
+- Audited commit: `104d1c27376bc37e6b93adfc3617254358346823`,
+  2026-08-07.
+- Files/tests studied: agent-shell session logger/service/manager/OSC parser and
+  logger/manager/OSC tests.
+- Evidence used: bounded headless rendering and the explicit recognition that
+  terminal control sequences are forgeable.
+- License: AGPL-3.0.
+- Reuse: `IDEA_ONLY`. No code, tests, comments, generated structures or
+  distinctive arrangement may be copied.
+
+### Rejected transcript and terminal-authority candidates
+
+References: [jayminwest/overstory](https://github.com/jayminwest/overstory) at
+`ff38f3f76f084abcc34f519bcaa69580f6e53cf1` (MIT, archived) and
+[nutthouse/tutti](https://github.com/nutthouse/tutti) at
+`6b86cca7457364888032e6ff9c04f2a87fc14cb2` (MIT).
+
+- Overstory files/tests studied: event tailer/store and tests. Its cursor moves
+  to observed size before parsing, partial/malformed lines and errors are lost,
+  and rotation/rewrite has no source generation. Primitive: `NOT_USED`.
+- Tutti files studied: serve/dashboard/runtime/tmux sources. Timestamp-oriented
+  streaming, raw terminal polling and output-pattern state are weaker than
+  RelayForge's durable cursor and parent authority. Primitive: `NOT_USED`.
+
+The eventual P5 implementation change must identify any actual copied portion
+and satisfy its license/NOTICE obligations. Until then, all implementation is
+expected to be independently written, and Stagewise remains strictly idea-only.
+
+## Phase 06 multi-repository scheduling and integration — 2026-08-09
+
+The complete source/test comparison, scoring, failure matrix, and selected
+design are in the [Phase 06 audit](reference/phase-06-multi-repository-audit.md),
+with the decision in [ADR 007](adr/007-multi-repository-execution.md). No
+upstream source, test, fixture, comment, or generated structure was copied in
+this research packet.
+
+### Multi-repository worktree lifecycle
+
+Reference: [Untrivial-ai/agent-orchestrator](https://github.com/Untrivial-ai/agent-orchestrator)
+
+- Audited commit: `f65c48e296e20a816221a4003c75a5f0387967ec`,
+  2026-08-09.
+- Files/tests/design studied: workspace and workspace-project ports, project and
+  session-worktree domain, Git worktree adapter, session manager lifecycle,
+  SQLite worktree store, architecture and lifecycle-persistence documents, and
+  focused creation/rollback/preserve/restore/cleanup tests.
+- Evidence used: root-plus-child worktree group, canonical source and safe
+  relative paths, a branch name free across repositories, per-repo base SHA and
+  durable inventory, reverse partial-creation cleanup, children-before-root
+  teardown, and dirty/registry-drift preservation.
+- Limit observed: the workspace layer does not implement a recoverable
+  cross-repository target-ref transaction; the audited squash-root tree also
+  supplies little explanatory blame history.
+- License: Apache-2.0; no root NOTICE observed.
+- Reuse: `ARCHITECTURAL_INSPIRATION`. RelayForge independently implements a
+  group lifecycle with stronger repository identity, fencing, provisioning,
+  and recovery.
+
+`AgentWrapper/agent-orchestrator` resolved to the exact same commit and tree and
+is `NOT_USED` as a second implementation.
+
+### Recoverable local multi-repository integration
+
+Reference: [doordash-oss/agentic-orchestrator](https://github.com/doordash-oss/agentic-orchestrator)
+
+- Audited commit: `101ca9a416371c4d9db0935cf4aef73f77551366`,
+  2026-08-09; 99 commits in the preceding 90 days.
+- Files/tests studied: `internal/feature/transaction.go`,
+  `internal/orchestrator/child_transaction.go`, `internal/git/ref_cas.go`,
+  `internal/git/merge_candidate.go`, their focused tests, the three-repository
+  integration test, and the transactional multi-repo E2E journey.
+- History/PR studied: commit `4dbd261ad321852e330254922174f7c37f34e188`
+  and PR #113. The current tests cover later-CAS compensation, crash after all
+  ref changes but before journal completion, idempotent resume, conflicts,
+  dirty parents, and external ref movement.
+- Evidence used: durable ordered journal, detached candidate preparation with
+  no target-ref movement, expected-old `git update-ref`, persist-after-each
+  application, conditional reverse compensation, and attention rather than
+  overwrite on external movement.
+- License: Apache-2.0, DoorDash copyright headers, and `NOTICE.txt`.
+- Reuse: `ARCHITECTURAL_INSPIRATION`; RelayForge independently ports the public
+  behavior, not source expression. It adds P1 event history, sorted leases,
+  generation fencing, full-vector verification, receipt digests, and typed
+  recovery uncertainty.
+
+### Per-repository identity, resume, and operator UX
+
+Reference: [kdlbs/kandev](https://github.com/kdlbs/kandev)
+
+- Audited commit: `bbdd4267768e3b683bb3799e900bc69e155d0659`,
+  2026-08-09; 1,343 commits in the preceding 90 days.
+- Files/tests studied: executor and multi-repo executor tests, worktree
+  preparer and manager tests, GitHub multi-repo store/migrations, and per-repo
+  environment/worktree/branch/PR persistence.
+- History/PRs studied: #2138, #1905, #2007, #1568, and #1795 for deterministic
+  parallel Git fan-out, resume losing secondary repos, junction-safe cleanup,
+  stale repository identity, and review base mismatch.
+- Evidence used: identity keyed by session/repository/branch, ordered task-repo
+  rows, pre-launch repository-secret conflict, exact failing secondary repo,
+  migration dedup, and partial-result operator ergonomics.
+- License: AGPL-3.0; no root NOTICE found.
+- Reuse: `IDEA_ONLY`. No Go/TypeScript source, schema, fixture, test, comment,
+  or distinctive arrangement may be copied.
+
+### Durable reconcile and fencing semantics
+
+Reference: [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes)
+
+- Audited commit: `94c136764292cc5fac976c0de6587daaea56410f`,
+  2026-08-08.
+- Files/tests studied: `client-go/util/workqueue/queue.go` and its tests;
+  `client-go/tools/leaderelection/leaderelection.go` and its lease tests.
+- Evidence used: dirty/processing sets guarantee one later reconcile for a key
+  changed during processing. Leader-election source explicitly states that it
+  does not provide fencing and warns about cancellation/release ordering.
+- License: Apache-2.0 with project NOTICE.
+- Reuse: `ARCHITECTURAL_INSPIRATION`. RelayForge persists the dirty/processing
+  semantic and requires generation/token/version fences on every mutation; it
+  does not copy the in-memory queue.
+
+### Durable backlog, retry identity, and rebuild
+
+Reference: [temporalio/temporal](https://github.com/temporalio/temporal)
+
+- Audited commit: `023cb7d861b6cc0e139564b2faaf10c106a7f37d`,
+  2026-08-07.
+- Files/tests studied: matching task reader/writer, ack manager, backlog and
+  physical task-queue tests, fairness tests, and history/rebuild contracts.
+- History studied: fairness changes #7967/#8500, read-level race #5142,
+  task-writer race #5892, and dropped-task observability #10759/#10642.
+- Evidence used: durable backlog separated from dispatch/completion, ack level,
+  stable retry identity, rebuild, fairness, and dropped-work observability.
+- License: MIT; no root NOTICE found.
+- Reuse: `ARCHITECTURAL_INSPIRATION`. RelayForge keeps its smaller local
+  ControlStore and does not import Temporal matching machinery.
+
+### Tokenized dequeue and plan validation
+
+Reference: [hashicorp/nomad](https://github.com/hashicorp/nomad)
+
+- Audited commit: `d78b9b59529a1503f013bb9f86f2e75c7cf889d4`,
+  2026-08-07; 200 commits in the preceding 90 days.
+- Files/tests studied: `nomad/eval_broker.go`, `eval_broker_test.go`,
+  `plan_queue.go`, `plan_queue_test.go`, worker dequeue/ack/plan submission,
+  file headers, and root license.
+- Evidence used: random dequeue token, token-checked Ack/Nack, acknowledgement
+  timeout, delivery limit, per-job serialization, priority, FIFO, optimistic
+  plan then authoritative validation.
+- Rejected behavior: leader-memory queue authority and worker Ack/Nack RPC
+  errors that are logged and swallowed.
+- License: BUSL-1.1, IBM copyright and SPDX headers.
+- Reuse: `IDEA_ONLY`; no source/test copying. RelayForge persists admission,
+  dispatch, completion, and retry as canonical events.
+
+### Distributed attempt and watermark negative evidence
+
+Reference: [dagucloud/dagu](https://github.com/dagucloud/dagu)
+
+- Audited commit: `99863067370950e33a31969f77a07127ea09fe8f`,
+  2026-08-09; 394 commits in the preceding 90 days.
+- Files/tests studied: queue processor, distributed attempts, worker poller,
+  zombie detector, watermark store, and their tests.
+- Evidence used: reservations, attempt identity, claim acknowledgement,
+  heartbeat, jitter, bounded concurrency, and repeated-stale observation.
+- Rejected behavior: some lease read uncertainty is treated as inactive status,
+  and corrupt/unknown watermark state can start fresh.
+- License: GPL-3.0; sampled files state `GPL-3.0-or-later`.
+- Reuse: `IDEA_ONLY` / negative evidence. Equivalent RelayForge uncertainty is
+  fail-closed and recovery-required.
+
+### Adjacent scheduler candidates
+
+References: [AgentsMesh](https://github.com/AgentsMesh/AgentsMesh) at
+`1f90b14194d03c353df4f281a05442afe93cae34` and
+[GoogleCloudPlatform/scion](https://github.com/GoogleCloudPlatform/scion) at
+`91c26b3`.
+
+- AgentsMesh task scheduler, runner worktree and command-queue sources/tests
+  were inspected. Its Business Source License 1.1 has no production grant and
+  changes in 2030; reuse is `IDEA_ONLY` / `NOT_USED` for code.
+- Scion scheduler source/tests were inspected for persistent one-shot timers,
+  startup expiration, recurring jitter, and a global semaphore. Its
+  missing-advisory-lock path can run unguarded; reuse is
+  `ARCHITECTURAL_INSPIRATION` for bounded scheduling tests only under
+  Apache-2.0.
+
+The eventual P6 implementation must amend these entries if reuse differs. It
+must not call a multi-ref or remote saga atomic, must never overwrite an
+unproven external ref, and must rerun every real-Git/crash gate on committed
+HEAD.
+
+## Phase 02 implementation attribution addendum — 2026-08-09
+
+This append-only addendum records the implemented operator/API packet. The
+research classifications and audited pins in the earlier **Phase 02 —
+parent-owned durable session steering** section remain authoritative.
+
+- Implemented areas: strict steering domain and lifecycle reduction, derived
+  seven-state activity, parent admission/withdrawal service, immutable prompt
+  capture and recovery, read-only dashboard/monitor projections, and the
+  private run-parent Unix command socket plus connect-only CLI.
+- `anomalyco/opencode` at
+  `38e10eb1408feb700021b8e8766fb0ab41bf84e2` remains
+  `ARCHITECTURAL_INSPIRATION` under MIT for durable stable-ID admission and
+  cutoff concepts. No source, schema, test, fixture, comment or expression was
+  copied.
+- `Untrivial-ai/agent-orchestrator` at
+  `f65c48e296e20a816221a4003c75a5f0387967ec` remains
+  `ARCHITECTURAL_INSPIRATION` under Apache-2.0 for activity/race evidence;
+  terminal delivery remains `NOT_USED`.
+- `temporalio/temporal` at
+  `023cb7d861b6cc0e139564b2faaf10c106a7f37d` remains
+  `ARCHITECTURAL_INSPIRATION` under MIT for stable request identity and staged
+  terminology.
+- `google/scion` at
+  `91c26b343a26b7697f9432de5792cd7372b391a6` remains
+  `ARCHITECTURAL_INSPIRATION` under Apache-2.0 for bounded-envelope/CAS test
+  ideas.
+- `daintreehq/daintree` at
+  `eb989c7613db8ff9dc948775291f56e42c5ada3a` remains
+  `ARCHITECTURAL_INSPIRATION` under Apache-2.0 plus its NOTICE/trademark terms
+  for pending/progress/cancel UX only. Its terminal-input implementation and
+  assets are `NOT_USED`.
+- `stellarlinkco/myclaude` at
+  `f2e75c1263a2d5f09cdc4bb3dfe3635c635ff296` remains `IDEA_ONLY` under
+  AGPL-3.0; `OpenBMB/ChatDev` at
+  `4fb2db0ea90375ce1059f44fe03ffbd191a7a169` remains `IDEA_ONLY` under
+  Apache-2.0. Their code and tests are `NOT_USED`.
+
+All Phase 02 implementation in RelayForge is independently written. Reuse
+classifications for this packet are: `DIRECT_COPY`: none; `MODIFIED_COPY`:
+none; `PORTED_IMPLEMENTATION`: none; `ARCHITECTURAL_INSPIRATION` and
+`IDEA_ONLY`: exactly as itemized above.
+
+## User-requested parallel branch review — 2026-08-09
+
+References: local product base `agent/loop-engineering-hardening` at
+`73051d510c6473fa763bc7cd81921f65bec00eea`, and fetched remote branch
+`claude/agent-orchestrator-ref-i63kd1` at
+`f0914c092157b7d63ba98481ce313b2d53abcfe2` (common ancestor
+`9848c99d7c4829f1d2534639f9a9bbb45c38df80`).
+
+- Commits studied: `09725ff7485147b536ee86d56d0e88f406446a4b`
+  (mission-control plan), `f9f54e9256278bf8ed4ee77794e87d21a9d86813`
+  (daemon/state/SSE), and
+  `f0914c092157b7d63ba98481ce313b2d53abcfe2` (SCM feedback router).
+- Source studied with `git show`: `src/daemon/{state,lifecycle,server,client,
+  github,poller,router}.ts`, the daemon CLI/config diff, and
+  `docs/mission-control-plan.md`.
+- Tests studied: `tests/daemon-{state,server,router}.test.ts`. The useful
+  characterizations are derived-status precedence, a failed liveness probe as
+  unknown rather than immediate death, first creation winning, sticky
+  termination, and no new feedback routing after a PR closes or merges.
+- Rejected implementation: unbounded/raw JSONL reads, torn-line skipping with
+  a line-count watermark, bearer tokens in query strings, mutation/kill HTTP
+  routes, raw paths/tmux identifiers/log tails/review bodies, unbounded request
+  bodies/SSE clients, PID-only lifecycle identity, direct `gh` polling, and
+  separate routed-key plus board writes. Those boundaries are weaker than the
+  landed run-scoped SQLite transactions, process-incarnation/lease/generation
+  fences, GET/HEAD-only credential-rejecting API, durable cursor SSE metadata,
+  bounded normalized SCM facts, and atomic P2 reaction identity.
+- License: the branch carries this repository's MIT `LICENSE`; no additional
+  NOTICE or file-level third-party header was found.
+- Reuse: `NOT_USED` for code, tests, schemas, fixtures, comments and distinctive
+  structure. The derived-status and unknown-on-probe behaviors were already
+  independently implemented and remain retrospective
+  `ARCHITECTURAL_INSPIRATION`/characterization checks only. No commit was
+  cherry-picked or merged.
+
+`agent/loop-engineering-hardening` is the active RelayForge implementation
+base, not an external upstream. The reference audits use that exact commit as
+their comparison baseline; completion remains contingent on the final
+integrated working-tree and committed-HEAD gates.
+
+## Phase 04 Grok egress containment addendum — 2026-08-09
+
+The source, tests, recent history, open issues, license and NOTICE boundaries
+below were inspected before RelayForge selected its parent-owned Grok egress
+boundary. No upstream code, rule, fixture, test, configuration or comment was
+copied. Full findings and rejected alternatives are in the
+[Grok egress audit](reference/phase-04-grok-egress-addendum.md).
+
+| Reference | Exact pin | Evidence inspected | License | Reuse |
+|---|---|---|---|---|
+| [evilsocket/opensnitch](https://github.com/evilsocket/opensnitch) | `a1353848ba1b660320e90cefea782c3fba272c00`, 2026-07-27 | `daemon/firewall/{iptables,nftables}`, `daemon/netfilter`, `daemon/main.go`, rule loader/operator tests, the root-only production NFQUEUE test, recent rule-race/network-rule history and issue #1644 | GPL-3.0 | `IDEA_ONLY`; only below-process/default-deny characterization is retained |
+| [google/gvisor](https://github.com/google/gvisor) | `5ceb9a5fd5750d6c73dd166441f28306039300d0`, 2026-08-07 | `runsc/config/{flags,config}.go`, `runsc/boot/network.go`, loader/config/boot posture tests, recent network-namespace history and issue #13796 | Apache-2.0 with the per-file MIT/BSD notices recorded in `LICENSE` | `ARCHITECTURAL_INSPIRATION` for explicit none/sandbox/host boundaries; no runtime dependency |
+| [cilium/cilium](https://github.com/cilium/cilium) | `8c0423e970e62706bcd5dd3a57e1ffaee697439c`, 2026-08-08 | `pkg/policy/api/egress.go`, `pkg/fqdn`, default-deny/deny-precedence tests, `test/k8s/fqdn.go`, policy docs, recent FQDN history and issues #47768/#47128 | Apache-2.0 root; marked BPF files retain their stated GPL/BSD terms | `ARCHITECTURAL_INSPIRATION` for default-deny plus active rule tests; no cluster/eBPF code used |
+| [rootless-containers/rootlesskit](https://github.com/rootless-containers/rootlesskit) | `508b336380f2eb37d7d8dbc0a9b4f98bc4956151`, 2026-08-04 | `docs/network.md`, `cmd/rootlesskit/main.go`, `pkg/network/{slirp4netns,pasta}`, `hack/integration-net.sh`, helper feature detection, current network/port issues and host-loopback fix PR #612 | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` for exact helper probing and namespace bypass tests; slirp/pasta are not treated as endpoint policy |
+
+The independently implemented RelayForge decision is an unshared network
+namespace whose sole approved route is a bounded parent-owned CONNECT proxy.
+Availability requires one successful exact `api.x.ai:443` path plus active
+denial of canary, direct IPv4/IPv6, DNS, host-loopback and alternate Unix-socket
+paths. Privacy flags, proxy environment variables, `--unshare-net` alone and a
+runner-supplied boolean are explicitly insufficient.
+
+## Phase 07 RelayForge identity and release provenance — 2026-08-09
+
+The release/rebrand audit inspected the following canonical sources at exact
+pins. RelayForge's TypeScript/npm scripts, workflow tests and compatibility
+fixtures were independently authored; no upstream source, workflow, test,
+fixture or generated asset was copied.
+
+| Reference | Exact pin / activity | Files, tests and history inspected | License / notice | Reuse |
+|---|---|---|---|---|
+| [Untrivial-ai/agent-orchestrator](https://github.com/Untrivial-ai/agent-orchestrator) | `f65c48e296e20a816221a4003c75a5f0387967ec`; 453 commits/30d | npm shim/platform manifests, `packages/build-binaries.sh`, testing/feature/latest-guard workflows, CLI and desktop E2Es, desktop release docs, and the ACP packaging repair `3c8e7ce3`/PR #3660 | repository Apache-2.0; npm shim metadata MIT, so file provenance is evaluated separately | `ARCHITECTURAL_INSPIRATION` for exact-SHA/credential isolation and packed runtime proof; native wrapper not used |
+| [mco-org/mco](https://github.com/mco-org/mco) | `9eff964825e4da234d8c8079c61fb010854ae44e`; 5 commits/30d | package/releasing/changelog files, gate/preview/publish workflows, packaging smoke, release-ref/version scripts and tests, Node installer/launcher tests, PR #122 | MIT; no NOTICE found | `ARCHITECTURAL_INSPIRATION` for confirmed-absence publication, safe retry and clean install; Python wrapper code not used |
+| [daintreehq/daintree](https://github.com/daintreehq/daintree) | `eb989c7613db8ff9dc948775291f56e42c5ada3a`; 1,623 commits/30d | release docs/workflows, packaged-smoke implementation/tests, release-E2E dependency tests and issue #11117 gate regression | Apache-2.0 plus NOTICE | `ARCHITECTURAL_INSPIRATION` for artifact-level smoke and no-bypass workflow topology; Electron/signing/updater code not used |
+| [stagewise-io/stagewise](https://github.com/stagewise-io/stagewise) | `104d1c27376bc37e6b93adfc3617254358346823`; 180 commits/30d | prepare/auto/nightly/component release workflows, package/version files, release-note/update/compatibility tests and `1.28.0` history | AGPL-3.0 with package-local licenses | `IDEA_ONLY`; no source or tests used |
+| [GoogleCloudPlatform/scion](https://github.com/GoogleCloudPlatform/scion) | `91c26b343a26b7697f9432de5792cd7372b391a6`; 421 commits/30d | build-release workflow, `hack/smoke_test.sh`, root/start/server-migrate tests and provision/migration compatibility tests | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` for behavioral legacy compatibility; Go/container packaging not used |
+| [johannesjo/parallel-code](https://github.com/johannesjo/parallel-code) | `d000fff65989f4c9fe48e5814a9d7c807ae83ba6`; 64 commits/30d | package and release workflow plus `52d1057` auto-update metadata and tag history | MIT | `IDEA_ONLY`; its pleasant tag ergonomics did not replace the stronger artifact/publication gates |
+
+The selected design combines MCO's exact-version registry semantics,
+Daintree's artifact/workflow proof, Scion's compatibility characterization and
+Agent Orchestrator's exact-artifact credential boundary. Stagewise and Parallel
+Code remain idea-only. RelayForge introduces no updater, telemetry,
+auto-merge, postinstall downloader or unrequested external publication.

@@ -1,58 +1,55 @@
 import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
-import { loadConfig, type LoadedConfig } from "../config/load.js";
+import { ConfigDiscoveryError, loadConfig, type LoadedConfig } from "../config/load.js";
+
+export function reportConfigLoadError(error: unknown, asJson: boolean): void {
+  const message = error instanceof Error ? error.message : String(error);
+  const missing = error instanceof ConfigDiscoveryError && error.code === "CONFIG_NOT_FOUND";
+  const help = missing
+    ? {
+        ok: false,
+        error: "No RelayForge config found.",
+        code: "CONFIG_NOT_FOUND",
+        nextSteps: [
+          "Run `relayforge init` in this repo.",
+          "Run `relayforge auth status` again.",
+          "Run `relayforge auth configure --write` to store detected local provider metadata."
+        ]
+      }
+    : {
+        ok: false,
+        error: message,
+        ...(error instanceof ConfigDiscoveryError ? { code: error.code } : {}),
+        nextSteps: [
+          "Select an exact file with `relayforge --config <path> …` when config discovery is ambiguous.",
+          "Fix the keys named above in the selected RelayForge config.",
+          "Unknown keys are rejected, never ignored — a removed/renamed option is reported instead of being silently dropped.",
+          "Run `relayforge validate` again, then `relayforge doctor`."
+        ]
+      };
+  if (asJson) {
+    console.log(JSON.stringify(help, null, 2));
+  } else if (missing) {
+    console.error("No RelayForge config found (relayforge.config.* or legacy loop.config.*).");
+    console.error("");
+    console.error("Run:");
+    console.error("  relayforge init");
+    console.error("  relayforge auth status");
+    console.error("  relayforge auth configure --write");
+  } else {
+    console.error(message);
+    console.error("");
+    console.error("Select one exact config with --config, or fix it, then run `relayforge validate` again.");
+  }
+  process.exitCode = 1;
+}
 
 export function safeLoadConfig(configPath: string | undefined, asJson: boolean): LoadedConfig | undefined {
   try {
     return loadConfig(configPath);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("No loop.config.yaml")) {
-      const help = {
-        ok: false,
-        error: "No loop.config.yaml found.",
-        nextSteps: [
-          "Run `loop init` in this repo.",
-          "Run `loop auth status` again.",
-          "Run `loop auth configure --write` to store detected local provider metadata."
-        ]
-      };
-      if (asJson) {
-        console.log(JSON.stringify(help, null, 2));
-      } else {
-        console.error("No loop.config.yaml found.");
-        console.error("");
-        console.error("Run:");
-        console.error("  loop init");
-        console.error("  loop auth status");
-        console.error("  loop auth configure --write");
-      }
-      process.exitCode = 1;
-      return undefined;
-    }
-    // The config EXISTS but does not load: malformed YAML, a schema violation, or a legacy key this
-    // release rejects rather than silently guessing at. That rejection is intentional — but it has to
-    // reach the user as a REPORT, not as an uncaught Node stack trace with an empty stdout under
-    // `--json` (which is what `loop validate` used to do on exactly the configs it exists to
-    // diagnose). Same shape as every other failure: actionable text, or JSON when asked.
-    const help = {
-      ok: false,
-      error: message,
-      nextSteps: [
-        "Fix the keys named above in loop.config.yaml.",
-        "Unknown keys are rejected, never ignored — a removed/renamed option is reported instead of being silently dropped.",
-        "Run `loop validate` again, then `loop doctor`."
-      ]
-    };
-    if (asJson) {
-      console.log(JSON.stringify(help, null, 2));
-    } else {
-      console.error(message);
-      console.error("");
-      console.error("Fix the keys named above in loop.config.yaml, then run `loop validate` again.");
-    }
-    process.exitCode = 1;
+    reportConfigLoadError(error, asJson);
     return undefined;
   }
 }
@@ -61,8 +58,9 @@ export function safeLoadConfig(configPath: string | undefined, asJson: boolean):
 export function safeLoadConfigOptional(configPath: string | undefined): LoadedConfig | undefined {
   try {
     return loadConfig(configPath);
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof ConfigDiscoveryError && error.code === "CONFIG_NOT_FOUND") return undefined;
+    throw error;
   }
 }
 

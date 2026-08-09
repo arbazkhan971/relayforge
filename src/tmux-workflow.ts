@@ -1,6 +1,7 @@
 import { tmuxInstalled } from "./tmux.js";
 import { foreignSessionMessage, OwnedSession, PaneSpec, SessionIdentity, TmuxClient, TmuxConflictError } from "./tmux-client.js";
 import { sessionName } from "./tmux-name.js";
+import { resolveRelayForgeEnvironment } from "./identity.js";
 
 /**
  * The tmux USABILITY slice: a small, total, side-effect-explicit workflow over the owned TmuxClient.
@@ -35,7 +36,7 @@ export type TmuxExitCode = (typeof TmuxExit)[keyof typeof TmuxExit];
 export type ViewportHost = {
   /** The `tmux` binary is on PATH. */
   installed: boolean;
-  /** The viewport is switched on (config `defaults.viewport`, env `LOOP_TMUX`). */
+  /** The viewport is switched on (config `defaults.viewport`, env `RELAYFORGE_TMUX` or legacy alias). */
   enabled: boolean;
   /** We are already inside a tmux client → `attach-session` would refuse to nest. */
   insideTmux: boolean;
@@ -44,7 +45,7 @@ export type ViewportHost = {
 };
 
 /**
- * The real host facts. `LOOP_TMUX=off` can only ever DISABLE the viewport (never enable one the config
+ * The real host facts. `RELAYFORGE_TMUX=off` (legacy: `LOOP_TMUX=off`) can only ever DISABLE the viewport
  * turned off), so a test/CI environment can always guarantee "no tmux sessions" with one env var.
  * `interactive` requires BOTH stdin and stdout to be a TTY: `tmux attach` needs a real terminal, and
  * handing it a pipe fails with "open terminal failed" — we detect that instead of failing.
@@ -54,7 +55,7 @@ export function detectHost(opts: { configEnabled?: boolean; env?: NodeJS.Process
   const tty = opts.tty ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
   return {
     installed: tmuxInstalled(),
-    enabled: env.LOOP_TMUX !== "off" && opts.configEnabled !== false,
+    enabled: resolveRelayForgeEnvironment("TMUX", env) !== "off" && opts.configEnabled !== false,
     insideTmux: Boolean(env.TMUX),
     interactive: tty
   };
@@ -124,7 +125,7 @@ export function planViewport(client: TmuxClient, host: ViewportHost, req: Viewpo
       existing: "none",
       action: "blocked",
       reason: "tmux is not installed on this host.",
-      hint: "tmux is an OPTIONAL viewport — the loop runs fully headless without it. Install tmux (`brew install tmux` / `sudo apt-get install -y tmux`), or watch the run with `loop monitor`."
+      hint: "tmux is an OPTIONAL viewport — RelayForge runs fully headless without it. Install tmux (`brew install tmux` / `sudo apt-get install -y tmux`), or watch the run with `relayforge monitor`."
     };
   }
   if (!host.enabled) {
@@ -134,8 +135,8 @@ export function planViewport(client: TmuxClient, host: ViewportHost, req: Viewpo
       code: TmuxExit.UNAVAILABLE,
       existing: "none",
       action: "blocked",
-      reason: "The tmux viewport is switched off (LOOP_TMUX=off or defaults.viewport: off).",
-      hint: "Unset LOOP_TMUX (or set `defaults.viewport: on` in loop.config.yaml) to use the viewport. The loop runs headless either way."
+      reason: "The tmux viewport is switched off (RELAYFORGE_TMUX=off, legacy LOOP_TMUX=off, or defaults.viewport: off).",
+      hint: "Unset RELAYFORGE_TMUX/LOOP_TMUX (or set `defaults.viewport: on` in the selected config) to use the viewport. RelayForge runs headless either way."
     };
   }
 
@@ -304,9 +305,9 @@ export function showViewport(client: TmuxClient, host: ViewportHost, req: ShowRe
       code: TmuxExit.UNAVAILABLE,
       sessions: [],
       reason: host.installed
-        ? "The tmux viewport is switched off (LOOP_TMUX=off or defaults.viewport: off)."
+        ? "The tmux viewport is switched off (RELAYFORGE_TMUX=off, legacy LOOP_TMUX=off, or defaults.viewport: off)."
         : "tmux is not installed on this host.",
-      hint: "The loop runs fully headless — use `loop monitor` to watch a run without tmux."
+      hint: "RelayForge runs fully headless — use `relayforge monitor` to watch a run without tmux."
     };
   }
 
@@ -331,7 +332,7 @@ export function showViewport(client: TmuxClient, host: ViewportHost, req: ShowRe
       reason: req.run
         ? `No Loop-owned tmux session for run "${req.run}".`
         : "No Loop-owned tmux sessions are running.",
-      hint: "Start one with `loop tmux new` (viewport only) or `loop run \"<goal>\" --execute`."
+      hint: "Start one with `relayforge tmux new` (viewport only) or `relayforge run \"<goal>\" --execute`."
     };
   }
   return { ok: true, code: TmuxExit.OK, sessions };

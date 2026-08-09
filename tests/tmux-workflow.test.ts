@@ -150,8 +150,13 @@ describe("tmux viewport — host matrix (non-tmux, disabled, nested, non-TTY)", 
     expect(opened.code).toBe(TmuxExit.ERROR);
   });
 
-  it("detectHost: LOOP_TMUX=off can only ever DISABLE; TMUX means nested; TTY means attachable", () => {
+  it("detectHost: canonical and legacy tmux env can only disable; conflicts refuse", () => {
+    expect(detectHost({ env: { RELAYFORGE_TMUX: "off" } as NodeJS.ProcessEnv, tty: true }).enabled).toBe(false);
     expect(detectHost({ env: { LOOP_TMUX: "off" } as NodeJS.ProcessEnv, tty: true }).enabled).toBe(false);
+    expect(() => detectHost({
+      env: { RELAYFORGE_TMUX: "on", LOOP_TMUX: "off" } as NodeJS.ProcessEnv,
+      tty: true
+    })).toThrow(/ENV_CONFLICT/u);
     // config off + env unset → still off (the env var can disable, never enable).
     expect(detectHost({ configEnabled: false, env: {} as NodeJS.ProcessEnv, tty: true }).enabled).toBe(false);
     expect(detectHost({ configEnabled: true, env: {} as NodeJS.ProcessEnv, tty: true }).enabled).toBe(true);

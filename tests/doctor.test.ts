@@ -87,12 +87,12 @@ describe("loop doctor", () => {
     expect(check?.fix).toMatch(/git init/i);
   });
 
-  it("no config → warn with `loop init`; a config with SEMANTIC errors → fail", () => {
+  it("no config → warn with `relayforge init`; a config with SEMANTIC errors → fail", () => {
     const dir = mkdtempSync(join(tmpdir(), "loop-doctor-cfg-"));
     registerOwnedTemp(dir);
     const missing = checkOf(runDoctor(undefined, dir), "config");
     expect(missing?.status).toBe("warn"); // "no config yet" is not a broken environment
-    expect(missing?.fix).toMatch(/loop init/);
+    expect(missing?.fix).toMatch(/relayforge init/);
 
     // A reviewer that IS the orchestrator destroys review independence — doctor must fail on it.
     const bad = `version: 1

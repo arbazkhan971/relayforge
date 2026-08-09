@@ -27,14 +27,14 @@ P0(2) should promise organizational nested cgroups and containment, not unrestri
 
 ## Reference Matrix
 
-| Repository | Relevant implementation and evidence | Strength | Weakness | License | Reuse decision |
+| Repository | Relevant implementation | Strength | Weakness | License | Reuse decision |
 |---|---|---|---|---|---|
 | `systemd/systemd` @ `06cb8fbe618604f43c9a9a638e6fc3df920daa0c` | `docs/CGROUP_DELEGATION.md`; `man/systemd.resource-control.xml`; `src/shared/cgroup-setup.c`; `src/core/execute.c`; `src/core/exec-invoke.c`; `test/units/TEST-19-CGROUP.delegate.sh`; `test/units/TEST-07-PID1.protect-control-groups.sh`; fixes `f8f67eab70737549325a718d66c589847043516a`, `056bc106e1e344f98cdfa86fdf62e6fed72958c9` | Strongest delegation boundary, single-writer model, subgroup/process placement, real integration tests, and hard-earned restart/namespace-ordering behavior | Implements a service manager, not a verifier-specific jail; its lifecycle and policy cannot be transplanted wholesale | LGPL-2.1-or-later (SPDX/file licensing) | `ARCHITECTURAL_INSPIRATION` |
 | `opencontainers/runtime-spec` @ `6999a89a76a0329f440d5740497bedb9dd431297` | `config-linux.md` cgroup ownership contract; ownership change `f4ef3914439ef595fd00c6d0b81753e3463626a3`; absent-delegate-file correction `600a8bd6d65d9f687310e6f3030c78b4fe946309` | Clearest portable contract for when ownership delegation is safe and which files may be changed | A specification, not a lifecycle/recovery implementation; ownership alone is insufficient confinement | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` |
 | `opencontainers/runc` @ `0c87c02ff02123f1bc2cd1b3f850f94e5b8de983` | `libcontainer/specconv/spec_linux.go`; vendored `opencontainers/cgroups/systemd/v2.go`; `libcontainer/rootfs_linux.go`; `libcontainer/process_linux.go`; `libcontainer/init_linux.go`; `tests/integration/cgroup_delegation.bats`; `tests/integration/cgroups.bats`; `tests/integration/exec.bats`; issues #2356, #3387, #5089; fixes `94133fab970c2ff9011cc9531b7415934b9fcd61`, `1d030fab7dd856c0709e102b61bd1792e85d13d3`, `6c07a37a585db26a3117683456c9c06f97dc7485`, `1fdbab8107c61876eb69f88730497d250d67e0e6` | Best executable ownership matrix, exact-cgroup mount technique, actual-init-location recovery, and kill fallback | Container-runtime assumptions are broader than RelayForge needs; vendored helper is not a complete crash-recovery protocol | Apache-2.0 | `ARCHITECTURAL_INSPIRATION`; reproduce behavior with independent tests |
-| `containerd/containerd` @ `35f120ed0ae803d16bf92f76f7fe0a2654822e25` | `internal/cri/opts/spec_linux_opts.go`; `internal/cri/config/config.go`; `integration/container_cgroup_writable_linux_test.go`; PR #11131 / `7c380b9b5057ba869f884d1d979a2db45ffc8245`; host-option fix PR #12952 / `248b1a665b548f32cede407e0fde464371ad4e58` | Useful deployed adjacent implementation and a concrete shared-cgroup-namespace mount-option bug/test | Runtime-wide switch; original gate only checks cgroup v2; test proves `mkdir` but not `nsdelegate`, limits, sibling hiding, or namespace-root protection | Apache-2.0 | `NOT_USED`; retain its bug as a RelayForge regression scenario |
+| `containerd/containerd` @ `35f120ed0ae803d16bf92f76f7fe0a2654822e25` | `internal/cri/opts/spec_linux_opts.go`; `internal/cri/config/config.go`; `integration/container_cgroup_writable_linux_test.go`; PR #11131 / `7c380b9b5057ba869f884d1d979a2db45ffc8245`; host-option fix PR #12952 / `248b1a665b548f32cede407e0fde464371ad4e58` | Useful deployed adjacent implementation and a concrete shared-cgroup-namespace mount-option bug/test | Runtime-wide switch; original gate only checks cgroup v2; test proves `mkdir` but not `nsdelegate`, limits, sibling hiding, or namespace-root protection | Apache-2.0 | `ARCHITECTURAL_INSPIRATION`; retain the bug/behavior as independently authored regression coverage |
 | `opencontainers/cgroups` @ `783139a1555b1fbe9941f1c478651cd7d8718519` | `utils.go` `RemovePath`; `utils_test.go`; `fs2/create.go` | Useful recursive removal/retry and rootless/no-internal-process handling patterns | Cleanup retry coverage is comparatively thin; a fixed roughly one-second retry is not sufficient proof of settlement | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` |
-| `containers/bubblewrap` @ `2f55bae38468d0c50cf5df87b1e481e882b63acb` | `bubblewrap.c`; bind operation implementation; `tests/test-run.sh`; FD-bind change `a253257cd298892da43e15201d83f9a02c9b58b5`; cgroup-try fix `5a76f51dc683ec84215836bcb958f3884b3c528e` | Best existing jail primitive here: strict cgroup namespace plus late FD-bound exact subtree; bind implementation verifies inode identity after the mount | It deliberately supplies mechanisms, not delegation policy; cgroup namespace test coverage is sparse | LGPL-2.0-or-later | `NOT_USED` for source; invoke the external program and independently test the composition |
+| `containers/bubblewrap` @ `2f55bae38468d0c50cf5df87b1e481e882b63acb` | `bubblewrap.c`; bind operation implementation; `tests/test-run.sh`; FD-bind change `a253257cd298892da43e15201d83f9a02c9b58b5`; cgroup-try fix `5a76f51dc683ec84215836bcb958f3884b3c528e` | Best existing jail primitive here: strict cgroup namespace plus late FD-bound exact subtree; bind implementation verifies inode identity after the mount | It deliberately supplies mechanisms, not delegation policy; cgroup namespace test coverage is sparse | LGPL-2.0-or-later | `IDEA_ONLY` for the external CLI/ABI; invoke the program and independently test the composition |
 | `kubernetes/enhancements` @ `51353583266ccece601bb590f9f7d2e5e335b39e` | KEP 5474, `keps/sig-node/5474-enable-writable-cgroups`, introduced at `54fe87a97ad84eaf88a77481836c0dd33e8f96c3` / PR #5475 | Strongest threat analysis for writable nested cgroups: explicit opt-in/capability, `nsdelegate`, exhaustion limits, and node-level empirical failure data | As of the inspected revision it is implementable/alpha-targeted, not completed implementation; exact defaults and test checklist remain open | Apache-2.0 | `IDEA_ONLY`; do not represent the KEP as proven implementation |
 | `kubernetes/kubernetes` @ `94c136764292cc5fac976c0de6587daaea56410f` | Runtime-feature publication and rejection patterns in `pkg/kubelet/nodestatus/setters.go`, `pkg/kubelet/kuberuntime/helpers.go`, `pkg/kubelet/lifecycle/predicate.go` plus corresponding tests | Mature pattern for structured runtime capability publication and explicit rejection/events | No KEP-5474 `CgroupOptions` implementation or matching tests were found at this revision | Apache-2.0 | `ARCHITECTURAL_INSPIRATION` for capability/error reporting only |
 | Linux kernel @ `06cf61899d6498b33e4b7c87d99d5bd471ccc375` | `Documentation/admin-guide/cgroup-v2.rst`; `kernel/cgroup/cgroup.c`; `tools/testing/selftests/cgroup/test_core.c`; `tools/testing/selftests/cgroup/cgroup_util.c` | Normative semantics for `nsdelegate`, namespace roots, no-internal-process, limits, recursive kill, and error behavior; kernel selftests validate namespace boundaries | Not an application architecture; GPL code is not reusable in RelayForge | GPL-2.0-only | `IDEA_ONLY`; implement to documented ABI |
@@ -176,7 +176,44 @@ Kubernetes does already supply a useful adjacent pattern. `pkg/kubelet/nodestatu
 | Recursive kill/removal | Linux `cgroup.kill`, systemd lifecycle, opencontainers/cgroups retry | Kill recursively; wait for `populated 0`; post-order rescan/remove with bounded retry; verify inode disappearance and PGID death; do not equate cleanup errors with absence. |
 | Stale path/recovery | runc issue #5089 plus RelayForge's existing strong-scope journal | Persist inode identity, revalidate before destructive action, never adopt a same-name replacement, and leave unresolved foreign state blocked for operator action. |
 
-## Chosen RelayForge design
+## Chosen design
+
+### Best implementation discovered
+
+No single implementation wins. Systemd is strongest for the outer delegated
+ownership boundary; runtime-spec/runc for exact ownership and subtree mounting;
+Linux for namespace-root enforcement; Kubernetes KEP 5474 for structural
+exhaustion defense; Bubblewrap for the jailed namespace composition; and
+opencontainers/cgroups for bounded recursive removal behavior.
+
+### Why
+
+The source, selftests, bug history, and local rejected attempts show that a
+writable directory alone is not delegation. Correctness requires the outer
+owner, private cgroup namespace, exact FD-bound subtree, `nsdelegate`, immutable
+structural limits, pre-exec enrollment, and identity-aware recovery together.
+
+### What RelayForge will reuse
+
+Only `ARCHITECTURAL_INSPIRATION` or `IDEA_ONLY` behavior from the matrix:
+delegation ownership, the kernel file allowlist, namespace-root semantics,
+structural bounds, strict FD mounting, feature gating, and recursive cleanup.
+Bubblewrap remains an external executable; no upstream source or tests are
+copied.
+
+### What RelayForge will change
+
+RelayForge makes the capability verifier-only, binds it to the existing strong
+scope and durable journal, uses one centralized bounded transport, exposes
+typed unavailability, fixes organizational limits at 256/16, and explicitly
+defers domain-controller policy.
+
+### How RelayForge will improve it
+
+The implementation combines behavioral readiness, exact runtime identity,
+authenticated enrollment before exec, unchanged-host-mount proof, deterministic
+settlement, foreign-inode refusal, crash recovery, and required-host execution
+of the real nested provider/settlement suites.
 
 ### Capability contract
 
@@ -347,12 +384,24 @@ No code or tests were copied from any reference.
 - runtime-spec, runc, containerd, opencontainers/cgroups, Kubernetes, and Kubernetes enhancements are Apache-2.0. Direct reuse could be legally possible with notice preservation, but it is unnecessary here. The selected decision is independent implementation informed by behavior and architecture.
 - KEP 5474 is research/design evidence, not a finished upstream implementation. RelayForge must not claim Kubernetes compatibility or tested parity based on the KEP alone.
 
-For `docs/upstream-sources.md`, record this subsystem as `ARCHITECTURAL_INSPIRATION` for systemd, runtime-spec, runc, opencontainers/cgroups, and Kubernetes runtime-feature patterns; `IDEA_ONLY` for Linux ABI and KEP 5474; and `NOT_USED` for containerd and Bubblewrap source while noting Bubblewrap's external runtime use. List the commit pins and files from the matrix above.
+For `docs/upstream-sources.md`, record this subsystem as `ARCHITECTURAL_INSPIRATION` for systemd, runtime-spec, runc, containerd bug/behavior evidence, opencontainers/cgroups, and Kubernetes runtime-feature patterns; and `IDEA_ONLY` for the Linux ABI, KEP 5474, and Bubblewrap's external CLI/ABI. No source or tests are copied. List the commit pins and files from the matrix above.
 
-## Open decisions and confidence
+## Research-time decisions and final disposition
 
-- **Structural-limit constants:** 256 descendants and depth 16 are conservative starting values, not an upstream standard. Ratify them in an ADR with RelayForge workload evidence and make them observable. The verifier must never be able to raise them.
-- **Domain controllers:** explicitly deferred from P0(2) unless the launcher is redesigned with supervisor/payload separation and new integration tests.
-- **Systemd availability:** the overall P0 strong-scope gate already determines whether a suitable delegated outer scope exists. This audit does not authorize a raw-cgroup fallback.
+- **Structural-limit constants — resolved:** ADR 001 ratified 256 descendants
+  and depth 16 as RelayForge engineering values. Required-host characterization
+  proved both exact boundaries and `EAGAIN` at the next creation; the verifier
+  cannot raise them.
+- **Domain controllers — scoped future:** P0.2 deliberately promises only
+  organizational descendants. Controller delegation still requires the
+  supervisor/payload redesign, separate ADR, and new integration tests.
+- **Systemd availability — resolved fail-closed:** the strong-scope capability
+  determines whether a suitable outer boundary exists. No raw-cgroup fallback
+  is authorized.
 
-Confidence is high for kernel/Bubblewrap composition, namespace-root protection, launch ordering, exhaustion defense, and fail-closed behavior because those conclusions agree across Linux documentation/selftests, systemd and runc production fixes, runtime-spec constraints, the Kubernetes experiment, and local behavioral verification. Confidence is medium on exact cleanup retry timings and structural-limit values; both need RelayForge-specific stress data, while their safety invariants are clear.
+Confidence is high for the implemented kernel/Bubblewrap composition,
+namespace-root protection, launch ordering, exhaustion defense, and fail-closed
+behavior because the required host passed the behavioral, limit, nested
+transport/settlement, and recovery suites. Additional distributions and timing
+stress remain additive compatibility coverage, not an unresolved P0.2 safety
+claim.

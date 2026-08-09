@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config/load.js";
-import { prepareRun } from "../src/orchestrator.js";
+import { disposePreparedRun, prepareRun } from "../src/orchestrator.js";
 import { integrationBranchName } from "../src/worktree.js";
 import { sessionName } from "../src/tmux.js";
 
@@ -30,13 +30,16 @@ describe("two projects with the same run id stay isolated", () => {
     const runId = "run-shared";
 
     const a = prepareRun(loaded, alpha, runId, "goal");
+    const alphaRunDir = a.runDir;
+    const alphaBoardDir = a.boardDir;
+    disposePreparedRun(a);
     const b = prepareRun(loaded, beta, runId, "goal");
 
     // Distinct on-disk run state (state, board, logs).
-    expect(a.runDir).not.toBe(b.runDir);
-    expect(a.runDir).toContain(`${join("runs", "alpha")}`);
+    expect(alphaRunDir).not.toBe(b.runDir);
+    expect(alphaRunDir).toContain(`${join("runs", "alpha")}`);
     expect(b.runDir).toContain(`${join("runs", "beta")}`);
-    expect(a.boardDir).not.toBe(b.boardDir);
+    expect(alphaBoardDir).not.toBe(b.boardDir);
 
     // Distinct integration branch names.
     expect(integrationBranchName("alpha", runId)).toBe("loop/alpha/run-shared/integration");
@@ -45,5 +48,6 @@ describe("two projects with the same run id stay isolated", () => {
 
     // Distinct tmux sessions.
     expect(sessionName("loop", "alpha", runId, "team")).not.toBe(sessionName("loop", "beta", runId, "team"));
+    disposePreparedRun(b);
   });
 });

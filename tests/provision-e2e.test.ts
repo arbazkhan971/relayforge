@@ -11,7 +11,7 @@ import {
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config/load.js";
-import { prepareRun, runAutonomyLoop, writeRolePrompts, type LoopRunState } from "../src/orchestrator.js";
+import { finalLoopState, prepareRun, runAutonomyLoop, writeRolePrompts } from "../src/orchestrator.js";
 import { setTrustedRunner } from "../src/sandbox.js";
 import { worktreeRoot } from "../src/worktree.js";
 import { gitStatusPorcelain, runOnce, setupRepo } from "./e2e-harness.js";
@@ -49,10 +49,6 @@ function createIgnoredToolchain(repoDir: string): { tool: string; shim: string; 
   chmodSync(tool, 0o755);
   symlinkSync("../relay-tool/bin/ready.mjs", shim);
   return { tool, shim, sourceBytes: readFileSync(tool) };
-}
-
-function readState(repoDir: string, runId: string): LoopRunState {
-  return JSON.parse(readFileSync(join(repoDir, ".loop", "runs", "e2e", runId, ".loop_state.json"), "utf8")) as LoopRunState;
 }
 
 function provisionEvents(repoDir: string, runId: string): Array<{ event: string; detail: string }> {
@@ -139,7 +135,7 @@ describe("worktree provisioning readiness barrier E2E", () => {
     writeRolePrompts(ctx);
     await expect(runAutonomyLoop(ctx, {}, { execute: true })).rejects.toThrow(/MISSING_SOURCE/);
 
-    const state = readState(repoDir, runId);
+    const state = finalLoopState(ctx);
     expect(state.status).toBe("blocked");
     expect(state.phase).toBe("stopped");
     expect(existsSync(capture)).toBe(false);

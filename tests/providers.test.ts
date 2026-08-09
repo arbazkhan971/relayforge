@@ -1,12 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   assertSafeArgs,
+  builtinAdapterDescriptors,
   buildHeadlessCommand,
   buildProviderCommand,
   buildProviderEnv,
   commandToShell,
-  CLAUDE_SYSTEM_PROMPT_FILE_FLAG
+  CLAUDE_SYSTEM_PROMPT_FILE_FLAG,
+  getBuiltinAdapterDescriptor
 } from "../src/providers.js";
+import { claudeAdapterDescriptor } from "../src/adapters/builtins/claude.js";
+import { codexAdapterDescriptor } from "../src/adapters/builtins/codex.js";
+import { customAdapterDescriptor } from "../src/adapters/builtins/custom.js";
+import { geminiAdapterDescriptor } from "../src/adapters/builtins/gemini.js";
+import { opencodeAdapterDescriptor } from "../src/adapters/builtins/opencode.js";
+import { piAdapterDescriptor } from "../src/adapters/builtins/pi.js";
+import { grokAdapterDescriptor, GROK_FIXED_SAFETY_ENVIRONMENT } from "../src/adapters/builtins/grok.js";
 import type { ProviderConfig } from "../src/config/schema.js";
 
 function provider(type: ProviderConfig["type"], extra: Partial<ProviderConfig> = {}): ProviderConfig {
@@ -24,6 +33,94 @@ function provider(type: ProviderConfig["type"], extra: Partial<ProviderConfig> =
 }
 
 const req = { role: "implementer" as const, task: "TASK: do it", systemPromptFile: "/tmp/role.md", systemPromptText: "SYSTEM PROMPT with guardrails" };
+
+function assertDeepFrozenData(value: unknown, seen = new Set<unknown>()): void {
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  expect(Object.isFrozen(value)).toBe(true);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    expect(typeof child).not.toBe("function");
+    assertDeepFrozenData(child, seen);
+  }
+}
+
+describe("built-in provider descriptors", () => {
+  it("ships one recursively immutable, data-only descriptor per existing provider", () => {
+    expect(Object.keys(builtinAdapterDescriptors)).toEqual(["claude", "codex", "gemini", "custom", "grok", "opencode", "pi"]);
+    expect(builtinAdapterDescriptors).toEqual({
+      claude: claudeAdapterDescriptor,
+      codex: codexAdapterDescriptor,
+      gemini: geminiAdapterDescriptor,
+      custom: customAdapterDescriptor,
+      grok: grokAdapterDescriptor,
+      opencode: opencodeAdapterDescriptor,
+      pi: piAdapterDescriptor
+    });
+    expect(getBuiltinAdapterDescriptor("claude")).toBe(claudeAdapterDescriptor);
+    expect(getBuiltinAdapterDescriptor("codex")).toBe(codexAdapterDescriptor);
+    expect(getBuiltinAdapterDescriptor("gemini")).toBe(geminiAdapterDescriptor);
+    expect(getBuiltinAdapterDescriptor("custom")).toBe(customAdapterDescriptor);
+    expect(getBuiltinAdapterDescriptor("grok")).toBe(grokAdapterDescriptor);
+    expect(getBuiltinAdapterDescriptor("opencode")).toBe(opencodeAdapterDescriptor);
+    expect(getBuiltinAdapterDescriptor("pi")).toBe(piAdapterDescriptor);
+    assertDeepFrozenData(builtinAdapterDescriptors);
+  });
+
+  it("builds only the fixed private Grok ACP recipe", () => {
+    const cmd = buildHeadlessCommand(provider("grok", { model: "grok-4.5", auth: { mode: "api-key", env: "XAI_API_KEY", configured: true } }), {
+      ...req,
+      adapterStateDirectory: "/private/run/grok",
+      readOnly: false
+    });
+    expect(cmd.command).toBe("grok");
+    expect(cmd.args).toEqual([
+      "--no-auto-update", "--disable-web-search", "--no-subagents", "--no-memory",
+      "--permission-mode", "default", "agent", "--no-leader", "--model", "grok-4.5", "stdio"
+    ]);
+    expect(cmd.args.join(" ")).not.toMatch(/always-approve|yolo|plugin-dir|leader-socket|serve|headless|xai-api-base-url/);
+    expect(cmd.env).toMatchObject({
+      HOME: "/private/run/grok/home",
+      GROK_HOME: "/private/run/grok/grok-home",
+      ...GROK_FIXED_SAFETY_ENVIRONMENT
+    });
+    expect(cmd.stdin).toBeUndefined();
+
+    const reviewer = buildHeadlessCommand(provider("grok", { auth: { mode: "api-key", env: "XAI_API_KEY", configured: true } }), {
+      ...req,
+      adapterStateDirectory: "/private/run/grok-review",
+      role: "reviewer",
+      readOnly: true
+    });
+    expect(reviewer.args).toContain("plan");
+    expect(reviewer.args).not.toContain("auto");
+  });
+
+  it("binds the exact legacy prompt and normalizer identities without granting new authority", () => {
+    expect(claudeAdapterDescriptor.codec.id).toBe("claude-stdin-goal-v1");
+    expect(claudeAdapterDescriptor.normalizer.id).toBe("claude-stream-json-2.1.207");
+    expect(claudeAdapterDescriptor.compatibility.executableVersion).toEqual({
+      scheme: "semver",
+      minInclusive: "2.1.207",
+      maxExclusive: "2.1.208"
+    });
+    expect(codexAdapterDescriptor.codec.id).toBe("codex-stdin-combined-v1");
+    expect(codexAdapterDescriptor.normalizer.id).toBe("codex-json-0.144.0");
+    expect(codexAdapterDescriptor.capabilityPolicy.cost).toBe("unsupported");
+    expect(geminiAdapterDescriptor.invocationPolicy.promptTransport).toBe("argv-legacy");
+    expect(customAdapterDescriptor.invocationPolicy.promptTransport).toBe("argv-legacy");
+    for (const descriptor of [geminiAdapterDescriptor, customAdapterDescriptor]) {
+      expect(descriptor.capabilityPolicy.cancellation).toBe("unsupported");
+      expect(descriptor.capabilityPolicy["rate-limits"]).toBe("unsupported");
+      expect(descriptor.capabilityPolicy["inner-read-only"]).toBe("unsupported");
+      expect(descriptor.roles.reviewer).toMatchObject({
+        status: "enabled",
+        outerSandbox: "required",
+        filesystem: "read-only",
+        innerReadOnly: "not-required"
+      });
+    }
+  });
+});
 
 describe("provider commands (safe contract)", () => {
   it("codex uses --sandbox workspace-write and effort via canonical QUOTED TOML -c", () => {
@@ -96,6 +193,97 @@ describe("provider commands (safe contract)", () => {
 });
 
 describe("headless provider contract", () => {
+  it("preserves byte-for-byte command, argv, and prompt serialization for every descriptor", () => {
+    const combined = "SYSTEM PROMPT with guardrails\n\n---\n\nTASK: do it";
+    const claude = buildHeadlessCommand(
+      provider("claude", { command: "claude-bin", model: "claude-opus-4", args: ["--max-turns", "7"] }),
+      req
+    );
+    expect({ command: claude.command, args: claude.args, stdin: claude.stdin }).toEqual({
+      command: "claude-bin",
+      args: [
+        "-p",
+        "--model",
+        "claude-opus-4",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--no-session-persistence",
+        "--append-system-prompt-file",
+        "/tmp/role.md",
+        "--permission-mode",
+        "acceptEdits",
+        "--max-turns",
+        "7"
+      ],
+      stdin: "/goal TASK: do it"
+    });
+
+    const codex = buildHeadlessCommand(
+      provider("codex", { command: "codex-bin", model: "gpt-5.4", effort: "high", args: ["--skip-git-repo-check"] }),
+      req
+    );
+    expect({ command: codex.command, args: codex.args, stdin: codex.stdin }).toEqual({
+      command: "codex-bin",
+      args: [
+        "exec",
+        "--sandbox",
+        "workspace-write",
+        "--json",
+        "--ephemeral",
+        "--model",
+        "gpt-5.4",
+        "-c",
+        'model_reasoning_effort="high"',
+        "--skip-git-repo-check",
+        "-"
+      ],
+      stdin: combined
+    });
+
+    const gemini = buildHeadlessCommand(
+      provider("gemini", { command: "gemini-bin", model: "gemini-2.5-pro", args: ["--debug"] }),
+      req
+    );
+    expect({ command: gemini.command, args: gemini.args, stdin: gemini.stdin }).toEqual({
+      command: "gemini-bin",
+      args: ["-p", combined, "--model", "gemini-2.5-pro", "--output-format", "json", "--debug"],
+      stdin: undefined
+    });
+
+    const custom = buildHeadlessCommand(provider("custom", { command: "./agent.sh", args: ["--stdio"] }), req);
+    expect({ command: custom.command, args: custom.args, stdin: custom.stdin }).toEqual({
+      command: "./agent.sh",
+      args: ["--stdio", combined],
+      stdin: undefined
+    });
+  });
+
+  it("preserves exact reviewer read-only argument serialization", () => {
+    const reviewer = { ...req, role: "reviewer" as const, readOnly: true };
+    expect(buildHeadlessCommand(provider("claude"), reviewer).args).toEqual([
+      "-p",
+      "--model",
+      "opus",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--no-session-persistence",
+      "--append-system-prompt-file",
+      "/tmp/role.md",
+      "--permission-mode",
+      "plan"
+    ]);
+    expect(buildHeadlessCommand(provider("codex"), reviewer).args).toEqual([
+      "exec",
+      "--sandbox",
+      "read-only",
+      "--json",
+      "--ephemeral",
+      "-"
+    ]);
+  });
+
   it("claude uses the installed 2.1.207 stdin contract with byte-0 /goal for every role", () => {
     const cmd = buildHeadlessCommand(provider("claude"), req);
     // The prompt is delivered on STDIN, byte 0 is `/goal` — NOT as an argv.
@@ -188,5 +376,55 @@ describe("environment scrub (no inherited secrets)", () => {
     expect(codexEnv.OPENAI_API_KEY).toBe("sk-openai");
     expect(codexEnv.ANTHROPIC_API_KEY).toBeUndefined();
     expect(codexEnv.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+  });
+
+  it("gives each native adapter only its exact selected credential/config surface", () => {
+    const source = {
+      PATH: "/usr/bin",
+      HOME: "/home/host",
+      OPENAI_API_KEY: "openai-only",
+      ANTHROPIC_API_KEY: "anthropic-only",
+      GEMINI_API_KEY: "gemini-forbidden",
+      GOOGLE_API_KEY: "google-forbidden",
+      XAI_API_KEY: "xai-only",
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        model: "openai/gpt-5.4",
+        provider: { openai: { options: { apiKey: "inline-openai-only" } } }
+      }),
+      GITHUB_TOKEN: "forbidden"
+    } as NodeJS.ProcessEnv;
+
+    const pi = buildHeadlessCommand(provider("pi", {
+      auth: { mode: "api-key", env: "ANTHROPIC_API_KEY", configured: true }
+    }), { ...req, sessionDirectory: "/private/pi" }, source);
+    expect(pi.env.ANTHROPIC_API_KEY).toBe("anthropic-only");
+    for (const name of ["OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "XAI_API_KEY", "OPENCODE_CONFIG_CONTENT", "LOOP_ROLE"]) {
+      expect(pi.env[name]).toBeUndefined();
+    }
+
+    const piWithoutSelection = buildHeadlessCommand(provider("pi"), {
+      ...req,
+      sessionDirectory: "/private/pi-unconfigured"
+    }, source);
+    for (const name of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "XAI_API_KEY"]) {
+      expect(piWithoutSelection.env[name]).toBeUndefined();
+    }
+
+    const grok = buildHeadlessCommand(provider("grok", {
+      auth: { mode: "api-key", env: "XAI_API_KEY", configured: true }
+    }), { ...req, adapterStateDirectory: "/private/grok" }, source);
+    expect(grok.env.XAI_API_KEY).toBe("xai-only");
+    for (const name of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENCODE_CONFIG_CONTENT", "LOOP_ROLE"]) {
+      expect(grok.env[name]).toBeUndefined();
+    }
+
+    const opencode = buildHeadlessCommand(provider("opencode"), req, source);
+    expect(JSON.parse(opencode.env.OPENCODE_CONFIG_CONTENT!)).toMatchObject({
+      model: "openai/gpt-5.4",
+      provider: { openai: { options: { apiKey: "inline-openai-only" } } }
+    });
+    for (const name of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "XAI_API_KEY", "LOOP_ROLE"]) {
+      expect(opencode.env[name]).toBeUndefined();
+    }
   });
 });
