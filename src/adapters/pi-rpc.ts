@@ -333,12 +333,31 @@ function assistantMessage(value: unknown): PiAssistantTerminal | "malformed" | u
 
 type ToolEventState = "started" | "progress" | "completed" | "failed";
 
+/** Explicit path-bearing arg keys observed on real Pi tool_execution_* messages. */
+const PI_TOOL_PATH_ARG_KEYS = Object.freeze(["path", "filePath", "file_path", "targetPath", "target_path"] as const);
+
+/**
+ * Prefer a bounded path/title from explicit tool args. Empty, NUL-bearing, or oversized
+ * values are ignored rather than guessed from tool names or opaque call IDs.
+ */
+export function piToolTitleFromArgs(argsValue: unknown): string | undefined {
+  const args = record(argsValue);
+  if (!args) return undefined;
+  for (const key of PI_TOOL_PATH_ARG_KEYS) {
+    const title = boundedEventText(args[key]);
+    if (title !== undefined && title.length > 0) return title;
+  }
+  return undefined;
+}
+
 export class PiRpcTurnCodec {
   readonly #promptRequestId: string;
   readonly #sessionId: string;
   readonly #onEvent: ((event: NormalizedAdapterEvent) => void) | undefined;
   readonly #sequence: FrameSequenceGuard;
   readonly #streamedText = new BoundedTextAccumulator();
+  /** Correlated path/title retained from tool_execution_start/update for the matching toolCallId. */
+  readonly #toolTitles = new Map<string, string>();
   private promptAccepted = false;
   private promptRejected: CodecFrameReference | undefined;
   private lastAssistant: PiAssistantTerminal | undefined;
@@ -586,7 +605,20 @@ export class PiRpcTurnCodec {
       this.markUncertain("protocol-drift", "Pi tool_execution_end has no isError boolean", frame, emit);
       return;
     }
-    emit({ kind: "tool", toolCallId, ...(toolName ? { toolName } : {}), state, frame });
+    // Real Pi start/update frames carry path-bearing args; end frames often omit them.
+    // Preserve the bounded title and reattach it on later frames by exact toolCallId.
+    const fromArgs = piToolTitleFromArgs(message.args);
+    if (fromArgs !== undefined) this.#toolTitles.set(toolCallId, fromArgs);
+    const title = fromArgs ?? this.#toolTitles.get(toolCallId);
+    if (message.type === "tool_execution_end") this.#toolTitles.delete(toolCallId);
+    emit({
+      kind: "tool",
+      toolCallId,
+      ...(toolName ? { toolName } : {}),
+      ...(title === undefined ? {} : { title }),
+      state,
+      frame
+    });
   }
 
   private emitDiagnostic(

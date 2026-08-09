@@ -7,6 +7,7 @@ import {
   decodePiSessionStatsResponse,
   decodePiStateResponse,
   derivePiTurnUsage,
+  piToolTitleFromArgs,
   serializePiAbort,
   serializePiGetLastAssistantText,
   serializePiGetSessionStats,
@@ -325,6 +326,112 @@ describe("Pi RPC normalized turn codec", () => {
       status: "uncertain",
       code: "protocol-drift"
     });
+  });
+
+  it("preserves bounded path/title from real-shaped Pi args.path and correlates start/end by toolCallId", () => {
+    expect(piToolTitleFromArgs({ path: "reviewer-target.txt" })).toBe("reviewer-target.txt");
+    expect(piToolTitleFromArgs({ file_path: "/tmp/ws/reviewer-target.txt" })).toBe("/tmp/ws/reviewer-target.txt");
+    expect(piToolTitleFromArgs({ toolCallId: "opaque", name: "write" })).toBeUndefined();
+    expect(piToolTitleFromArgs(undefined)).toBeUndefined();
+    expect(piToolTitleFromArgs({ path: "bad\0path" })).toBeUndefined();
+
+    const absoluteTarget = "/tmp/rf-char/workspace/reviewer-target.txt";
+    const opaqueId = "call_a1b2c3d4e5f60718";
+    const { events, result } = run([
+      promptAccepted(),
+      {
+        type: "tool_execution_start",
+        toolCallId: opaqueId,
+        toolName: "write",
+        args: { path: absoluteTarget }
+      },
+      {
+        type: "tool_execution_update",
+        toolCallId: opaqueId,
+        toolName: "write",
+        args: { path: absoluteTarget }
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: opaqueId,
+        toolName: "write",
+        // End frames intentionally omit args; title must reattach via toolCallId.
+        result: { content: [{ type: "text", text: "denied" }] },
+        isError: true
+      },
+      assistantEnd("stop", "reviewer mutation denied"),
+      { type: "agent_settled" }
+    ]);
+    expect(result).toMatchObject({ status: "success", finalText: "reviewer mutation denied" });
+    const toolEvents = events.filter((event) => event.kind === "tool");
+    expect(toolEvents).toHaveLength(3);
+    expect(toolEvents[0]).toMatchObject({
+      kind: "tool",
+      toolCallId: opaqueId,
+      toolName: "write",
+      state: "started",
+      title: absoluteTarget
+    });
+    expect(toolEvents[1]).toMatchObject({
+      kind: "tool",
+      toolCallId: opaqueId,
+      state: "progress",
+      title: absoluteTarget
+    });
+    expect(toolEvents[2]).toMatchObject({
+      kind: "tool",
+      toolCallId: opaqueId,
+      state: "failed",
+      title: absoluteTarget
+    });
+  });
+
+  it("does not invent a title from opaque toolCallIds when args.path is absent", () => {
+    const { events, result } = run([
+      promptAccepted(),
+      {
+        type: "tool_execution_start",
+        toolCallId: "reviewer-write-reviewer-target.txt-opaque",
+        toolName: "write"
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "reviewer-write-reviewer-target.txt-opaque",
+        toolName: "write",
+        result: { content: [{ type: "text", text: "failed" }] },
+        isError: true
+      },
+      assistantEnd("stop"),
+      { type: "agent_settled" }
+    ]);
+    expect(result).toMatchObject({ status: "success" });
+    const toolEvents = events.filter((event) => event.kind === "tool");
+    expect(toolEvents).toHaveLength(2);
+    for (const event of toolEvents) {
+      expect(event).toMatchObject({ kind: "tool", toolCallId: "reviewer-write-reviewer-target.txt-opaque" });
+      expect(event).not.toHaveProperty("title");
+    }
+  });
+
+  it("preserves relative args.path titles from the success fixture records", () => {
+    const { events } = run(PI_SUCCESS_RECORDS);
+    const toolEvents = events.filter((event) => event.kind === "tool");
+    expect(toolEvents).toEqual([
+      expect.objectContaining({
+        kind: "tool",
+        toolCallId: "call-1",
+        toolName: "read",
+        state: "started",
+        title: "README.md"
+      }),
+      expect.objectContaining({
+        kind: "tool",
+        toolCallId: "call-1",
+        toolName: "read",
+        state: "completed",
+        title: "README.md"
+      })
+    ]);
   });
 });
 

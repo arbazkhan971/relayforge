@@ -40,6 +40,7 @@ import {
   CHARACTERIZATION_OWNER_MARKER,
   CHARACTERIZATION_ROOT_PREFIX,
   characterizationDirectoryPrefix,
+  characterizationRootPrefix,
   collectProductionContainedAdapterEvidence,
   CONTAINED_WORKSPACE_MAX_AGGREGATE_BYTES,
   CONTAINED_WORKSPACE_MAX_DEPTH,
@@ -49,9 +50,11 @@ import {
   ContainedAdapterCharacterizationUnavailable,
   isCharacterizationOwnerAlive,
   observeContainedOpenCodeSessionCreate,
+  observeContainedPiStateAndStats,
   parseCharacterizationDirectoryOwner,
   pinContainedExecutable,
   pinContainedEvidenceRepository,
+  piReviewerToolTitleMatchesTarget,
   reconcileDeadCharacterizationRoots,
   snapshotContainedWorkspace
 } from "../src/adapters/contained-evidence-production.js";
@@ -329,7 +332,7 @@ describe("contained adapter evidence collector finalizer", () => {
     };
   }
 
-  it.each(["pi", "grok"] as const)("keeps production %s characterization explicitly unavailable", async (adapterId) => {
+  it("keeps production grok characterization explicitly unavailable", async () => {
     const root = privateRoot();
     const checkout = join(root, "checkout");
     const runner = join(root, "runner");
@@ -338,22 +341,374 @@ describe("contained adapter evidence collector finalizer", () => {
     mkdirSync(runner, { mode: 0o700 });
     mkdirSync(bin, { mode: 0o700 });
     const commitSha = initCleanGitRepo(checkout);
-    writeFileSync(join(bin, adapterId), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
-    const environment = adapterId === "pi"
-      ? { PATH: bin, ANTHROPIC_API_KEY: "fixture-pi-key" }
-      : { PATH: bin, XAI_API_KEY: "fixture-grok-key" };
-    const outputPath = join(runner, `${adapterId}-production.json`);
+    writeFileSync(join(bin, "grok"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const outputPath = join(runner, "grok-production.json");
     await expect(collectProductionContainedAdapterEvidence({
-      adapterId,
+      adapterId: "grok",
       outputPath,
       commitSha,
       jobNonce: NONCE,
       repositoryRoot: checkout,
       paidProbeAuthorized: true,
       characterizationRoot: runner,
-      environment
+      environment: { PATH: bin, XAI_API_KEY: "fixture-grok-key" }
     })).rejects.toBeInstanceOf(ContainedAdapterCharacterizationUnavailable);
     expect(existsSync(outputPath)).toBe(false);
+  });
+
+  function piProductionLayout(fixtureApiKey?: string): Readonly<{
+    root: string;
+    checkout: string;
+    runner: string;
+    bin: string;
+    commitSha: string;
+    source: Readonly<Record<string, string>>;
+  }> {
+    const root = privateRoot();
+    const checkout = join(root, "checkout");
+    const runner = join(root, "runner");
+    const bin = join(root, "bin");
+    mkdirSync(checkout, { mode: 0o700 });
+    mkdirSync(runner, { mode: 0o700 });
+    mkdirSync(bin, { mode: 0o700 });
+    const commitSha = initCleanGitRepo(checkout);
+    writeFileSync(join(bin, "pi"), readFileSync(new URL("fixtures/adapters/pi-production.mjs", import.meta.url)), { mode: 0o700 });
+    return {
+      root,
+      checkout,
+      runner,
+      bin,
+      commitSha,
+      source: { PATH: bin, ANTHROPIC_API_KEY: fixtureApiKey ?? "fixture-pi-key" }
+    };
+  }
+
+  it.skipIf(!SCOPE.strong)("runs the production Pi entrypoint and emits one canonical private receipt", async () => {
+    const layout = piProductionLayout();
+    const outputPath = join(layout.runner, "pi-production.json");
+    const beforeTemporaryRoots = new Set(
+      readdirSync(layout.runner).filter((name) => name.startsWith(characterizationRootPrefix("pi")))
+    );
+    const collected = await collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source,
+      forbiddenSentinels: ["fixture-pi-key"]
+    });
+    expect(statSync(outputPath).mode & 0o777).toBe(0o600);
+    expect(readFileSync(outputPath, "utf8")).not.toContain("fixture-pi-key");
+    expect(readFileSync(outputPath, "utf8")).toBe(`${canonicalContainedAdapterEvidenceJson(collected)}\n`);
+    const reread = readContainedAdapterEvidenceFile(outputPath, {
+      adapterId: "pi",
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      configurationSha256: containedAdapterProbeConfigurationSha256("pi", layout.source),
+      now: new Date(collected.collectedAt),
+      allowedRoot: layout.runner
+    });
+    expect(reread.receiptDigest).toBe(collected.receiptDigest);
+    expect(reread.availability.status).toBe("available");
+    expect(reread.containment.backend).toBe("linux-cgroup-v2");
+    expect(reread.settlement.terminal).toBe(true);
+    expect(Object.keys(reread.checks).sort()).toEqual([
+      "cancellationSettled",
+      "promptCompleted",
+      "replayMatched",
+      "reviewerWriteDenied",
+      "scopeEmpty",
+      "stateAndStatsCompleted"
+    ]);
+    expect(reread.runtime.trustedHelpers).toHaveLength(1);
+    expect(reread.runtime.trustedHelpers[0]?.runtimeName).toBe("pi-relayforge-reviewer.mjs");
+    expect(reread.checks.reviewerWriteDenied.evidenceSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(reread.checks.stateAndStatsCompleted.evidenceSha256).toMatch(/^[a-f0-9]{64}$/u);
+    const expectedRuntime = containedAdapterRuntimeIdentitySha256(
+      reread.runtime.executable,
+      reread.runtime.trustedHelpers,
+      reread.configurationSha256
+    );
+    expect(reread.settlement.receiptDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(reread.settlement.receiptDigest).not.toBe(reread.receiptDigest);
+    const checkDigests = Object.values(reread.checks).map((check) => check.evidenceSha256);
+    expect(new Set(checkDigests).size).toBe(checkDigests.length);
+    expect(reread.configurationSha256).toBe(containedAdapterProbeConfigurationSha256("pi", layout.source));
+    expect(reread.availability.consultedConfigSha256).toBe(reread.configurationSha256);
+    expect(expectedRuntime).toMatch(/^[a-f0-9]{64}$/u);
+    expect(readdirSync(layout.runner).filter(
+      (name) => name.startsWith(characterizationRootPrefix("pi")) && !beforeTemporaryRoots.has(name)
+    )).toEqual([]);
+    expect(pinContainedEvidenceRepository(layout.checkout, layout.commitSha, "pi").commitSha).toBe(layout.commitSha);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("removes private run state and emits nothing when Pi handshake fails", async () => {
+    const layout = piProductionLayout("fixture-fail-handshake");
+    const outputPath = join(layout.runner, "pi-failed.json");
+    const before = new Set(readdirSync(layout.runner).filter((name) => name.startsWith(characterizationRootPrefix("pi"))));
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source,
+      forbiddenSentinels: ["fixture-fail-handshake"]
+    })).rejects.toBeInstanceOf(ContainedAdapterCharacterizationUnavailable);
+    expect(existsSync(outputPath)).toBe(false);
+    expect(readdirSync(layout.runner).filter(
+      (name) => name.startsWith(characterizationRootPrefix("pi")) && !before.has(name)
+    )).toEqual([]);
+  }, 30_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Pi worker no-write probes that create a new file", async () => {
+    const layout = piProductionLayout("fixture-worker-write-new");
+    const outputPath = join(layout.runner, "pi-worker-write.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/mutated the characterization workspace|no-write/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Pi worker no-write probes that mutate an existing file", async () => {
+    const layout = piProductionLayout("fixture-worker-mutate");
+    const outputPath = join(layout.runner, "pi-worker-mutate.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/mutated the characterization workspace|no-write/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("adversarial: refuses Pi ordinary-route replay no-write probes that create a new file", async () => {
+    const layout = piProductionLayout("fixture-replay-write");
+    const outputPath = join(layout.runner, "pi-replay-write.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/mutated the characterization workspace|no-write|ordinary availability replay/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
+  it("Pi reviewer exact-path match accepts real-shaped args.path and rejects opaque/unrelated titles", () => {
+    const workspaceRoot = "/tmp/rf-contained-pi-1.abc-xyz/workspace";
+    const targetPath = `${workspaceRoot}/reviewer-target.txt`;
+    // Absolute path from real-shaped Pi args.path succeeds.
+    expect(piReviewerToolTitleMatchesTarget(targetPath, targetPath, workspaceRoot)).toBe(true);
+    // Relative path resolves against the characterization workspace.
+    expect(piReviewerToolTitleMatchesTarget("reviewer-target.txt", targetPath, workspaceRoot)).toBe(true);
+    expect(piReviewerToolTitleMatchesTarget("./reviewer-target.txt", targetPath, workspaceRoot)).toBe(true);
+    // Opaque IDs and missing titles never match, even when the ID embeds the basename.
+    expect(piReviewerToolTitleMatchesTarget(undefined, targetPath, workspaceRoot)).toBe(false);
+    expect(piReviewerToolTitleMatchesTarget("", targetPath, workspaceRoot)).toBe(false);
+    expect(piReviewerToolTitleMatchesTarget("call_a1b2c3d4e5f60718", targetPath, workspaceRoot)).toBe(false);
+    expect(piReviewerToolTitleMatchesTarget("reviewer-write-reviewer-target.txt-opaque", targetPath, workspaceRoot)).toBe(false);
+    // Wrong basename / unrelated path fail closed.
+    expect(piReviewerToolTitleMatchesTarget("something.txt", targetPath, workspaceRoot)).toBe(false);
+    expect(piReviewerToolTitleMatchesTarget(".", targetPath, workspaceRoot)).toBe(false);
+    expect(piReviewerToolTitleMatchesTarget(`${workspaceRoot}/other.txt`, targetPath, workspaceRoot)).toBe(false);
+    expect(piReviewerToolTitleMatchesTarget("/etc/passwd", targetPath, workspaceRoot)).toBe(false);
+  });
+
+  it.skipIf(!SCOPE.strong)("refuses Pi synthetic unrelated reviewer tool failure without named-target correlation", async () => {
+    const layout = piProductionLayout("fixture-reviewer-unrelated");
+    const outputPath = join(layout.runner, "pi-reviewer-unrelated.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/correlated|lifecycle|named mutation|unavailable/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Pi adversarial generic write reviewer events without exact target path", async () => {
+    const layout = piProductionLayout("fixture-reviewer-generic-write");
+    const outputPath = join(layout.runner, "pi-reviewer-generic-write.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/correlated|lifecycle|named mutation|unavailable/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Pi opaque toolCallId reviewer failures that lack path-bearing args", async () => {
+    const layout = piProductionLayout("fixture-reviewer-opaque-id");
+    const outputPath = join(layout.runner, "pi-reviewer-opaque-id.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/correlated|lifecycle|named mutation|unavailable/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("accepts Pi reviewer denial when real-shaped relative args.path resolves to the exact target", async () => {
+    const layout = piProductionLayout("fixture-reviewer-relative-path");
+    const outputPath = join(layout.runner, "pi-reviewer-relative-path.json");
+    const beforeTemporaryRoots = new Set(
+      readdirSync(layout.runner).filter((name) => name.startsWith(characterizationRootPrefix("pi")))
+    );
+    const collected = await collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source,
+      forbiddenSentinels: ["fixture-reviewer-relative-path"]
+    });
+    expect(collected.adapterId).toBe("pi");
+    expect(collected.availability.status).toBe("available");
+    expect(collected.checks.reviewerWriteDenied.evidenceSha256).toMatch(/^[a-f0-9]{64}$/u);
+    const reread = readContainedAdapterEvidenceFile(outputPath, {
+      adapterId: "pi",
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      configurationSha256: containedAdapterProbeConfigurationSha256("pi", layout.source),
+      now: new Date(collected.collectedAt),
+      allowedRoot: layout.runner
+    });
+    expect(reread.receiptDigest).toBe(collected.receiptDigest);
+    expect(reread.checks.reviewerWriteDenied.evidenceSha256).toBe(collected.checks.reviewerWriteDenied.evidenceSha256);
+    expect(readdirSync(layout.runner).filter(
+      (name) => name.startsWith(characterizationRootPrefix("pi")) && !beforeTemporaryRoots.has(name)
+    )).toEqual([]);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Pi empty successful terminals as prompt-roundtrip proof", async () => {
+    const layout = piProductionLayout("fixture-empty-success");
+    const outputPath = join(layout.runner, "pi-empty-success.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/assistant output|prompt-roundtrip|unproven/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Pi when get_state is omitted", async () => {
+    const layout = piProductionLayout("fixture-omit-state");
+    const outputPath = join(layout.runner, "pi-omit-state.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toBeInstanceOf(ContainedAdapterCharacterizationUnavailable);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Pi when pre-turn get_session_stats is omitted", async () => {
+    const layout = piProductionLayout("fixture-omit-stats");
+    const outputPath = join(layout.runner, "pi-omit-stats.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toBeInstanceOf(ContainedAdapterCharacterizationUnavailable);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Pi version substitution outside the characterized range", async () => {
+    const layout = piProductionLayout("fixture-wrong-version");
+    const outputPath = join(layout.runner, "pi-wrong-version.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "pi",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/version|characterized range|unavailable/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 30_000);
+
+  it("adversarial: Pi executable pin revalidation fails closed after version substitution", () => {
+    const root = privateRoot();
+    const executable = join(root, "pi");
+    writeFileSync(executable, "#!/bin/sh\necho 0.84.1\n", { mode: 0o700 });
+    const pin = pinContainedExecutable("pi", executable);
+    for (const label of [
+      "before version probe",
+      "after version probe",
+      "after worker prompt",
+      "after reviewer denial",
+      "after cancellation",
+      "before availability derivation",
+      "after ordinary replay",
+      "before terminal evidence receipt",
+      "after characterization authority",
+      "after evidence receipt emission"
+    ] as const) {
+      expect(assertContainedExecutablePin(pin, label, "pi").identity).toBe(pin.evidence.identity);
+    }
+    writeFileSync(executable, "#!/bin/sh\necho TOCTOU\n", { mode: 0o700 });
+    expect(() => assertContainedExecutablePin(pin, "before terminal evidence receipt", "pi")).toThrow(/substituted|unreadable/i);
+  });
+
+  it("refuses Pi state/statistics inference without a durable transcript", () => {
+    expect(() => observeContainedPiStateAndStats({
+      stateRequestId: "state-1",
+      statisticsBeforeRequestId: "stats-1"
+    })).toThrow(/durable transcript|state\/statistics|invent readiness/i);
   });
 
   it.skipIf(!SCOPE.strong)("removes private run state and emits nothing when OpenCode handshake fails", async () => {
