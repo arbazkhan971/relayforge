@@ -1266,14 +1266,23 @@ class LinuxVerifierCgroupScope implements ProcessScope {
 
   alive(): boolean {
     if (this.#removed || this.#fd === undefined) return false;
+    // Transport "survivor" means a task still belongs to this membership set. Process-group
+    // liveness is deliberately NOT consulted here: a just-reaped Bubblewrap leader can remain
+    // briefly visible as a zombie process group after cgroup.events already proves the scope
+    // empty, and that residual is settled by the final reap proof — not misclassified as a
+    // provider-created descendant. Path existence alone is also not population: an empty scope
+    // directory remains until tearDown rmdirs it.
     try {
-      // Transport "survivor" means a task still belongs to this membership set. A just-reaped
-      // Bubblewrap leader can remain briefly visible as a zombie process group after cgroup.events
-      // already proves the scope empty; that is handled by the final settlement proof, not
-      // misclassified as a provider-created descendant.
-      return parseCgroupEventsPopulation(readAnchored(this.#fd, "cgroup.events")) !== 0;
+      const population = parseCgroupEventsPopulation(readAnchored(this.#fd, "cgroup.events"));
+      if (population === 1) return true;
+      if (population === 0) return false;
     } catch {
-      return exactNamedScope(this.path, this.identity);
+      /* fall through to a direct membership read */
+    }
+    try {
+      return readAnchored(this.#fd, "cgroup.procs").trim().length > 0;
+    } catch {
+      return false;
     }
   }
 

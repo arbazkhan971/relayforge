@@ -1756,6 +1756,16 @@ const MAX_TERMINAL_RECORD = MAX_FRAME_BYTES;
  *  only so the teardown is the same proven sequence every other path uses. */
 const LAUNCH_ABORT_GRACE_MS = 2000;
 
+/**
+ * After a leader's `close`, Bubblewrap can still briefly own a task in the verifier cgroup while it
+ * finishes namespace/mount teardown (observed as a non-leader `bwrap` in D-state). That residual is
+ * jail cleanup, not a provider-created descendant. Before classifying a post-close membership as a
+ * survivor (which forces UNCERTAIN even when reap later succeeds), poll `scope.alive()` for this
+ * bounded window. A real setsid/double-fork escapee remains populated through the window, so the
+ * survivor predicate stays fail-closed.
+ */
+const SCOPE_CLOSE_MEMBERSHIP_DRAIN_MS = 500;
+
 /** Absolute quota on TOTAL stdout bytes streamed from one child. Past this a broken/hostile provider
  *  is trying to exhaust disk/CPU; we stop writing the transcript, tear the child down, and fail the
  *  turn UNCERTAIN rather than streaming without bound. Well above any legitimate transcript. */
@@ -2491,9 +2501,22 @@ export function runHeadlessChild(
         if (!scopeSettled && scope.spawned()) {
           scopeSettled = true;
           awaitingScopeReap = true;
-          const survived = !timedOut && !spawnFailed && scope.alive();
-          if (survived) scopeSurvivedOnClose = true;
-          void scope.reap().then((reaped) => {
+          void (async () => {
+            // Classify survivors only after a brief membership drain. Immediate `alive()` at close
+            // races Bubblewrap's post-exit cgroup teardown (non-leader residual in the exact scope):
+            // misclassifying that residual as a provider descendant made clean verifier turns
+            // UNCERTAIN (`reaped → UNCERTAIN`) and the contained smoke land on status unverified.
+            // A real descendant stays populated through the window; empty-after-drain stays trusted.
+            let survived = !timedOut && !spawnFailed && scope.alive();
+            if (survived) {
+              const drainUntil = Date.now() + SCOPE_CLOSE_MEMBERSHIP_DRAIN_MS;
+              while (scope.alive() && Date.now() < drainUntil) {
+                await new Promise<void>((resolveDrain) => setTimeout(resolveDrain, 25));
+              }
+              survived = !timedOut && !spawnFailed && scope.alive();
+            }
+            if (survived) scopeSurvivedOnClose = true;
+            const reaped = await scope.reap();
             if (survived) normalScopeReaped = reaped;
             if (reaped) {
               if (child.pid) ctx.ownedGroups.delete(child.pid);
@@ -2501,7 +2524,7 @@ export function runHeadlessChild(
             }
             awaitingScopeReap = false;
             doFinish();
-          });
+          })();
           return;
         }
         scopeSettled = true;

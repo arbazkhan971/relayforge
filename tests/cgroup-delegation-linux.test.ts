@@ -477,6 +477,66 @@ describe("production verifier session through the shared transport", () => {
     expect(records.every((line) => parseVerifierCgroupJournalLine(line).kind === "v2")).toBe(true);
   }, 60_000);
 
+  it("does not misclassify Bubblewrap post-close cgroup teardown as a surviving descendant under concurrent clean exits", async () => {
+    // Exact race window: leader `close` can fire while a non-leader bwrap task is still briefly
+    // populated (often D-state namespace teardown). Immediate alive()→survivor made transportOk false
+    // with "reaped → UNCERTAIN" even though reap proved the exact scope empty — and the contained
+    // source smoke then landed on status unverified. Concurrent clean sessions force the window.
+    const runtime = await getCachedLinuxVerifierCgroupRuntime();
+    if (!runtime.capability.available) {
+      if (process.env.RELAYFORGE_TEST_REQUIRE_CGROUP === "1") {
+        throw new Error(`required verifier cgroup unavailable [${runtime.capability.reasonCode}]: ${runtime.capability.detail}`);
+      }
+      expect(VERIFIER_CGROUP_UNAVAILABLE_REASONS).toContain(runtime.capability.reasonCode);
+      return;
+    }
+    const root = mkdtempSync(resolve(process.cwd(), ".rf-cgroup-close-drain-"));
+    temporary.push(root);
+    const outerBefore = new Set(readdirSync(runtime.collected.outerScopeRoot!).filter((name) => name.startsWith("loop-")));
+    const jobs = Array.from({ length: 16 }, async (_, index) => {
+      const ctx = {
+        runId: "close-drain-test",
+        runDir: root,
+        scopesPath: resolve(root, `.loop_scopes_${index}`),
+        activeLeaseId: "lease-test",
+        loop: { cadenceMinutes: 1 },
+        children: new Set(),
+        ownedGroups: new Set<number>(),
+        ownedScopes: new Set()
+      } as any;
+      const backend = linuxVerifierCgroupBackend(
+        runtime,
+        { runId: ctx.runId, attemptId: `close-drain-${index}`, leaseId: "lease-test" },
+        root
+      );
+      return runHeadlessChild(
+        ctx,
+        "/bin/sh",
+        ["-c", "printf close-drain-ok"],
+        { PATH: "/usr/bin:/bin", HOME: "/tmp", LANG: "C.UTF-8" },
+        "",
+        root,
+        undefined,
+        root,
+        30_000,
+        undefined,
+        undefined,
+        { scopeBackend: backend }
+      );
+    });
+    const results = await Promise.all(jobs);
+    for (const result of results) {
+      expect(result.ok, result.uncertainReason ?? result.stderr).toBe(true);
+      expect(result.transportOk, result.uncertainReason).toBe(true);
+      expect(result.scopeTrusted, result.uncertainReason).toBe(true);
+      expect(result.scopeReaped, result.uncertainReason).toBe(true);
+      expect(result.uncertainReason ?? "").not.toMatch(/surviving descendant/i);
+      expect(result.stdout).toContain("close-drain-ok");
+    }
+    const outerAfter = readdirSync(runtime.collected.outerScopeRoot!).filter((name) => name.startsWith("loop-"));
+    expect(outerAfter.every((name) => outerBefore.has(name))).toBe(true);
+  }, 90_000);
+
   it("reaps the one exact session on timeout and cancellation without leaking a scope", async () => {
     const runtime = await getCachedLinuxVerifierCgroupRuntime();
     if (!runtime.capability.available) {
