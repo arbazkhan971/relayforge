@@ -10,6 +10,8 @@
     "a0a877fcf4d67445a56656a88b653e7141082313"
   ],
   "verifiedProductHead": "198aa44a192848fe6df1b6f4033e5f6bffc62d89",
+  "requiredCgroupHarnessCommit": "8cd014c",
+  "finalPackedContentCommit": "feca0074e7b135219b55a7029cc4e5d9dc58f786",
   "packageCandidate": "relayforge@1.0.0-rc.1",
   "note": "P0-P7 implementation is committed and local required-cgroup, source-smoke, exact-package and packed-browser gates are green. Publication remains fail-closed because real same-runner OpenCode, Pi and Grok receipts have not been collected; Pi and Grok production characterization is typed unavailable. No tag, npm publish, GitHub Release or repository rename has been performed.",
   "packets": {
@@ -98,8 +100,8 @@
     "exactPreviewArtifact": {
       "status": "green",
       "tarball": "relayforge-1.0.0-rc.1.tgz",
-      "bytes": 1628899,
-      "sha256": "bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35",
+      "bytes": 1627595,
+      "sha256": "4f2af6ceafff94bad16b753debcd7b11103a30276c6082443207f3cbf2d937de",
       "deepSmoke": [
         "deterministic-pack",
         "packed-markdown-link-closure",

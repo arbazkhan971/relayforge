@@ -96,8 +96,8 @@ its unchanged bound.
   `SMOKE PASS (contained host — verified delivery on the run branch)`; execute
   completed; feature stayed on the run branch; original checkout unchanged.
 - **Exact preview artifact: GREEN** — deterministic `relayforge-1.0.0-rc.1.tgz`,
-  **1,628,899** bytes, SHA-256
-  `bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35`. Deep
+  **1,627,595** bytes, SHA-256
+  `4f2af6ceafff94bad16b753debcd7b11103a30276c6082443207f3cbf2d937de`. Deep
   smoke: clean lifecycle-script install, better-sqlite3 native binding load,
   public ESM and external TypeScript consumer, forbidden authority exports,
   canonical init/dry run, legacy `loop.config` plus existing `.loop` adoption,

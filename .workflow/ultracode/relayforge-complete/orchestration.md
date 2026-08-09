@@ -46,7 +46,7 @@ No product implementation file is owned by a packet in Wave R0.
 | P4 | Adapter registry + natives | done (release receipts open) | OpenCode characterization exists with hardened fixture/required-host tests; real receipt needs designated runner + exact binary + live credential; Pi/Grok typed unavailable (no release receipt); ordinary OpenCode/Pi/Grok refuse before mutation; publish path fail-closed until distinct same-runner receipts |
 | P5 | Live observability / control room | done | focused 125/125 |
 | P6 | Multi-repository | **done (product-integrated)** | strict config/validation, CLI run route, ControlStore, authority, DAG/scheduler, worktree groups, contained transport/settlement, publication bridge, read isolation, crash recovery, real product E2Es; authority 21/21; orchestration 12/12; product/recovery/verifier 6/6; publication/SCM/integration 13/13 |
-| P7 | Identity / release proof | local committed gates green; native receipts open | aggregate 171 files / 1,927 tests + clean TS build; source smoke strong-path marker; exact preview tarball 1,628,899 bytes SHA-256 bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35; packed Chrome 150.0.7871.128 connected→degraded→recovered; no tag/publish/rename/native receipt |
+| P7 | Identity / release proof | local committed gates green; native receipts open | aggregate 171 files / 1,927 tests + clean TS build; source smoke strong-path marker; exact preview tarball 1,627,595 bytes SHA-256 4f2af6ceafff94bad16b753debcd7b11103a30276c6082443207f3cbf2d937de; packed Chrome 150.0.7871.128 connected→degraded→recovered; no tag/publish/rename/native receipt |
 
 ## Resume order (exact)
 

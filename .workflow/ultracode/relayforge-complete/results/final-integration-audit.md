@@ -601,9 +601,10 @@ resolution ledger. Product integration later landed at
 | RF-RC-09 | `RESOLVED` | Current README, ADR/reference status and canonical implementation tracker match the integrated product and explicitly retain the native-evidence boundary. Packed Markdown links pass. |
 | RF-RC-10 | `RESOLVED` | Campaign state, orchestration, integration log and final report now record the committed phase outcomes, tool/runtime evidence, artifact identity and external actions not performed. |
 
-Exact local package evidence: `relayforge-1.0.0-rc.1.tgz`, **1,628,899** bytes,
-SHA-256
-`bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35`;
+Exact local package evidence from packed-content commit
+`feca0074e7b135219b55a7029cc4e5d9dc58f786`:
+`relayforge-1.0.0-rc.1.tgz`, **1,627,595** bytes, SHA-256
+`4f2af6ceafff94bad16b753debcd7b11103a30276c6082443207f3cbf2d937de`;
 Chrome **150.0.7871.128** rendered and traversed connected → degraded →
 recovered after service replacement. Node **v20.20.2**, npm **10.8.2**, Linux
 **6.17.0-1021-gcp**, Bubblewrap **0.9.0**.

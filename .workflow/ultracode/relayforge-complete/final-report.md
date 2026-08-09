@@ -16,6 +16,8 @@ Canonical tracker: [docs/implementation-status.md](../../../docs/implementation-
 | Product integration | `5880b008d81c20f746f728ef83d736306d546d81` |
 | Stabilization | `3b6f78f2b89f0b4430e9f24cd535d3efa29e6e26`, `a0a877fcf4d67445a56656a88b653e7141082313` |
 | Verified release-smoke baseline | `198aa44a192848fe6df1b6f4033e5f6bffc62d89` |
+| Required-cgroup harness stabilization | `8cd014c` |
+| Final packed-content commit | `feca0074e7b135219b55a7029cc4e5d9dc58f786` |
 | Package candidate | `relayforge@1.0.0-rc.1` |
 | Last pre-product remote handoff | `860688c55207be051431d470b44b038025a12e5c` |
 | Tag / publish / release / rename | None |
@@ -42,7 +44,7 @@ Canonical tracker: [docs/implementation-status.md](../../../docs/implementation-
 | Required-cgroup aggregate | **171** files / **1,927** tests; TypeScript/build green |
 | Environment | Node **v20.20.2**; npm **10.8.2**; Linux **6.17.0-1021-gcp**; Bubblewrap **0.9.0** |
 | Source smoke | exact contained-success marker; `done`; feature only on run branch; checkout unchanged |
-| Preview tarball | `relayforge-1.0.0-rc.1.tgz`; **1,628,899** bytes; SHA-256 `bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35` |
+| Preview tarball | `relayforge-1.0.0-rc.1.tgz`; **1,627,595** bytes; SHA-256 `4f2af6ceafff94bad16b753debcd7b11103a30276c6082443207f3cbf2d937de` |
 | Packed smoke | clean install/native binding, public ESM/types, closed exports, canonical + legacy config, control lifecycle and Markdown links |
 | Browser | Chrome **150.0.7871.128**; DOM rendered; connected → degraded → recovered; service replaced |
 
