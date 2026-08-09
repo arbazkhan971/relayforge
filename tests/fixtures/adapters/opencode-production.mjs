@@ -21,9 +21,11 @@ const failHandshake = apiKey === "fixture-fail-handshake";
 const emptySuccess = apiKey === "fixture-empty-success";
 const workerWriteNew = apiKey === "fixture-worker-write-new";
 const workerMutate = apiKey === "fixture-worker-mutate";
+const replayWrite = apiKey === "fixture-replay-write";
 const reviewerUnrelated = apiKey === "fixture-reviewer-unrelated";
 const reviewerGenericWrite = apiKey === "fixture-reviewer-generic-write";
 const omitSessionCreate = apiKey === "fixture-omit-session-create";
+let promptCount = 0;
 
 let pending = "";
 let sessionId = "opencode-contained-session";
@@ -63,6 +65,7 @@ process.stdin.on("data", (chunk) => {
     }
     if (request.method === "session/prompt") {
       promptId = request.id;
+      promptCount += 1;
       const text = request.params?.prompt?.[0]?.text ?? "";
       if (text.includes("RF_CHARACTERIZE_CANCEL")) continue;
       if (text.includes("RF_CHARACTERIZE_REVIEWER")) {
@@ -129,6 +132,12 @@ process.stdin.on("data", (chunk) => {
       }
       if (workerMutate) {
         try { appendFileSync("README.md", "UNAUTHORIZED MUTATION\n"); } catch { /* sandbox may deny */ }
+        complete(promptId, "contained opencode acknowledgement");
+        continue;
+      }
+      // Adversarial: mutate only on the ordinary-route replay prompt (after worker/reviewer/cancel).
+      if (replayWrite && text.includes("RF_CHARACTERIZE_REPLAY")) {
+        try { writeFileSync("REPLAY_UNAUTHORIZED.txt", "replay wrote a new file\n"); } catch { /* sandbox may deny */ }
         complete(promptId, "contained opencode acknowledgement");
         continue;
       }

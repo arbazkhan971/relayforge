@@ -29,6 +29,45 @@ export const containedNativeAdapterIds = Object.freeze(["opencode", "pi", "grok"
 export type ContainedNativeAdapterId = (typeof containedNativeAdapterIds)[number];
 
 /**
+ * One canonical controlled OpenCode inline-config representation.
+ * Collector, consumer, and production characterization all expand through this recipe so
+ * configurationSha256 never depends on ambient key order or a pre-expanded variant.
+ */
+export function canonicalContainedOpenCodeConfigContent(apiKey: string): string {
+  if (typeof apiKey !== "string" || apiKey.length === 0 || apiKey.includes("\0") || Buffer.byteLength(apiKey, "utf8") > 64 * 1024) {
+    throw new TypeError("contained adapter opencode requires bounded OPENAI_API_KEY");
+  }
+  // Fixed insertion order is part of the controlled representation; never re-sort at the wire.
+  return JSON.stringify({
+    $schema: "https://opencode.ai/config.json",
+    autoupdate: false,
+    share: "disabled",
+    model: "openai/gpt-5.2-codex",
+    provider: { openai: { options: { apiKey } } },
+    formatter: false,
+    lsp: false
+  });
+}
+
+function extractOpenCodeApiKeyFromConfigContent(content: string): string | undefined {
+  if (typeof content !== "string" || content.length === 0 || content.includes("\0") || Buffer.byteLength(content, "utf8") > 64 * 1024) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(content) as {
+      provider?: { openai?: { options?: { apiKey?: unknown } } };
+    };
+    const apiKey = parsed?.provider?.openai?.options?.apiKey;
+    if (typeof apiKey !== "string" || apiKey.length === 0 || apiKey.includes("\0") || Buffer.byteLength(apiKey, "utf8") > 64 * 1024) {
+      return undefined;
+    }
+    return apiKey;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Build the one credential/config environment a production characterization is allowed to expose.
  * The returned object deliberately contains no ambient PATH, HOME or sibling-provider credential;
  * the provider builder adds only its fixed private state and role policy.
@@ -45,18 +84,17 @@ export function containedAdapterProbeEnvironment(
     return value;
   };
   if (adapterId === "opencode") {
-    const apiKey = required("OPENAI_API_KEY");
-    return Object.freeze({
-      OPENCODE_CONFIG_CONTENT: JSON.stringify({
-        $schema: "https://opencode.ai/config.json",
-        autoupdate: false,
-        share: "disabled",
-        model: "openai/gpt-5.2-codex",
-        provider: { openai: { options: { apiKey } } },
-        formatter: false,
-        lsp: false
-      })
-    });
+    // Prefer ambient credential expansion. A pre-expanded OPENCODE_CONFIG_CONTENT is accepted only
+    // when it carries the same openai apiKey so collector/consumer re-emit the canonical recipe.
+    const ambientKey = source.OPENAI_API_KEY;
+    if (typeof ambientKey === "string" && ambientKey.length > 0 && !ambientKey.includes("\0") && Buffer.byteLength(ambientKey, "utf8") <= 64 * 1024) {
+      return Object.freeze({ OPENCODE_CONFIG_CONTENT: canonicalContainedOpenCodeConfigContent(ambientKey) });
+    }
+    const fromContent = extractOpenCodeApiKeyFromConfigContent(source.OPENCODE_CONFIG_CONTENT ?? "");
+    if (fromContent !== undefined) {
+      return Object.freeze({ OPENCODE_CONFIG_CONTENT: canonicalContainedOpenCodeConfigContent(fromContent) });
+    }
+    throw new TypeError("contained adapter opencode requires bounded OPENAI_API_KEY");
   }
   if (adapterId === "pi") return Object.freeze({ ANTHROPIC_API_KEY: required("ANTHROPIC_API_KEY") });
   return Object.freeze({ XAI_API_KEY: required("XAI_API_KEY") });
@@ -248,7 +286,11 @@ export function containedAdapterRuntimeIdentitySha256(
  * Expand ambient credentials into the closed probe environment when possible.
  * Collector, required-real consumer, and receipt extractor all call this so they independently
  * agree on the controlled OpenCode hash derived from OPENAI_API_KEY (and peer keys for pi/grok).
- * An already-expanded controlled environment (only OPENCODE_CONFIG_CONTENT etc.) is accepted as-is.
+ *
+ * OpenCode always re-emits one canonical OPENCODE_CONFIG_CONTENT recipe (from OPENAI_API_KEY or
+ * by extracting the apiKey from a pre-expanded OPENCODE_CONFIG_CONTENT). Non-canonical key order
+ * or equivalent semantic variants therefore hash identically. Environments that cannot be
+ * expanded fail closed by returning the input unchanged for non-OpenCode adapters only.
  */
 export function resolveContainedAdapterProbeEnvironment(
   adapterId: ContainedNativeAdapterId,
@@ -266,9 +308,10 @@ export function resolveContainedAdapterProbeEnvironment(
  * collector and its same-job consumer derive this value independently from the descriptor and
  * controlled environment; neither transports configuration authority in the evidence file.
  *
- * For OpenCode, ambient OPENAI_API_KEY is expanded into the closed OPENCODE_CONFIG_CONTENT recipe
- * before hashing so collector, required-real consumer, and receipt extractor agree without
- * transporting the expanded config through the evidence file.
+ * For OpenCode, ambient OPENAI_API_KEY (or a pre-expanded OPENCODE_CONFIG_CONTENT carrying the
+ * same apiKey) is re-emitted as the single canonical controlled config representation before
+ * hashing so collector, required-real consumer, and receipt extractor agree without transporting
+ * the expanded config through the evidence file.
  */
 export function containedAdapterProbeConfigurationSha256(
   adapterId: ContainedNativeAdapterId,

@@ -830,56 +830,73 @@ function reviewerMutationEvidence(
   }
   assertContainedWorkspaceUnchanged(workspace.root, workspace, "reviewer denial");
 
-  const permissions = events.filter((event) => event.kind === "permission");
-  const requested = permissions.filter((event) => event.kind === "permission" && event.state === "requested");
-  if (requested.length !== 1) {
+  // Synthetic permission-only events never prove denial of a named write. Require the permission
+  // request to precede a tool lifecycle that names the exact mutation target basename.
+  const permissionIndex = events.findIndex((event) => event.kind === "permission" && event.state === "requested");
+  if (permissionIndex < 0) {
     throw new ContainedAdapterCharacterizationUnavailable(
       "opencode",
-      "reviewer denial requires exactly one correlated permission request for the mutation attempt"
+      "reviewer denial requires exactly one correlated permission request for the named mutation attempt"
     );
   }
-  const permission = requested[0]!;
+  const permission = events[permissionIndex]!;
   if (permission.kind !== "permission") {
     throw new ContainedAdapterCharacterizationUnavailable("opencode", "reviewer permission event kind mismatch");
   }
+  const extraPermissions = events.filter((event, index) =>
+    index !== permissionIndex && event.kind === "permission" && event.state === "requested"
+  );
+  if (extraPermissions.length !== 0) {
+    throw new ContainedAdapterCharacterizationUnavailable(
+      "opencode",
+      "reviewer denial requires exactly one correlated permission request for the named mutation attempt"
+    );
+  }
 
-  const tools = events.filter((event) => event.kind === "tool");
   // F3: title or toolCallId must contain the exact target basename — no generic write/edit regex.
   const namesTarget = (event: Extract<NormalizedAdapterEvent, { kind: "tool" }>): boolean =>
     (event.title !== undefined && event.title.includes(targetName)) ||
     event.toolCallId.includes(targetName);
-  const pending = tools.filter((event) =>
-    event.kind === "tool" &&
-    (event.state === "proposed" || event.state === "started") &&
-    namesTarget(event)
-  );
-  const failed = tools.filter((event) =>
-    event.kind === "tool" &&
-    event.state === "failed" &&
-    namesTarget(event)
-  );
+  const pending = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event, index }) =>
+      index > permissionIndex &&
+      event.kind === "tool" &&
+      (event.state === "proposed" || event.state === "started") &&
+      namesTarget(event)
+    );
+  const failed = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event, index }) =>
+      index > permissionIndex &&
+      event.kind === "tool" &&
+      event.state === "failed" &&
+      namesTarget(event)
+    );
   if (pending.length === 0 || failed.length === 0) {
     throw new ContainedAdapterCharacterizationUnavailable(
       "opencode",
       "reviewer denial lacks tool lifecycle evidence correlated to the named mutation target; marking unavailable rather than guessing"
     );
   }
-  // Require the failed toolCallId to equal a started/proposed attempt (exact lifecycle correlation).
-  const correlated = failed.some((failEvent) =>
+  // Require the failed toolCallId to equal a started/proposed attempt after the permission request.
+  const correlated = failed.some(({ event: failEvent }) =>
     failEvent.kind === "tool" &&
-    pending.some((start) => start.kind === "tool" && start.toolCallId === failEvent.toolCallId)
+    pending.some(({ event: start }) => start.kind === "tool" && start.toolCallId === failEvent.toolCallId)
   );
   if (!correlated) {
     throw new ContainedAdapterCharacterizationUnavailable(
       "opencode",
-      "reviewer tool failure is not lifecycle-correlated to the permissioned mutation attempt"
+      "reviewer tool failure is not lifecycle-correlated to the permissioned named-target mutation attempt"
     );
   }
   const evidenceSha256 = sha("opencode:read-only-denial", {
     targetName,
     targetUnchanged: true,
     permissionId: permission.permissionId,
-    toolCallIds: failed.filter((event) => event.kind === "tool").map((event) => event.toolCallId),
+    toolCallIds: failed
+      .filter(({ event }) => event.kind === "tool")
+      .map(({ event }) => (event.kind === "tool" ? event.toolCallId : "")),
     workspace: {
       entryCount: workspace.entries.length,
       gitStatus: workspace.gitStatus,
@@ -1110,7 +1127,7 @@ function capabilities(
 }
 
 async function characterizeOpenCode(
-  executablePath: string,
+  executablePin: ContainedExecutablePin,
   environment: Readonly<Record<string, string>>,
   configurationSha256: string,
   characterizationParent?: string
@@ -1156,8 +1173,7 @@ async function characterizeOpenCode(
   const runId = `probe-${randomBytes(8).toString("hex")}`;
   let ctx: RunContext | undefined;
   try {
-    // Pin executable identity before any version or behavioral call.
-    const executablePin = pinContainedExecutable("opencode", executablePath);
+    // Revalidate the caller-owned pin before any version or behavioral call.
     assertContainedExecutablePin(executablePin, "before version probe");
 
     ctx = prepareRun(loaded, project, runId, "contained OpenCode compatibility characterization", "evidence");
@@ -1201,6 +1217,7 @@ async function characterizeOpenCode(
       onAdapterEvent: (event) => workerEvents.push(event)
     });
     assertContainedExecutablePin(executablePin, "after worker prompt");
+    // Bounded-no-write: Git/workspace inventory must be bit-identical after the worker turn.
     assertContainedWorkspaceUnchanged(work, baselineWorkspace, "worker prompt");
     const workerTerminal = exactTerminal(ctx, worker, "worker prompt");
     // Fail before spending more provider/containment work when the primary
@@ -1312,6 +1329,7 @@ async function characterizeOpenCode(
       1
     );
     assertContainedExecutablePin(executablePin, "after ordinary replay");
+    // Bounded-no-write after ordinary-route replay using the same Git/workspace inventory.
     assertContainedWorkspaceUnchanged(work, replayWorkspace, "ordinary availability replay");
     const replayTerminal = exactTerminal(ctx, replay, "ordinary availability replay");
     if (
@@ -1327,11 +1345,21 @@ async function characterizeOpenCode(
     if (
       workerTerminal.bind.adapter?.runtimeIdentitySha256 !== expectedRuntime ||
       replayTerminal.bind.adapter?.runtimeIdentitySha256 !== expectedRuntime ||
-      cancellationTerminal.bind.adapter?.runtimeIdentitySha256 !== expectedRuntime
+      cancellationTerminal.bind.adapter?.runtimeIdentitySha256 !== expectedRuntime ||
+      reviewerTerminal.bind.adapter?.runtimeIdentitySha256 !== expectedRuntime
     ) {
       throw new ContainedAdapterCharacterizationUnavailable(
         "opencode",
         "runtime plus controlled-configuration identity was not bound into reservation/settlement/replay"
+      );
+    }
+
+    // Final pin revalidation before minting settlement/check evidence for the receipt.
+    const finalExecutable = assertContainedExecutablePin(executablePin, "before terminal evidence receipt");
+    if (!sameRuntimeFileEvidence(finalExecutable, executable) || !sameRuntimeFileEvidence(finalExecutable, availability.executable)) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        "opencode",
+        "executable identity drifted before terminal evidence receipt; refusing characterization"
       );
     }
 
@@ -1361,6 +1389,11 @@ async function characterizeOpenCode(
         })
       })
     }) as unknown as ContainedAdapterProbeResult["checks"];
+    const checkDigests = Object.freeze(
+      Object.fromEntries(
+        Object.entries(checks).map(([name, value]) => [name, value.evidenceSha256])
+      )
+    );
     const normalExitReapedSha256 = sha("opencode:normal-reaped", {
       scope: worker.scopeId,
       proof: worker.scopeReapProof,
@@ -1371,6 +1404,8 @@ async function characterizeOpenCode(
       proof: cancellation.scopeReapProof,
       terminal: cancellationTerminal.recordSha256
     });
+    // Terminal settlement receipt binds runtime identity, controlled config, and every check digest.
+    // Fail-closed: without this binding the collector emits no evidence file.
     return Object.freeze({
       availability,
       containment: Object.freeze({
@@ -1388,7 +1423,10 @@ async function characterizeOpenCode(
           adapter: adapterEvidenceIdentity(workerTerminal.bind.adapter!),
           transcript: worker.transcriptSha256,
           replay: replayTerminal.recordSha256,
-          runtimeIdentitySha256: workerTerminal.bind.adapter?.runtimeIdentitySha256
+          runtimeIdentitySha256: expectedRuntime,
+          configurationSha256,
+          executableIdentity: finalExecutable.identity,
+          checks: checkDigests
         })
       }),
       checks
@@ -1425,11 +1463,12 @@ export async function collectProductionContainedAdapterEvidence(
   if (containedAdapterProbeConfigurationSha256(input.adapterId, controlledEnvironment) !== configurationSha256) {
     throw new ContainedAdapterCharacterizationUnavailable(
       input.adapterId,
-      "controlled configuration hash is not stable under OPENAI_API_KEY expansion"
+      "controlled configuration hash is not stable under the canonical OpenCode config representation"
     );
   }
   const executablePath = resolveSandboxExecutable(input.adapterId, source.PATH ?? process.env.PATH);
-  pinContainedExecutable(input.adapterId, executablePath);
+  // One pin identity for version probe, every characterization call, and final evidence emission.
+  const executablePin = pinContainedExecutable(input.adapterId, executablePath);
 
   const finalizerInput: CollectContainedAdapterEvidenceInput = {
     adapterId: input.adapterId,
@@ -1443,16 +1482,26 @@ export async function collectProductionContainedAdapterEvidence(
         if (expectation.configurationSha256 !== configurationSha256) {
           throw new Error("contained adapter configuration changed before characterization");
         }
+        assertContainedExecutablePin(executablePin, "before characterization authority");
         if (input.adapterId !== "opencode") {
           throw new ContainedAdapterCharacterizationUnavailable(input.adapterId);
         }
         try {
-          return await characterizeOpenCode(
-            executablePath,
+          const proof = await characterizeOpenCode(
+            executablePin,
             controlledEnvironment,
             configurationSha256,
             input.characterizationRoot
           );
+          // Revalidate the same pin after characterization and before the collector mints a receipt.
+          assertContainedExecutablePin(executablePin, "after characterization authority");
+          if (!sameRuntimeFileEvidence(executablePin.evidence, proof.availability.executable)) {
+            throw new ContainedAdapterCharacterizationUnavailable(
+              "opencode",
+              "executable was substituted across characterization; no receipt"
+            );
+          }
+          return proof;
         } finally {
           assertContainedEvidenceRepositoryPin(repositoryPin);
         }
@@ -1460,6 +1509,7 @@ export async function collectProductionContainedAdapterEvidence(
     }
   };
   const envelope = await collectContainedAdapterEvidence(finalizerInput);
+  assertContainedExecutablePin(executablePin, "after evidence receipt emission");
   assertContainedEvidenceRepositoryPin(repositoryPin);
   return envelope;
 }

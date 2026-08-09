@@ -25,7 +25,9 @@ import {
   containedAdapterCheckNames,
   containedAdapterProbeEnvironment,
   canonicalContainedAdapterEvidenceJson,
+  canonicalContainedOpenCodeConfigContent,
   containedAdapterProbeConfigurationSha256,
+  containedAdapterRuntimeIdentitySha256,
   readContainedAdapterEvidenceFile,
   type ContainedNativeAdapterId
 } from "../src/adapters/contained-evidence.js";
@@ -205,6 +207,29 @@ describe("contained adapter configuration hash parity", () => {
     expect(reread.receiptDigest).toBe(collected.receiptDigest);
     expect(reread.availability.consultedConfigSha256).toBe(fromAmbient);
   });
+
+  it("adversarial: non-canonical OPENCODE_CONFIG_CONTENT key order still yields one controlled hash", () => {
+    const apiKey = "fixture-canonical-opencode-key";
+    const canonical = canonicalContainedOpenCodeConfigContent(apiKey);
+    // Same semantic recipe with reordered object keys (non-canonical representation).
+    const reordered = JSON.stringify({
+      lsp: false,
+      formatter: false,
+      provider: { openai: { options: { apiKey } } },
+      model: "openai/gpt-5.2-codex",
+      share: "disabled",
+      autoupdate: false,
+      $schema: "https://opencode.ai/config.json"
+    });
+    expect(reordered).not.toBe(canonical);
+    const fromAmbient = containedAdapterProbeConfigurationSha256("opencode", { OPENAI_API_KEY: apiKey });
+    const fromReordered = containedAdapterProbeConfigurationSha256("opencode", { OPENCODE_CONFIG_CONTENT: reordered });
+    const fromCanonicalContent = containedAdapterProbeConfigurationSha256("opencode", { OPENCODE_CONFIG_CONTENT: canonical });
+    expect(fromAmbient).toBe(fromReordered);
+    expect(fromAmbient).toBe(fromCanonicalContent);
+    // Expansion always re-emits the single controlled representation.
+    expect(containedAdapterProbeEnvironment("opencode", { OPENCODE_CONFIG_CONTENT: reordered }).OPENCODE_CONFIG_CONTENT).toBe(canonical);
+  });
 });
 
 describe("contained adapter evidence collector finalizer", () => {
@@ -256,6 +281,20 @@ describe("contained adapter evidence collector finalizer", () => {
         ? reread.availability.behavioralChecks.find((check) => check.check === "read-only-denial")?.evidenceSha256
         : undefined
     );
+    // Terminal settlement/evidence receipt binds runtime + controlled config + every check digest.
+    const expectedRuntime = containedAdapterRuntimeIdentitySha256(
+      reread.runtime.executable,
+      reread.runtime.trustedHelpers,
+      reread.configurationSha256
+    );
+    expect(reread.settlement.receiptDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(reread.settlement.receiptDigest).not.toBe(reread.receiptDigest);
+    // Check digests are distinct and bound into both envelope receipt and availability behavioral checks.
+    const checkDigests = Object.values(reread.checks).map((check) => check.evidenceSha256);
+    expect(new Set(checkDigests).size).toBe(checkDigests.length);
+    expect(reread.configurationSha256).toBe(containedAdapterProbeConfigurationSha256("opencode", source));
+    expect(reread.availability.consultedConfigSha256).toBe(reread.configurationSha256);
+    expect(expectedRuntime).toMatch(/^[a-f0-9]{64}$/u);
     expect(readdirSync(runner).filter(
       (name) => name.startsWith("rf-contained-opencode-") && !beforeTemporaryRoots.has(name)
     )).toEqual([]);
@@ -370,6 +409,22 @@ describe("contained adapter evidence collector finalizer", () => {
     expect(existsSync(outputPath)).toBe(false);
   }, 60_000);
 
+  it.skipIf(!SCOPE.strong)("adversarial: refuses ordinary-route replay no-write probes that create a new file", async () => {
+    const layout = productionLayout("fixture-replay-write");
+    const outputPath = join(layout.runner, "replay-write.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "opencode",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/mutated the characterization workspace|no-write|ordinary availability replay/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
   it.skipIf(!SCOPE.strong)("refuses synthetic unrelated reviewer permission without named-target correlation", async () => {
     const layout = productionLayout("fixture-reviewer-unrelated");
     const outputPath = join(layout.runner, "reviewer-unrelated.json");
@@ -441,6 +496,30 @@ describe("contained adapter evidence collector finalizer", () => {
     const pin = pinContainedExecutable("opencode", executable);
     writeFileSync(executable, "#!/bin/sh\necho substituted\n", { mode: 0o700 });
     expect(() => assertContainedExecutablePin(pin, "after version probe")).toThrow(/substituted/i);
+  });
+
+  it("adversarial: pin revalidation fails closed after every labeled characterization stage", () => {
+    const root = privateRoot();
+    const executable = join(root, "opencode");
+    writeFileSync(executable, "#!/bin/sh\necho 1.18.15\n", { mode: 0o700 });
+    const pin = pinContainedExecutable("opencode", executable);
+    // Same pin must revalidate across the production labels.
+    for (const label of [
+      "before version probe",
+      "after version probe",
+      "after worker prompt",
+      "after reviewer denial",
+      "after cancellation",
+      "before availability derivation",
+      "after ordinary replay",
+      "before terminal evidence receipt",
+      "after characterization authority",
+      "after evidence receipt emission"
+    ] as const) {
+      expect(assertContainedExecutablePin(pin, label).identity).toBe(pin.evidence.identity);
+    }
+    writeFileSync(executable, "#!/bin/sh\necho TOCTOU\n", { mode: 0o700 });
+    expect(() => assertContainedExecutablePin(pin, "before terminal evidence receipt")).toThrow(/substituted|unreadable/i);
   });
 
   it("rejects non-Git, dirty, and wrong-HEAD repository pins", () => {
