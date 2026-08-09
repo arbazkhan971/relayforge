@@ -424,15 +424,22 @@ projects:
     }
   });
 
-  it("(wave-8) monitor/logs reject a non-integer interval/lines; default run ids carry entropy", () => {
-    const root = mkdtempSync(join(tmpdir(), "loop-cli-bounds-"));
-    runLoop(["init"], root);
+  it("(wave-8) monitor rejects a non-integer interval", () => {
+    const root = tmuxProject();
     const badInterval = runLoop(["monitor", "--interval", "not-a-number", "--once"], root);
     expect(badInterval.status).toBe(1);
     expect(badInterval.stderr + badInterval.stdout).toMatch(/interval/i);
+  });
+
+  it("(wave-8) logs rejects a non-integer line bound", () => {
+    const root = tmuxProject();
     const badLines = runLoop(["logs", "loop-x-y-team", "--lines", "-5"], root);
     expect(badLines.status).toBe(1);
     expect(badLines.stderr + badLines.stdout).toMatch(/lines/i);
+  });
+
+  it("(wave-8) default run ids carry entropy", () => {
+    const root = tmuxProject();
     // Two default run ids generated back-to-back must differ (entropy, not one-second resolution).
     const a = runLoop(["--json", "run", "g"], root);
     const b = runLoop(["--json", "run", "g"], root);

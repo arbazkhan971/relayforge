@@ -353,7 +353,7 @@ describe("steering CLI", () => {
     const f = fixture();
     const runId = "run-parent-hook";
     const result = await runLoop(["--json", "run", "plan the boundary", "--run", runId], f.root);
-    expect(result.status).toBe(0);
+    expect(result.status, `dry-run stderr:\n${result.stderr}\ndry-run stdout:\n${result.stdout}`).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ run: runId, status: "planned", success: true });
     const runDir = join(f.root, ".loop", "runs", "demo", runId);
     expect(existsSync(steeringIpcSocketPath(runDir))).toBe(false);
