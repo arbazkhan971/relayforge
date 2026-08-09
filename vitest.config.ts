@@ -1,5 +1,7 @@
 import { defineConfig } from "vitest/config";
 
+const requiredCgroupGate = process.env.RELAYFORGE_TEST_REQUIRE_CGROUP === "1";
+
 // The streaming retention gates must force a collection BEFORE measuring RSS/arrayBuffers — otherwise
 // they measure garbage that merely has not been collected yet instead of what the pipeline RETAINS.
 // `poolOptions.forks.execArgv` is not applied by vitest 4, but forked workers inherit this process's
@@ -33,7 +35,13 @@ export default defineConfig({
     // budget in ~half of full-suite runs). Two workers keeps the runnable-process count inside the core
     // count, so a red result means the product is slow — which is the only thing these budgets are for.
     // The cost is real (~145s vs ~92s wall); determinism is worth more than 50 seconds.
-    maxWorkers: 2,
+    // The required-cgroup release matrix also contains an exact limit test that deliberately fills
+    // all 256 descendants in the delegated root. Running another strong-backend file beside it can
+    // correctly receive EAGAIN and then look like a product failure (observed in the OpenCode
+    // version probe and P2 final verifier). Serialize only this explicit release gate; ordinary
+    // development retains two workers, while the required-host matrix proves each scope against an
+    // otherwise quiescent delegated root.
+    maxWorkers: requiredCgroupGate ? 1 : 2,
     minWorkers: 1,
     // Disable the optional tmux viewport for the whole test process (see tests/setup.ts).
     setupFiles: ["./tests/setup.ts"],

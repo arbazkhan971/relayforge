@@ -87,6 +87,7 @@
       "linux": "6.17.0-1021-gcp",
       "bwrap": "0.9.0"
     },
+    "requiredCgroupWorkerIsolation": "single-worker-prevents-exact-256-descendant-characterization-from-starving-sibling-strong-backend-files",
     "committedRequiredCgroupSourceSmoke": {
       "status": "green",
       "marker": "SMOKE PASS (contained host — verified delivery on the run branch)",

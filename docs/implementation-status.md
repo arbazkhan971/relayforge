@@ -67,14 +67,18 @@ These are committed-tree results, not a dirty-worktree preview.
 | Packed real-browser gate | **GREEN** — Google Chrome **150.0.7871.128**; DOM rendered; lifecycle **connected → degraded → recovered**; service instance replaced |
 | Workspace hygiene | Generated preview moved outside the repository; no test process, disposable worktree, cgroup, socket, or temporary release artifact retained in the source tree |
 
-Release testing found and fixed four concrete issues before this checkpoint:
+Release testing found and fixed five concrete issues before this checkpoint:
 
 1. implementation-only `better-sqlite3` types leaked into public declarations;
 2. packed smoke synchronously waited on `serve stop` while owning the child it
    needed to reap;
 3. legacy adoption tried to recreate an init-owned `.loop` directory; and
 4. source smoke generated nondeterministic verifier output despite requesting
-   two stable runs.
+   two stable runs; and
+5. the required-cgroup aggregate allowed the exact 256-descendant limit test to
+   run beside another strong-backend file, so the sibling could correctly
+   receive `EAGAIN`; required-host validation is now serialized while ordinary
+   development keeps two workers.
 
 The release-workflow test now rejects the nondeterministic verifier tokens, and
 the committed source smoke proves the strong contained branch.
