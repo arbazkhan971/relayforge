@@ -12,10 +12,11 @@ The current tree is preserved. Existing user commits and branches are not reset
 or rewritten. A prunable historical worktree registration and rejected attempt
 branches remain evidence and are not deleted.
 
-**Handoff checkpoint:** branch `agent/loop-engineering-hardening`, last pushed
-handoff commit `860688c55207be051431d470b44b038025a12e5c`. Large integration
-source tree is dirty/uncommitted beyond that checkpoint; no final integration
-SHA exists yet. Live tracker:
+**Handoff checkpoint:** branch `agent/loop-engineering-hardening`; product
+integration commit `5880b008d81c20f746f728ef83d736306d546d81` and verified
+release-smoke baseline `198aa44a192848fe6df1b6f4033e5f6bffc62d89`. The previous
+remote documentation handoff was `860688c55207be051431d470b44b038025a12e5c`.
+Live tracker:
 [docs/implementation-status.md](../../../docs/implementation-status.md).
 
 ## Phase 00 synthesis
@@ -74,7 +75,7 @@ its unchanged bound.
   Exact descendant/depth boundaries fail with `EAGAIN`; no process or cgroup
   leaked.
 
-## P1–P6 product checkpoints (landed in dirty integration tree; uncommitted beyond `860688c`)
+## P1–P6 product checkpoints (committed and product-integrated)
 
 | Phase | Status | Evidence |
 | --- | --- | --- |
@@ -85,18 +86,18 @@ its unchanged bound.
 | P5 control room | implemented | focused **125/125** |
 | P6 multi-repository | **product-integrated** | strict config/validation, actual CLI run route, canonical ControlStore facts/views, exact repository-set authority, DAG and scheduler, all-or-nothing worktree group, worker/verification through canonical contained transport and settlement, vector integration, publication bridge, exact read isolation, durable crash recovery, real product E2Es; authority **21/21**; orchestration **12/12**; product/recovery/verifier **6/6**; publication/SCM/integration **13/13** |
 
-## P7 / release checkpoint (dirty-tree green; committed-HEAD pending)
+## P7 / release checkpoint (local committed gates green)
 
 - Identity and package candidate `relayforge@1.0.0-rc.1` foundations are present.
-- **Required-cgroup aggregate (dirty tree): GREEN** — **171** test files,
-  **1,925** tests passed, then clean TypeScript build. Environment: Node
+- **Required-cgroup aggregate: GREEN** — **171** test files, **1,927** tests
+  passed, then clean TypeScript build. Environment: Node
   **v20.20.2**, npm **10.8.2**, Linux **6.17.0-1021-gcp**, bwrap **0.9.0**.
 - **Required-cgroup source smoke: GREEN** — exact marker
   `SMOKE PASS (contained host — verified delivery on the run branch)`; execute
   completed; feature stayed on the run branch; original checkout unchanged.
 - **Exact preview artifact: GREEN** — deterministic `relayforge-1.0.0-rc.1.tgz`,
-  **1,626,928** bytes, SHA-256
-  `618ef91fd72c6a551ce21cd11ad753b5a11458ea5a2468ca75e80328db720b84`. Deep
+  **1,628,899** bytes, SHA-256
+  `bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35`. Deep
   smoke: clean lifecycle-script install, better-sqlite3 native binding load,
   public ESM and external TypeScript consumer, forbidden authority exports,
   canonical init/dry run, legacy `loop.config` plus existing `.loop` adoption,
@@ -110,16 +111,15 @@ its unchanged bound.
   into public declarations; smoke harness asynchronously runs `serve stop` to
   reap the owned service child; legacy `.loop` fixture adopts the directory init
   may already create.
-- Final committed-HEAD aggregate test/rerun is **pending** (no integration
-  commit yet).
+- Product integration and the committed local rerun are complete. The shared
+  handoff still requires the branch push.
 - **No** tag, npm publish, GitHub release, repository rename, or real native
   receipt has been performed.
 
 ## Verification note
 
 Historical Wave-0 full-suite checkpoint (832/832 across 60 files) is not the
-current P0–P7 claim. Dirty-tree aggregate **171** / **1,925** + clean build is
-real evidence for the uncommitted integration tree, but it does **not**
-substitute for committed-HEAD re-proof. Do not treat handoff commit `860688c` as
-a completed release candidate. Resume from
+current P0–P7 claim. The current local result is the committed required-cgroup
+aggregate **171** / **1,927** plus clean build, source smoke, exact tarball and
+Chrome lifecycle. Publication still requires real native receipts. Resume from
 [docs/implementation-status.md](../../../docs/implementation-status.md).

@@ -32,10 +32,10 @@ the worktree/toolchain and safety foundations. **Current status (handoff):**
 | P4 | Harness adapter registry | **Implemented** (release receipts open) — registry product-integrated; OpenCode characterization exists with hardened fixture/required-host tests but real release receipt needs designated runner + exact binary + live credential; Pi/Grok still typed unavailable (no release receipt); ordinary OpenCode/Pi/Grok refuse before mutation; publish path fail-closed until distinct same-runner receipts |
 | P5 | Live observability through P1’s event transport | **Implemented** — control room / transcript path (focused **125/125**) |
 | P6 | Multi-repository execution + product docs/ADRs | **Product-integrated** — strict config/validation, CLI run route, ControlStore facts/views, authority, DAG/scheduler, worktree groups, contained transport/settlement, publication bridge, read isolation, crash recovery, real product E2Es (authority **21/21**, orchestration **12/12**, product/recovery/verifier **6/6**, publication/SCM/integration **13/13**) |
-| P7 | Identity / packaging / browser / release proof | Local dirty-tree gates **green** (aggregate **171**/ **1,925**, source smoke, exact preview tarball, packed Chrome **150.0.7871.128**); release readiness **not** complete until integration commit + committed-HEAD rerun/push; **no** tag/publish/rename/native receipt |
+| P7 | Identity / packaging / browser / release proof | Local committed gates **green** (aggregate **171** / **1,927**, contained source smoke, exact preview tarball, packed Chrome **150.0.7871.128**); publish remains fail-closed until real same-runner native receipts; **no** tag/publish/rename |
 
-Last pushed handoff commit remains `860688c55207be051431d470b44b038025a12e5c`;
-the large integration tree is dirty/uncommitted beyond that checkpoint.
+Product integration landed at `5880b008d81c20f746f728ef83d736306d546d81`;
+the verified release-smoke baseline is `198aa44a192848fe6df1b6f4033e5f6bffc62d89`.
 
 ## Wave 0 — complete (historical)
 
@@ -60,9 +60,9 @@ At decision time this wave contained three P0 items:
 
 Historical checkpoint note (Wave 0 era): typecheck/build and an earlier full
 host suite (832/832 across 60 files) passed after the streaming-slab repair.
-That aggregate is **not** the current P0–P7 dirty-tree or committed-HEAD claim;
-see [implementation-status.md](docs/implementation-status.md) for the current
-dirty-tree **171** files / **1,925** tests + clean build result.
+That aggregate is not the current P0–P7 claim; see
+[implementation-status.md](docs/implementation-status.md) for the committed
+**171** files / **1,927** tests plus clean build result.
 
 ## Wave 1 — finish P0(2) only after an ADR (4 tasks) — complete
 
@@ -181,29 +181,29 @@ At decision time the tasks were:
    browser/API smoke test.
 
 **Current:** P5 focused aggregate **125/125**. Observation failures are
-non-authoritative. Packed real-browser proof under P7 is **GREEN** on dirty tree
-(Chrome **150.0.7871.128**; lifecycle connected → degraded → recovered); must be
-re-proved on committed HEAD.
+non-authoritative. Packed real-browser proof under P7 is **GREEN** on the
+committed candidate (Chrome **150.0.7871.128**; lifecycle connected → degraded
+→ recovered).
 
 Guardrails: no build dependency for the dashboard, no network bind beyond
 loopback, bounded data retention, and no raw credential/config exposure.
 
-## Wave 7 — product documentation, multi-repo, release (historical plan) — nearly complete on dirty tree
+## Wave 7 — product documentation, multi-repo, release (historical plan) — locally complete; native release evidence open
 
 At decision time Wave 7 covered product docs/ADRs. Multi-repository execution
 (ADR 007) and RelayForge identity/release (ADR 008) were later sequenced as P6
 and P7. **Current:**
 
-- ADRs 001–008 exist; P0–P6 implementation is **materially complete** on the
-  dirty tree. See [implementation-status.md](docs/implementation-status.md).
+- ADRs 001–008 exist; P0–P6 implementation is committed and locally verified.
+  See [implementation-status.md](docs/implementation-status.md).
 - Multi-repository is **product-integrated** (not library-only): authority
   **21/21**, orchestration **12/12**, product/recovery/verifier **6/6**,
   publication/SCM/integration **13/13**.
-- P7 local preview/browser/source gates are **green** on the dirty tree:
-  required-cgroup aggregate **171** files / **1,925** tests + clean TypeScript
+- P7 local preview/browser/source gates are **green** on committed source:
+  required-cgroup aggregate **171** files / **1,927** tests + clean TypeScript
   build; source smoke strong-path marker; exact preview
-  `relayforge-1.0.0-rc.1.tgz` (**1,626,928** bytes, SHA-256
-  `618ef91fd72c6a551ce21cd11ad753b5a11458ea5a2468ca75e80328db720b84`); packed
+  `relayforge-1.0.0-rc.1.tgz` (**1,628,899** bytes, SHA-256
+  `bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35`); packed
   Chrome **150.0.7871.128** with DOM rendered and lifecycle connected →
   degraded → recovered (`serviceReplaced` true).
 - Preview defects fixed: public declarations no longer leak implementation-only
@@ -212,9 +212,9 @@ and P7. **Current:**
   already create.
 - **No** tag, npm publish, GitHub release, repository rename, or real native
   receipt has been performed.
-- Final committed-HEAD aggregate/rerun/push is still **pending** (no integration
-  SHA yet). Publish path also remains fail-closed until distinct same-runner
-  OpenCode/Pi/Grok receipts exist.
+- The integration commit and committed-source rerun are complete. The remaining
+  shared handoff action is the branch push. Publication stays fail-closed until
+  distinct same-runner OpenCode/Pi/Grok receipts exist.
 
 ## Slice discipline
 

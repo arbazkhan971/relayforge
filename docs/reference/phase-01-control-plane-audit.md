@@ -1,7 +1,7 @@
 # Phase 01 reference audit: durable local control plane
 
 Date: 2026-08-09
-Status: research and implementation gates passed; P1 implemented (focused 210/210). Final committed-HEAD aggregate still pending — see [implementation-status.md](../implementation-status.md).
+Status: research and implementation gates passed; P1 implemented (focused 210/210) and included in the green committed release-candidate aggregate — see [implementation-status.md](../implementation-status.md).
 Local baseline: `997763e3d5e019b737ab704e69ec11a34c7c3592`
 
 This audit records the required source-level comparison before RelayForge P1

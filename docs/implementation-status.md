@@ -1,179 +1,158 @@
-# RelayForge implementation status and handoff
+# RelayForge implementation status and release handoff
 
 Last updated: 2026-08-09 UTC
 
-This is the operational handoff for the RelayForge completion campaign. It is
-deliberately honest about unfinished release gates. Product behavior and safety
+This is the canonical resume surface for the RelayForge completion campaign.
+It separates locally verified release engineering from evidence that can only be
+collected on the designated native-adapter runner. Product behavior and safety
 claims remain governed by the code, tests, ADRs, and phase reference audits.
 
-**Canonical shareable handoff tracker.** Use this document as the single resume
-surface for release blockers versus operator-only external actions.
+## Executive status
+
+RelayForge engineering is approximately **9/10 complete**. P0 through P7 are
+implemented and the local committed release-candidate path is green. The branch
+is not publishable yet because the fail-closed release workflow requires three
+real, same-runner native-adapter receipts; those receipts have not been
+collected, Pi and Grok production characterization remains typed unavailable,
+and OpenCode requires the designated runner, exact installed binary, and a live
+credential.
+
+No tag, npm publication, GitHub Release, or repository rename has been
+performed. Those remain explicit operator actions, not implied follow-ons from
+this handoff.
 
 ## Repository state
 
 | Item | Value |
 | --- | --- |
 | Working branch | `agent/loop-engineering-hardening` |
-| Remote checkpoint | `origin/agent/loop-engineering-hardening` |
-| Last pushed handoff commit | `860688c55207be051431d470b44b038025a12e5c` (`860688c` — `docs: add RelayForge implementation handoff`) |
-| Package candidate identity | `relayforge@1.0.0-rc.1` |
-| Integration commit on committed HEAD | **Not created** — large integration source tree is dirty/uncommitted beyond `860688c`; no final integration SHA exists yet |
-| Tag / npm publish / GitHub release / repository rename | **None performed** |
-| Real native provider receipts | **None collected** (OpenCode/Pi/Grok release receipts remain open) |
+| Product integration commit | `5880b008d81c20f746f728ef83d736306d546d81` (`feat: complete RelayForge control plane integration`) |
+| Stabilization commits | `3b6f78f2b89f0b4430e9f24cd535d3efa29e6e26`, `a0a877fcf4d67445a56656a88b653e7141082313` |
+| Verified product/release-smoke commit | `198aa44a192848fe6df1b6f4033e5f6bffc62d89` |
+| Previous remote handoff checkpoint | `860688c55207be051431d470b44b038025a12e5c` |
+| Package candidate | `relayforge@1.0.0-rc.1` |
+| Tag / npm publish / GitHub Release / repository rename | **Not performed** |
+| Real native-adapter receipts | **Not collected** |
 
-Do not treat `860688c` as the completed release-candidate product tree. It is
-only the last pushed documentation handoff checkpoint on the branch. Final
-committed-HEAD gates remain pending until the integration commit lands and is
-re-proved clean.
+The previous remote checkpoint contains the earlier documentation handoff. The
+closing branch push carries this document and the verified commits; after
+fetching, use `git rev-parse HEAD` rather than treating `860688c` as the product
+tree.
 
 ## Phase status
 
-| Phase | Capability | Status | Current evidence |
+| Phase | Capability | Status | Evidence |
 | --- | --- | --- | --- |
-| P0 | Worktree provisioning and baseline streaming repair | Implemented | Provision matrix **99/99**; six-million-frame path reduced from about 24.2 s to about 3.2 s in direct characterization |
-| P0.2 | Delegated verifier cgroup jail | Implemented | Required-host **21/21**; nested production-jail suites **46/46** and **193/193** with zero skips; exact cgroup/no-leak characterization on the required host |
-| P1 | Durable SQLite control plane, loopback HTTP/SSE, dashboard, migration, cutover | Implemented | Control plane, store, protocol, service, dashboard, and cutover focused suites green; prior focused aggregate **210/210** |
-| P2 | Parent-owned future-boundary steering | Implemented | Actual CLI live steering E2E **1/1** on bwrap+cgroup with exact cgroup/no-leak proof; adjacent steering/authority **25/25** |
-| P3 | SCM publication, CI/review observation, reaction bridge | **Product-integrated** | P3 focused aggregate **155/155**; explicit SCM/P6 publication config drives recoverable publication, parent polling, durable observations, and reaction-to-P2 steering. Unconfigured runs perform no remote publication |
-| P4 | Capability adapter registry and native OpenCode/Pi/Grok adapters | Implemented (release receipts open) | Registry, codecs, routes, and fail-closed native policy are product-integrated. OpenCode production characterization exists with hardened fixture/required-host tests; a real release receipt still needs the designated runner, exact installed binary, and live credential. Pi and Grok production characterizations remain **typed unavailable** and emit **no** release receipt. Ordinary OpenCode/Pi/Grok product execution currently **refuses before run/control/worktree mutation** because product evidence injection is intentionally not supported yet. The publishable release workflow requires distinct same-runner OpenCode, Pi, and Grok receipts and remains **fail-closed** |
-| P5 | Transcript ingestion, live control room, reconnect/degraded handling | Implemented | P5 focused aggregate **125/125**; observation failures are non-authoritative and capacity is released |
-| P6 | Multi-repository scheduling, isolation, recovery, integration, publication | **Product-integrated** | Strict config/validation, actual CLI run route, canonical ControlStore facts/views, exact repository-set authority, DAG and scheduler, all-or-nothing worktree group, worker/verification through the canonical contained transport and settlement path, vector integration, publication bridge, exact read isolation, durable crash recovery, and real product E2Es. Focused counts: authority **21/21**; orchestration **12/12**; product/recovery/verifier **6/6**; publication/SCM/integration **13/13** |
-| P7 | RelayForge identity, packaging, workflow, browser/release proof | Local gates green; release commit pending | Identity/package/release foundations present. Required-cgroup dirty-tree aggregate, source smoke, exact preview tarball, and packed real-browser gate are **GREEN** (see below). Release readiness is **not** complete until the integration commit and full committed-HEAD rerun/push |
+| P0 | Worktree provisioning and streaming repair | Implemented | Provision matrix **99/99**; six-million-frame direct characterization improved from about 24.2 s to about 3.2 s |
+| P0.2 | Delegated verifier cgroup jail | Implemented | Required-host **21/21**; production-jail **46/46** and **193/193**, zero skips, exact settlement/no-leak proof |
+| P1 | Durable SQLite control plane, HTTP/SSE, dashboard, migration and cutover | Implemented | Focused control-plane aggregate **210/210** |
+| P2 | Parent-owned future-boundary steering | Implemented | Actual CLI live E2E **1/1** on bwrap+cgroup; adjacent steering/authority **25/25**; exact process/cgroup cleanup |
+| P3 | SCM publication, CI/review observation and reaction bridge | Product-integrated | Focused **155/155**; explicit SCM/P6 publication config drives recoverable publication, parent polling, durable observations and reaction-to-P2; unconfigured runs make no remote publication |
+| P4 | Capability adapter registry and OpenCode/Pi/Grok adapters | Implemented; native release receipts open | Registry, codecs, bounded routes and fail-closed policy are integrated. OpenCode characterization exists; Pi and Grok production characterization is typed unavailable. Ordinary structured-native execution refuses before run/control/worktree mutation when product evidence is absent |
+| P5 | Transcript ingestion and live control room | Implemented | Focused **125/125**; observations remain non-authoritative; reconnect degrades and recovers explicitly |
+| P6 | Multi-repository scheduling, isolation, recovery, integration and publication | Product-integrated | Authority **21/21**; orchestration **12/12**; product/recovery/verifier **6/6**; publication/SCM/integration **13/13**; real isolation and SIGKILL recovery paths |
+| P7 | RelayForge identity, package, workflow and browser/release proof | Local committed gates green | Full required-cgroup aggregate, contained source smoke, exact packed artifact and real Chrome lifecycle are green; publish remains blocked on real native receipts |
 
-## Dirty-tree verification evidence (not committed-HEAD)
+## Committed release-candidate verification
 
-These results were recorded on the **current dirty integration tree**, not on a
-clean committed HEAD. They prove material completeness of the uncommitted work
-but do **not** substitute for the final committed-HEAD matrix.
+These are committed-tree results, not a dirty-worktree preview.
 
 | Gate | Result |
 | --- | --- |
-| Required-cgroup aggregate | **GREEN** — **171** test files, **1,925** tests passed, then a clean TypeScript build |
-| Environment | Node **v20.20.2**, npm **10.8.2**, Linux **6.17.0-1021-gcp**, bwrap **0.9.0** |
-| Required-cgroup source smoke | **GREEN** — printed exact strong-path marker `SMOKE PASS (contained host — verified delivery on the run branch)`; execute completed, feature stayed on the run branch, original checkout unchanged |
-| Exact preview artifact | **GREEN** — deterministic `relayforge-1.0.0-rc.1.tgz`, **1,626,928** bytes, SHA-256 `618ef91fd72c6a551ce21cd11ad753b5a11458ea5a2468ca75e80328db720b84` |
-| Exact preview deep smoke | **GREEN** — clean lifecycle-script install, better-sqlite3 native binding load, public ESM and external TypeScript consumer, forbidden authority exports, canonical init/dry run, legacy `loop.config` plus existing `.loop` adoption in place, control service start/status/stop, packed Markdown link closure, unchanged checkouts |
-| Packed real-browser gate | **GREEN** on Google Chrome **150.0.7871.128** — bounded result: `schemaVersion` 1, `packageName` relayforge, `version` 1.0.0-rc.1, `fixtureRun` browserfixture, DOM rendered, lifecycle **connected → degraded → recovered**, `serviceReplaced` true |
+| Required-cgroup aggregate | **GREEN** — **171** test files, **1,927** tests, TypeScript and build green |
+| Environment | Node **v20.20.2**, npm **10.8.2**, Linux **6.17.0-1021-gcp**, Bubblewrap **0.9.0** |
+| Required-cgroup source smoke | **GREEN** — exact marker `SMOKE PASS (contained host — verified delivery on the run branch)`; `done`; feature only on the run branch; original checkout unchanged |
+| Exact preview tarball | **GREEN** — `relayforge-1.0.0-rc.1.tgz`, **1,628,899** bytes, SHA-256 `bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35` |
+| Packed deep smoke | **GREEN** — deterministic pack, packed Markdown link closure, clean lifecycle install, `better-sqlite3` native load, public ESM/external TypeScript, forbidden authority exports, canonical init/dry-run, legacy config plus existing `.loop` adoption, and control start/status/stop |
+| Packed real-browser gate | **GREEN** — Google Chrome **150.0.7871.128**; DOM rendered; lifecycle **connected → degraded → recovered**; service instance replaced |
+| Workspace hygiene | Generated preview moved outside the repository; no test process, disposable worktree, cgroup, socket, or temporary release artifact retained in the source tree |
 
-### Preview defects found and fixed (dirty tree)
+Release testing found and fixed four concrete issues before this checkpoint:
 
-The exact preview surfaced two release-artifact defects that were fixed in the
-integration tree before the green preview/browser results above:
+1. implementation-only `better-sqlite3` types leaked into public declarations;
+2. packed smoke synchronously waited on `serve stop` while owning the child it
+   needed to reap;
+3. legacy adoption tried to recreate an init-owned `.loop` directory; and
+4. source smoke generated nondeterministic verifier output despite requesting
+   two stable runs.
 
-1. Implementation-only `better-sqlite3` types no longer leak into public
-   declarations.
-2. The smoke harness asynchronously runs `serve stop` so it can reap the owned
-   service child.
-3. The legacy `.loop` fixture now adopts the directory init may already create.
+The release-workflow test now rejects the nondeterministic verifier tokens, and
+the committed source smoke proves the strong contained branch.
 
-## Completed architectural guarantees (landed in source)
+## Native-adapter release boundary
 
-These capabilities exist in the current source tree. They are not “planned”:
+The product and release workflow fail closed here. Do not weaken this boundary
+or invent evidence.
 
-- Canonical run facts live in a run-scoped SQLite event history with explicit
-  projections, sequence and generation fences, transactional compare-and-swap,
-  snapshots, integrity checks, and crash recovery (`src/control/`).
-- Agent execution uses isolated worktrees, parent-owned sandboxing, exact
-  process/cgroup settlement, bounded transcripts, and deterministic replay.
-- Verifier cgroup delegation is behaviorally proved on capable Linux hosts; it
-  fails closed on unsupported hosts (`src/cgroup-delegation*.ts`, ADR 001).
-- Steering is accepted only by the live parent and enters a later immutable
-  attempt prompt. It never uses terminal key injection or direct SQLite writes
-  (`src/steering/`, ADR 003). Actual CLI live steering E2E is **1/1** with
-  adjacent **25/25** and exact cgroup/no-leak proof on the required path.
-- SCM publication, observation, reconciliation, and reaction bridging are
-  durable parent-owned runtime behavior (`src/scm/`, ADR 004). Explicit SCM/P6
-  publication config drives recoverable branch/PR publication and background
-  polling; unconfigured runs perform no remote publication.
-- Multi-repository scheduling, isolation, recovery, integration, and publication
-  are **product-integrated**: strict config/validation, actual CLI run route,
-  canonical ControlStore facts/views, exact repository-set authority, DAG and
-  scheduler, all-or-nothing worktree group, worker/verification through the
-  canonical contained transport and settlement path, vector integration,
-  publication bridge, exact read isolation, durable crash recovery, and real
-  product E2Es (`src/multirepo/`, ADR 007).
-- Observability / control room is derived and non-authoritative: ingestion or
-  presentation failure cannot change provider, task, verification, or settlement
-  truth (`src/observability/`, `src/control-room/`, ADR 006).
-- Adapter registry and native OpenCode/Pi/Grok descriptors share the same bounded
-  transport, transcript, cancellation, and settlement path. No descriptor can
-  spawn or mint authority (`src/adapters/`, ADR 005).
-- RelayForge intentionally does not expose Grok persistent auto-approval
-  (`--yolo`/`--always-approve`). Worker permissions are parent-mediated,
-  one-request `allow_once`; reviewer permissions are denied.
+- **OpenCode:** the production characterization path exists and is hardened by
+  contained fixtures. A real release receipt still requires the designated
+  runner, the exact inspected executable, and a live credential.
+- **Pi:** production characterization remains typed unavailable and writes no
+  receipt.
+- **Grok:** production characterization remains typed unavailable and writes no
+  receipt. RelayForge does not expose persistent auto-approval; worker
+  permissions remain parent-mediated and one-request only.
+- The publishable workflow requires distinct same-runner OpenCode, Pi and Grok
+  receipts bound to the exact checkout, runtime identities, containment,
+  settlement and artifact. Missing evidence is a hard release refusal, never a
+  skip.
 
-## Release blockers vs external actions
+This boundary means the local package is a verified preview candidate, not an
+authorized npm/GitHub release.
 
-### Release blockers (must clear before an RC is honest)
+## Completed architectural guarantees
 
-1. **Integration commit does not exist yet**
-   - Large P0–P7 product integration remains dirty/uncommitted beyond
-     `860688c`.
-   - No final integration SHA exists. Final committed-HEAD gates cannot be
-     claimed until one reviewed integration commit lands and is re-proved.
-2. **Native adapter release receipts (fail-closed publish path)**
-   - **OpenCode:** production characterization exists and has hardened
-     fixture/required-host tests, but a real release receipt needs the
-     designated runner, exact installed binary, and live credential.
-   - **Pi:** production characterization is still **typed unavailable** and
-     emits **no** release receipt.
-   - **Grok:** production characterization is still **typed unavailable** and
-     emits **no** release receipt.
-   - Ordinary OpenCode/Pi/Grok product execution currently **refuses before**
-     run/control/worktree mutation because product evidence injection is
-     intentionally not supported yet.
-   - The publishable release workflow requires **distinct same-runner**
-     OpenCode, Pi, and Grok receipts, so it remains **fail-closed**.
-3. **Final committed-HEAD aggregate / push**
-   - After the integration commit: rerun full aggregate, source smoke, focused
-     strong gates, exact preview + Chrome, and clean-tree scans on that clean
-     HEAD; then push.
+- Canonical run facts live in run-scoped SQLite event history with projections,
+  sequence/generation fences, transactional compare-and-swap, snapshots,
+  integrity checks and recovery (`src/control/`).
+- Provider and verifier execution use isolated worktrees, parent-owned
+  filesystem capability allowlists, Bubblewrap, delegated cgroup v2,
+  authenticated launch and settlement, bounded transcripts and deterministic
+  replay.
+- Steering appends only through the live parent and enters a future immutable
+  prompt; it never injects terminal input or writes SQLite directly
+  (`src/steering/`, ADR 003).
+- SCM publication/observation/reaction is durable parent behavior, with
+  credentials retained by the parent and no inferred remote plan (`src/scm/`,
+  ADR 004).
+- Multi-repository work is product-integrated through strict config, exact
+  repository-set authority, a DAG scheduler, all-or-nothing worktree groups,
+  canonical contained worker/verifier transport, vector integration,
+  publication reconciliation and crash recovery (`src/multirepo/`, ADR 007).
+- Observability is bounded and non-authoritative; ingestion or presentation
+  failure cannot change provider, task, verification or settlement truth
+  (`src/observability/`, `src/control-room/`, ADR 006).
+- Adapter descriptors are pure data and cannot spawn, widen containment or mint
+  settlement authority (`src/adapters/`, ADR 005).
 
-### External actions (operator authority only; not release-engineering code work)
+## Handoff sequence
 
-These have **not** been performed and are not implied by source readiness:
+1. Fetch or push `agent/loop-engineering-hardening` as appropriate and verify
+   the remote branch contains the product integration and stabilization commits.
+2. On the designated Linux runner, install/pin the exact OpenCode, Pi and Grok
+   runtimes and credentials without sharing one provider's secret with another.
+3. Run the same-job collector/consumer path for all three adapters. Preserve
+   only the digest-bound receipt bundle; never upload raw evidence or secrets.
+4. Run the publishable artifact workflow. It must repeat the cgroup/strong
+   backend gates and bind the three receipts to the exact tarball.
+5. Only with explicit operator authorization after every gate is green: create
+   an RC tag, publish npm, create a GitHub Release, or rename the repository.
 
-- `git tag` for an RC or release
-- `npm publish` of `relayforge`
-- GitHub Release creation
-- Repository rename (product identity may be RelayForge in source without any
-  remote rename)
-- Real native provider receipt collection on the designated runner
-
-Publishing steps remain in [publishing.md](publishing.md) and require explicit
-operator authority after committed-HEAD gates are green **and** distinct
-same-runner OpenCode/Pi/Grok receipts exist.
-
-## Required final gate
-
-Run from a **clean committed** checkout of the integration commit (not a dirty
-shared worktree):
+For a local recheck from the pushed branch:
 
 ```bash
-git status --short   # must be clean for the RC claim
+git status --short
 git diff --check
-# Case-insensitive excluded-product-name scan across source/docs/workflows
-# (must return zero matches; see publishing runbook for the exact pattern)
 npm ci
-npm run typecheck
-npm test
-npm run build
-npm run smoke
+RELAYFORGE_TEST_REQUIRE_CGROUP=1 npm run validate
+RELAYFORGE_TEST_REQUIRE_CGROUP=1 npm run smoke
+node scripts/release-artifact.mjs --preview --output .preview-final
+node scripts/smoke-packed-dashboard.mjs \
+  --tarball .preview-final/relayforge-1.0.0-rc.1.tgz
 ```
 
-On the designated Linux runner, also require:
-
-- cgroup required-host gate (no skip conversion)
-- full strong-backend validation / contained-success source smoke
-- real P2 CLI live steering journey with fallback forbidden
-- OpenCode/Pi/Grok collector/consumer with real designated-runner receipts
-  (exact installed binary + live credential where required)
-- packed real-browser gate (already green on dirty tree; must re-prove on
-  committed HEAD)
-- exact tarball verification and clean-install smoke (already green on dirty
-  tree; must re-prove on committed HEAD)
-
-Do not convert missing tools, credentials, or containment into skips.
+Do not convert an unavailable runtime, missing credential or absent containment
+capability into a successful result.
 
 ## Reference and design index
 
@@ -193,47 +172,3 @@ Do not convert missing tools, credentials, or containment into skips.
 - [P5 observability audit](reference/phase-05-live-observability-audit.md)
 - [P6 multi-repository audit](reference/phase-06-multi-repository-audit.md)
 - [P7 release audit](reference/phase-07-release-audit.md)
-
-## Exact remaining-action sequence
-
-1. **Do not** tag, publish, rename, or invent native receipts.
-2. **Inspect/stage** the dirty integration tree for one reviewed integration
-   commit of the complete product tree on `agent/loop-engineering-hardening`.
-3. **Create the integration commit** (no final integration SHA exists yet).
-4. **Rerun the full committed-HEAD matrix** on that clean HEAD:
-   - required-cgroup aggregate (expect parity with dirty-tree **171** files /
-     **1,925** tests + clean TypeScript build)
-   - required-cgroup source smoke (strong-path marker)
-   - focused strong gates as needed
-   - exact preview tarball + deep smoke
-   - packed real-browser Chrome gate
-   - clean-tree / excluded-name scans
-5. **Push** the branch with the integration commit.
-6. **Separately**, implement and collect real **Pi**, **Grok**, and **OpenCode**
-   same-runner release receipts (designated runner, exact installed binary, live
-   credential where required) **before any** tag or npm publish.
-7. Only with explicit operator authority after steps 4–6: tag, npm publish,
-   GitHub Release, or repository rename.
-
-### Focused verification commands (optional before full suite)
-
-Do not treat these as a substitute for the committed-HEAD aggregate:
-
-```bash
-# P2 live steering E2E (required-host / bwrap+cgroup path)
-npx vitest run tests/steering-cli-run-e2e.test.ts
-
-# P6 product-integrated slices (as previously recorded)
-npx vitest run tests/multirepo-authority.test.ts \
-  tests/multirepo-orchestration.test.ts \
-  tests/multirepo-product-recovery.test.ts \
-  tests/multirepo-product.test.ts \
-  tests/multirepo-verifier-authority.test.ts \
-  tests/multirepo-publication.test.ts \
-  tests/multirepo-integration.test.ts \
-  tests/scm-multirepo-bridge.test.ts
-
-# OpenCode collector / focused adapter path (real receipt only on designated
-# runner with exact binary + live credential; never invent receipts)
-npx vitest run tests/adapter-collector.test.ts tests/adapter-opencode.test.ts
-```

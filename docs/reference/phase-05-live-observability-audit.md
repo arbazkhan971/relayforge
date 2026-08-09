@@ -5,10 +5,9 @@ Every external reference is pinned to an immutable commit. The detailed
 implementation packet is in the workflow audit; this document records the
 public decision and evidence.
 
-**Implementation status (handoff):** P5 implemented (focused 125/125). See
-[implementation-status.md](../implementation-status.md). Packed headless-Chrome
-proof is tracked separately as
-`PACKED_CHROME_BROWSER_GATE_FINAL_UPDATE: IN PROGRESS`.
+**Implementation status (handoff):** P5 implemented (focused 125/125). The
+exact packed candidate also passed the real Chrome connected → degraded →
+recovered lifecycle. See [implementation-status.md](../implementation-status.md).
 
 ## Chosen design
 

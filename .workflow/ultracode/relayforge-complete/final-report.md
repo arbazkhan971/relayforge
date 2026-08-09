@@ -1,80 +1,59 @@
-# Final report (interim handoff)
+# Final report and release handoff
 
-**Status:** campaign not complete for RC publication. P0–P6 implementation is
-materially complete on the dirty integration tree; P7 local preview/browser/source
-gates are green on that dirty tree. Release readiness is **not** complete until
-the integration commit and full committed-HEAD rerun/push, plus real native
-receipts. This is an honest interim handoff — **not** a claim that the
-definition of done is satisfied.
+**Status:** P0–P7 implementation is committed and the local release-candidate
+matrix is green. The campaign is complete for local engineering and handoff,
+but not for publication: the release workflow still requires real same-runner
+OpenCode, Pi and Grok receipts. No tag, npm publication, GitHub Release or
+repository rename has been performed.
 
-Live tracker: [docs/implementation-status.md](../../../docs/implementation-status.md)
+Canonical tracker: [docs/implementation-status.md](../../../docs/implementation-status.md)
 
 ## Repository
 
 | Item | Value |
 | --- | --- |
 | Branch | `agent/loop-engineering-hardening` |
-| Last pushed handoff commit | `860688c55207be051431d470b44b038025a12e5c` (`docs: add RelayForge implementation handoff`) |
+| Product integration | `5880b008d81c20f746f728ef83d736306d546d81` |
+| Stabilization | `3b6f78f2b89f0b4430e9f24cd535d3efa29e6e26`, `a0a877fcf4d67445a56656a88b653e7141082313` |
+| Verified release-smoke baseline | `198aa44a192848fe6df1b6f4033e5f6bffc62d89` |
 | Package candidate | `relayforge@1.0.0-rc.1` |
-| Integration commit of full P0–P7 tree | **not created** (dirty shared worktree beyond handoff; no final integration SHA) |
-| Tag / npm publish / GitHub release / repo rename | **none performed** |
-| Real native provider receipts | **none collected** |
+| Last pre-product remote handoff | `860688c55207be051431d470b44b038025a12e5c` |
+| Tag / publish / release / rename | None |
+| Native receipts | None |
 
-## Capability summary (source evidence)
+## Capability result
 
-| Area | Claim |
+| Area | Result |
 | --- | --- |
 | P0 provisioning | **99/99** |
-| P0.2 cgroup jail | required-host **21/21**; nested **46/46** + **193/193**; exact cgroup/no-leak |
+| P0.2 delegated cgroup | required-host **21/21**; nested **46/46** + **193/193** |
 | P1 control plane | implemented; focused **210/210** |
-| P2 steering | CLI live E2E **1/1**; adjacent **25/25**; exact cgroup/no-leak |
-| P3 SCM | product-integrated for explicit SCM/P6 publication config; focused **155/155**; recoverable publication, parent polling, reaction-to-P2 |
-| P4 adapters | product-integrated; OpenCode characterization exists with hardened fixture/required-host tests; real release receipt needs designated runner + exact binary + live credential; Pi/Grok **typed unavailable** (no release receipt); ordinary OpenCode/Pi/Grok **refuse before** mutation; publish path **fail-closed** until distinct same-runner receipts |
+| P2 steering | real CLI E2E **1/1**; adjacent **25/25**; exact cgroup/no-leak |
+| P3 SCM | product-integrated; focused **155/155** |
+| P4 adapters | registry/routes integrated; OpenCode release receipt needs designated exact runtime + credential; Pi/Grok production characterization typed unavailable; publish fail-closed |
 | P5 control room | implemented; focused **125/125** |
-| P6 multi-repo | **product-integrated** (not library-only); authority **21/21**; orchestration **12/12**; product/recovery/verifier **6/6**; publication/SCM/integration **13/13** |
-| P7 release proof | dirty-tree gates **green** (see below); final committed-HEAD aggregate **pending** |
+| P6 multi-repository | product-integrated; authority **21/21**; orchestration **12/12**; product/recovery/verifier **6/6**; publication/SCM/integration **13/13** |
+| P7 local release proof | committed required-cgroup aggregate, source smoke, exact packed artifact and real Chrome lifecycle green |
 
-## Dirty-tree verification (not committed HEAD)
+## Final local verification
 
 | Gate | Result |
 | --- | --- |
-| Required-cgroup aggregate | **GREEN** — **171** test files, **1,925** tests passed, clean TypeScript build |
-| Environment | Node **v20.20.2**, npm **10.8.2**, Linux **6.17.0-1021-gcp**, bwrap **0.9.0** |
-| Source smoke | **GREEN** — `SMOKE PASS (contained host — verified delivery on the run branch)`; execute completed; feature on run branch; checkout unchanged |
-| Exact preview tarball | **GREEN** — `relayforge-1.0.0-rc.1.tgz`, **1,626,928** bytes, SHA-256 `618ef91fd72c6a551ce21cd11ad753b5a11458ea5a2468ca75e80328db720b84` |
-| Packed Chrome gate | **GREEN** — Chrome **150.0.7871.128**; schemaVersion 1; packageName relayforge; version 1.0.0-rc.1; fixtureRun browserfixture; DOM rendered; connected → degraded → recovered; serviceReplaced true |
+| Required-cgroup aggregate | **171** files / **1,927** tests; TypeScript/build green |
+| Environment | Node **v20.20.2**; npm **10.8.2**; Linux **6.17.0-1021-gcp**; Bubblewrap **0.9.0** |
+| Source smoke | exact contained-success marker; `done`; feature only on run branch; checkout unchanged |
+| Preview tarball | `relayforge-1.0.0-rc.1.tgz`; **1,628,899** bytes; SHA-256 `bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35` |
+| Packed smoke | clean install/native binding, public ESM/types, closed exports, canonical + legacy config, control lifecycle and Markdown links |
+| Browser | Chrome **150.0.7871.128**; DOM rendered; connected → degraded → recovered; service replaced |
 
-Preview defects fixed before the green results above: better-sqlite3 types no
-longer leak into public declarations; smoke harness asynchronously runs
-`serve stop` to reap the owned service child; legacy `.loop` fixture adopts the
-directory init may already create.
+## Remaining boundary
 
-## Remaining verification gaps
+The closing branch push makes this handoff available to other engineers. A
+publishable release additionally requires distinct real OpenCode/Pi/Grok
+receipt collection on the designated runner. Pi and Grok currently return a
+typed unavailable result and emit no receipt; OpenCode requires the exact
+installed executable and a live credential. Missing evidence remains a hard
+refusal.
 
-### Release blockers
-
-1. **Integration commit** — inspect/stage dirty tree; create one reviewed commit
-   of the complete product tree (no final integration SHA yet).
-2. **Committed-HEAD re-proof** — full aggregate, source smoke, focused strong
-   gates, exact preview + Chrome, clean-tree scans; then push.
-3. **Native release receipts** — separately implement and collect real Pi, Grok,
-   and OpenCode same-runner receipts (designated runner, exact installed binary,
-   live credential where required) **before any** tag or publish. Ordinary
-   product execution currently refuses before mutation; publish workflow remains
-   fail-closed without those three receipts.
-
-### External actions (operator only)
-
-- Tag, npm publish, GitHub Release, repository rename — **none performed**; not
-  implied by dirty-tree readiness.
-- Real native receipts — **none performed**.
-
-## Resume
-
-Exact order and commands: [docs/implementation-status.md](../../../docs/implementation-status.md)
-(section **Exact remaining-action sequence** and **Required final gate**).
-
-When the definition of done is actually satisfied, replace this interim report
-with committed-HEAD verification evidence, a final integration SHA, and real
-native receipts. Until then, do not invent success for committed-HEAD aggregates,
-publication, or native release receipts.
+Only an authorized operator may tag, publish npm, create a GitHub Release or
+rename the repository after those external gates pass.

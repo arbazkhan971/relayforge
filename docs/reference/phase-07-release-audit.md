@@ -6,10 +6,11 @@ source-tree evidence log is
 and is intentionally not packaged. The shipped provenance summary is in the
 [upstream ledger](../upstream-sources.md).
 
-**Implementation status (handoff):** identity/package foundations implemented.
-`PACKED_CHROME_BROWSER_GATE_FINAL_UPDATE: IN PROGRESS` (peer worker). Final
-committed-HEAD aggregate pending. **No** tag, npm publish, GitHub release, or
-repository rename has been performed. Live tracker:
+**Implementation status (handoff):** identity/package foundations implemented;
+the committed local candidate passed the required-cgroup aggregate, exact
+preview package smoke and packed Chrome connected/degraded/recovered lifecycle.
+Publication remains fail-closed until real same-runner native receipts exist.
+**No** tag, npm publish, GitHub Release or repository rename has been performed. Live tracker:
 [implementation-status.md](../implementation-status.md).
 
 ## Decision

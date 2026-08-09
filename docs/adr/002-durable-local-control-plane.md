@@ -1,6 +1,6 @@
 # ADR 002: durable local control plane
 
-- Status: Accepted and implemented (P1 focused suites green; final committed-HEAD aggregate still pending — see [implementation-status.md](../implementation-status.md))
+- Status: Accepted and implemented (P1 focused suites and the committed release-candidate aggregate are green — see [implementation-status.md](../implementation-status.md))
 - Date: 2026-08-09
 - Decision owners: RelayForge maintainers
 - Research gate: [Phase 01 control-plane audit](../reference/phase-01-control-plane-audit.md)

@@ -1,6 +1,6 @@
 # ADR 008: RelayForge identity and release authority
 
-Status: Accepted; identity/package foundations implemented. Packed Chrome/browser gate IN PROGRESS (`PACKED_CHROME_BROWSER_GATE_FINAL_UPDATE`). No tag, npm publish, GitHub release, or repository rename performed. Final committed-HEAD aggregate pending — see [implementation-status.md](../implementation-status.md).
+Status: Accepted and implemented. The committed local candidate passed the required-cgroup aggregate, exact package smoke and packed Chrome lifecycle. Publication remains fail-closed until real same-runner native-adapter receipts exist. No tag, npm publish, GitHub Release or repository rename has been performed — see [implementation-status.md](../implementation-status.md).
 Date: 2026-08-09
 
 ## Context

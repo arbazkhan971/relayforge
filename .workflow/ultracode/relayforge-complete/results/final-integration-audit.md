@@ -576,3 +576,39 @@ campaign cannot claim complete bookkeeping.
    **15/15 + 5/5**, required-host, browser, real Git/worktree, packed-install and
    release-policy matrix on that immutable HEAD before creating a tag
    (RF-RC-08).
+
+# Final handoff reconciliation
+
+Resolution checkpoint: 2026-08-09T20:00:00Z
+
+The preceding text remains the historical audit and first working-tree
+resolution ledger. Product integration later landed at
+`5880b008d81c20f746f728ef83d736306d546d81`, followed by stabilization commits
+`3b6f78f2b89f0b4430e9f24cd535d3efa29e6e26`,
+`a0a877fcf4d67445a56656a88b653e7141082313`, and release-smoke baseline
+`198aa44a192848fe6df1b6f4033e5f6bffc62d89`.
+
+| Finding | Final handoff status | Evidence/disposition |
+| --- | --- | --- |
+| RF-RC-01 | `RESOLVED` | Empty-root repository capabilities, real third-repository denial and strong provider/verifier gates are included in the committed aggregate. |
+| RF-RC-02 | `RESOLVED` | Ledger-attested recovery, both real SIGKILL windows, exact one-launch proof, durable authority acquisition/release and publication ordering are committed and focused gates are green. |
+| RF-RC-03 | `OPEN_NATIVE_EVIDENCE` | The production collector facade and same-runner receipt workflow now exist. OpenCode characterization is implemented, but no real release receipt has been collected; Pi and Grok production characterization remains typed unavailable. |
+| RF-RC-04 | `OPEN_NATIVE_EVIDENCE` | Ordinary structured-native runs refuse before run/control/worktree mutation when product evidence is absent. The publish path correctly refuses until three exact real receipts exist. |
+| RF-RC-05 | `RESOLVED` | P3 product lifecycle, publication bridge, polling and reaction-to-P2 remain integrated and green. |
+| RF-RC-06 | `RESOLVED` | P5 transcript ingestion, metadata-only SSE and control-room lifecycle remain integrated and green. |
+| RF-RC-07 | `RESOLVED` | Authority-free package facade, external TypeScript consumer and forbidden-export checks pass against the exact preview tarball. |
+| RF-RC-08 | `RESOLVED_LOCAL_OPEN_PUBLISH` | Committed required-cgroup aggregate **171 files / 1,927 tests**, source smoke, exact tarball install and Chrome lifecycle are green. Publish-level convergence is intentionally withheld until RF-RC-03/04 obtain real receipts. |
+| RF-RC-09 | `RESOLVED` | Current README, ADR/reference status and canonical implementation tracker match the integrated product and explicitly retain the native-evidence boundary. Packed Markdown links pass. |
+| RF-RC-10 | `RESOLVED` | Campaign state, orchestration, integration log and final report now record the committed phase outcomes, tool/runtime evidence, artifact identity and external actions not performed. |
+
+Exact local package evidence: `relayforge-1.0.0-rc.1.tgz`, **1,628,899** bytes,
+SHA-256
+`bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35`;
+Chrome **150.0.7871.128** rendered and traversed connected → degraded →
+recovered after service replacement. Node **v20.20.2**, npm **10.8.2**, Linux
+**6.17.0-1021-gcp**, Bubblewrap **0.9.0**.
+
+Remaining blockers are deliberately narrow: share/fetch the handoff branch,
+then collect real same-runner OpenCode/Pi/Grok receipts and run the publishable
+artifact workflow. Tagging, npm publication, GitHub Release creation and any
+repository rename remain operator-authorized actions and were not performed.

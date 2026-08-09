@@ -9,19 +9,17 @@ bounded settlement. The primary command and npm package are `relayforge`.
 > phase evidence, release blockers vs external actions, resume order, and what
 > is still incomplete. Prefer that document over any older “planned” prose.
 
-This source tree targets release candidate **1.0.0-rc.1**. Preparing the source
-does **not** mean that an npm package, GitHub release, repository rename, or
-remote tag has been published. Last pushed handoff commit on
-`agent/loop-engineering-hardening` is `860688c55207be051431d470b44b038025a12e5c`;
-the large P0–P7 product integration remains dirty/uncommitted beyond that
-checkpoint, so final committed-HEAD gates remain pending and no final
-integration SHA exists yet. On the dirty tree, required-cgroup aggregate
-(**171** files / **1,925** tests + clean TypeScript build), source smoke, exact
-preview tarball, and packed real-browser Chrome gate are green; release
-readiness still requires the integration commit and full committed-HEAD
-rerun/push, plus real OpenCode/Pi/Grok receipts before any tag or publish.
-Those publication steps are explicit operator actions described in
-[docs/publishing.md](docs/publishing.md).
+This source tree targets release candidate **1.0.0-rc.1**. Product integration
+landed at `5880b008d81c20f746f728ef83d736306d546d81` and the committed local
+candidate passed the required-cgroup aggregate (**171** files / **1,927**
+tests), contained source smoke, exact preview tarball, and packed real-browser
+Chrome lifecycle. Preparing and pushing the source does **not** mean that an npm
+package, GitHub Release, repository rename, or tag has been published. Release
+publication remains fail-closed until real same-runner OpenCode, Pi, and Grok
+receipts exist; Pi and Grok production characterization is still typed
+unavailable, and OpenCode requires the designated runner, exact installed
+binary, and a live credential. Those publication steps are explicit operator
+actions described in [docs/publishing.md](docs/publishing.md).
 
 ## Identity and compatibility
 

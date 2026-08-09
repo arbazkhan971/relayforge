@@ -2,10 +2,16 @@
   "run": "relayforge-complete",
   "baseSha": "66b60821d45466c9c5e15640a48ad3de25919376",
   "branch": "agent/loop-engineering-hardening",
-  "lastPushedHandoffCommit": "860688c55207be051431d470b44b038025a12e5c",
+  "status": "local-engineering-complete-native-release-evidence-open",
+  "lastPushedHandoffCommitBeforeCloseout": "860688c55207be051431d470b44b038025a12e5c",
+  "integrationCommit": "5880b008d81c20f746f728ef83d736306d546d81",
+  "stabilizationCommits": [
+    "3b6f78f2b89f0b4430e9f24cd535d3efa29e6e26",
+    "a0a877fcf4d67445a56656a88b653e7141082313"
+  ],
+  "verifiedProductHead": "198aa44a192848fe6df1b6f4033e5f6bffc62d89",
   "packageCandidate": "relayforge@1.0.0-rc.1",
-  "integrationCommit": null,
-  "note": "P0-P6 material completion and P7 local dirty-tree gates are green on the uncommitted integration tree beyond the last pushed handoff commit 860688c. No final integration SHA exists. No tag, npm publish, GitHub release, repository rename, or real native receipt has been performed. Final committed-HEAD aggregate remains pending.",
+  "note": "P0-P7 implementation is committed and local required-cgroup, source-smoke, exact-package and packed-browser gates are green. Publication remains fail-closed because real same-runner OpenCode, Pi and Grok receipts have not been collected; Pi and Grok production characterization is typed unavailable. No tag, npm publish, GitHub Release or repository rename has been performed.",
   "packets": {
     "discover-base": "done",
     "audit-ao-worktrees": "done",
@@ -29,7 +35,7 @@
     "p2-reference-audit": "done",
     "p2-implementation": "done",
     "p3-reference-audit": "done",
-    "p3-implementation": "done",
+    "p3-implementation": "done-product-integrated",
     "p4-reference-audit": "done",
     "p4-registry-implementation": "done",
     "p4-opencode-characterization": "done-fixture-and-required-host-hardened",
@@ -43,11 +49,10 @@
     "p6-implementation": "done-product-integrated",
     "p7-reference-audit": "done",
     "p7-identity-foundations": "done",
-    "p7-required-cgroup-aggregate-dirty-tree": "green",
-    "p7-required-cgroup-source-smoke-dirty-tree": "green",
-    "p7-exact-preview-artifact-dirty-tree": "green",
-    "p7-packed-chrome-browser-gate": "green",
-    "p7-committed-head-aggregate": "pending",
+    "p7-required-cgroup-aggregate": "green-committed-source",
+    "p7-required-cgroup-source-smoke": "green-committed-source",
+    "p7-exact-preview-artifact": "green-committed-source",
+    "p7-packed-chrome-browser-gate": "green-committed-source",
     "release-tag-publish-rename": "not-performed",
     "real-native-receipts": "not-performed"
   },
@@ -68,48 +73,35 @@
     "p4OrdinaryNativeProductExecution": "refuses-before-run-control-worktree-mutation",
     "p4PublishableReleaseWorkflow": "fail-closed-until-distinct-same-runner-opencode-pi-grok-receipts",
     "p5Focused": "125/125",
-    "p6Status": "product-integrated",
     "p6Authority": "21/21",
     "p6Orchestration": "12/12",
     "p6ProductRecoveryVerifier": "6/6",
     "p6PublicationScmIntegration": "13/13",
-    "p6Capabilities": [
-      "strict-config-validation",
-      "actual-cli-run-route",
-      "canonical-controlstore-facts-views",
-      "exact-repository-set-authority",
-      "dag-and-scheduler",
-      "all-or-nothing-worktree-group",
-      "worker-verification-canonical-contained-transport-settlement",
-      "vector-integration",
-      "publication-bridge",
-      "exact-read-isolation",
-      "durable-crash-recovery",
-      "real-product-e2es"
-    ],
-    "dirtyTreeRequiredCgroupAggregate": {
+    "committedRequiredCgroupAggregate": {
       "status": "green",
       "testFiles": 171,
-      "testsPassed": 1925,
-      "typescriptBuild": "clean",
+      "testsPassed": 1927,
+      "typescriptBuild": "green",
       "node": "v20.20.2",
       "npm": "10.8.2",
       "linux": "6.17.0-1021-gcp",
       "bwrap": "0.9.0"
     },
-    "dirtyTreeRequiredCgroupSourceSmoke": {
+    "committedRequiredCgroupSourceSmoke": {
       "status": "green",
       "marker": "SMOKE PASS (contained host — verified delivery on the run branch)",
       "executeCompleted": true,
       "featureStayedOnRunBranch": true,
       "originalCheckoutUnchanged": true
     },
-    "dirtyTreeExactPreviewArtifact": {
+    "exactPreviewArtifact": {
       "status": "green",
       "tarball": "relayforge-1.0.0-rc.1.tgz",
-      "bytes": 1626928,
-      "sha256": "618ef91fd72c6a551ce21cd11ad753b5a11458ea5a2468ca75e80328db720b84",
+      "bytes": 1628899,
+      "sha256": "bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35",
       "deepSmoke": [
+        "deterministic-pack",
+        "packed-markdown-link-closure",
         "clean-lifecycle-script-install",
         "better-sqlite3-native-binding-load",
         "public-esm-and-external-typescript-consumer",
@@ -117,16 +109,10 @@
         "canonical-init-dry-run",
         "legacy-loop-config-plus-existing-dot-loop-adoption",
         "control-service-start-status-stop",
-        "packed-markdown-link-closure",
         "unchanged-checkouts"
-      ],
-      "defectsFixed": [
-        "implementation-only-better-sqlite3-types-no-longer-leak-into-public-declarations",
-        "smoke-harness-asynchronously-runs-serve-stop-to-reap-owned-service-child",
-        "legacy-dot-loop-fixture-adopts-directory-init-may-already-create"
       ]
     },
-    "dirtyTreePackedChromeBrowserGate": {
+    "packedChromeBrowserGate": {
       "status": "green",
       "chrome": "150.0.7871.128",
       "schemaVersion": 1,
@@ -136,21 +122,20 @@
       "domRendered": true,
       "lifecycle": "connected -> degraded -> recovered",
       "serviceReplaced": true
-    },
-    "finalCommittedHeadAggregate": "pending",
-    "tagNpmPublishGitHubReleaseRepoRename": "not-performed",
-    "realNativeReceipts": "not-performed"
+    }
+  },
+  "externalBoundary": {
+    "branchHandoff": "closing-commit-is-shared-through-origin-branch",
+    "nativeReceipts": "required-before-publishable-artifact",
+    "tagNpmPublishGitHubReleaseRepoRename": "operator-authority-only-not-performed"
   },
   "resume": {
     "tracker": "docs/implementation-status.md",
     "order": [
-      "Do not tag, publish, rename, or invent native receipts",
-      "Inspect/stage the dirty integration tree",
-      "Create one reviewed integration commit of the complete product tree",
-      "Rerun full committed-HEAD aggregate, source smoke, focused strong gates, exact preview + Chrome, clean-tree scans",
-      "Push the branch",
-      "Separately implement and collect real Pi, Grok, and OpenCode same-runner release receipts",
-      "Only with explicit operator authority after the above: tag, npm publish, GitHub Release, or repository rename"
+      "Push agent/loop-engineering-hardening",
+      "Collect real same-runner OpenCode, Pi and Grok receipts on the designated runner",
+      "Run the publishable artifact workflow with exact receipt binding",
+      "Only with explicit operator authority: tag, npm publish, create a GitHub Release or rename the repository"
     ]
   }
 }
