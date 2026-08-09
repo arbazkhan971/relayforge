@@ -10,9 +10,10 @@ claims remain governed by the code, tests, ADRs, and phase reference audits.
 ## Executive status
 
 RelayForge engineering is approximately **9/10 complete**. P0 through P7 are
-implemented and the local committed release-candidate path is green. Contained
-production characterization paths for OpenCode, Pi, and Grok are implemented
-and fixture-backed; Pi and Grok are no longer typed-unavailable locally. The
+implemented and the local committed release-candidate path is green, including
+current-HEAD packed artifact and real-browser proof. Contained production
+characterization paths for OpenCode, Pi, and Grok are implemented and
+fixture-backed; Pi and Grok are no longer typed-unavailable locally. The
 branch is not publishable yet because the fail-closed release workflow requires
 three real, same-runner native-adapter receipts; those receipts have not been
 collected and still require the designated cgroup runner, exact installed
@@ -27,11 +28,11 @@ this handoff.
 | Item | Value |
 | --- | --- |
 | Working branch | `agent/loop-engineering-hardening` |
-| Current HEAD | `b94062430c82bed2236c86ec79855e814fe724d4` (`fix: drain verifier cgroup close race`) |
-| Current commits | `ee93223889c39354f03af330782434b313155097` (harden contained native evidence binding), `de23f74b9da4497842b143922fab4354e64206fd` (contained Pi production characterization), `82c6b32c67c8247deada9cc60cd05a58ed7107cd` (serialized package export typecheck), `a8433debf27a54ce5979c95ff5eadec87ab0311c` (contained Grok production characterization), `1d365fc67f94ee231d010a495baf188ded3f1f8b` (release handover after native characterization), `b94062430c82bed2236c86ec79855e814fe724d4` (drain verifier cgroup close race) |
+| Current HEAD | `cf87abfee5426178e8883c176b66032631ada9ca` (`docs: record final cgroup smoke handoff`) |
+| Current commits | `ee93223889c39354f03af330782434b313155097` (harden contained native evidence binding), `de23f74b9da4497842b143922fab4354e64206fd` (contained Pi production characterization), `82c6b32c67c8247deada9cc60cd05a58ed7107cd` (serialized package export typecheck), `a8433debf27a54ce5979c95ff5eadec87ab0311c` (contained Grok production characterization), `1d365fc67f94ee231d010a495baf188ded3f1f8b` (release handover after native characterization), `b94062430c82bed2236c86ec79855e814fe724d4` (drain verifier cgroup close race), `cf87abfee5426178e8883c176b66032631ada9ca` (final cgroup smoke handoff) |
 | Product integration commit | `5880b008d81c20f746f728ef83d736306d546d81` (`feat: complete RelayForge control plane integration`) |
 | Stabilization commits | `3b6f78f2b89f0b4430e9f24cd535d3efa29e6e26`, `a0a877fcf4d67445a56656a88b653e7141082313` |
-| Prior packed/browser smoke checkpoint | `198aa44a192848fe6df1b6f4033e5f6bffc62d89` (**pre-b940624**; packed/browser gates pending rerun on current HEAD) |
+| Packed/browser smoke checkpoint | `cf87abfee5426178e8883c176b66032631ada9ca` (exact preview run on current HEAD) |
 | Previous remote handoff checkpoint | `860688c55207be051431d470b44b038025a12e5c` |
 | Package candidate | `relayforge@1.0.0-rc.1` |
 | Tag / npm publish / GitHub Release / repository rename | **Not performed** |
@@ -40,9 +41,8 @@ this handoff.
 The previous remote checkpoint contains the earlier documentation handoff. The
 closing branch push carries this document and the verified commits; after
 fetching, use `git rev-parse HEAD` rather than treating `860688c` as the product
-tree. Required-cgroup source smoke is current on `b940624`. Packed artifact and
-real-browser smoke results below predate `b940624` and must be re-run before any
-publish claim on current HEAD.
+tree. Required-cgroup source smoke, packed artifact preview, and real-browser
+gates are current on HEAD `cf87abf`.
 
 ## Phase status
 
@@ -56,7 +56,7 @@ publish claim on current HEAD.
 | P4 | Capability adapter registry and OpenCode/Pi/Grok adapters | Implemented; native release receipts open | Registry, codecs, bounded routes and fail-closed policy are integrated. OpenCode, Pi, and Grok contained production characterization paths are implemented and fixture-backed; focused adapter/egress matrix **127/127** green. Real same-runner receipts still require exact binaries, live credentials, designated cgroup runner, and the release workflow. Ordinary structured-native execution refuses before run/control/worktree mutation when product evidence is absent |
 | P5 | Transcript ingestion and live control room | Implemented | Focused **125/125**; observations remain non-authoritative; reconnect degrades and recovers explicitly |
 | P6 | Multi-repository scheduling, isolation, recovery, integration and publication | Product-integrated | Authority **21/21**; orchestration **12/12**; product/recovery/verifier **6/6**; publication/SCM/integration **13/13**; real isolation and SIGKILL recovery paths |
-| P7 | RelayForge identity, package, workflow and browser/release proof | Local committed gates green; packed/browser pending rerun on HEAD | Required-cgroup aggregate, source smoke, and typecheck/build green on current HEAD `b940624`; prior packed artifact and real Chrome lifecycle were green at **pre-b940624** and remain pending re-proof on current HEAD; publish remains blocked on real native receipts |
+| P7 | RelayForge identity, package, workflow and browser/release proof | Local committed gates green on current HEAD | Required-cgroup aggregate, source smoke, typecheck/build, packed artifact preview, and real Chrome lifecycle green on HEAD `cf87abf`; publish remains blocked on real same-runner native receipts |
 
 ## Committed release-candidate verification
 
@@ -68,10 +68,10 @@ These are committed-tree results, not a dirty-worktree preview.
 | Environment | Node **v20.20.2**, npm **10.8.2**, Linux **6.17.0-1021-gcp**, Bubblewrap **0.9.0** |
 | Focused adapter/egress matrix | **GREEN** — **127/127** (OpenCode/Pi/Grok characterization, egress, collector, and related adapter coverage) |
 | Close-membership drain regression | **GREEN** — **60/60** focused (verifier cgroup close-race drain fix on `b940624`) |
-| Required-cgroup source smoke | **GREEN on `b940624`** — two consecutive runs passed with exact marker `SMOKE PASS (contained host — verified delivery on the run branch)`; status `done`; final verifier green; feature only on the run branch; original checkout unchanged |
-| Exact preview tarball | **Prior GREEN (pre-b940624)** — `relayforge-1.0.0-rc.1.tgz`; deterministic pack and clean-install smoke passed at the prior packed/browser checkpoint. Digest is not re-asserted here; **pending pack rerun on `b940624`** before any publish claim |
-| Packed deep smoke | **Prior GREEN (pre-b940624)** — deterministic pack, packed Markdown link closure, clean lifecycle install, `better-sqlite3` native load, public ESM/external TypeScript, forbidden authority exports, canonical init/dry-run, legacy config plus existing `.loop` adoption, and control start/status/stop. **Pending rerun on `b940624`.** |
-| Packed real-browser gate | **Prior GREEN (pre-b940624)** — Google Chrome **150.0.7871.128**; DOM rendered; lifecycle **connected → degraded → recovered**; service instance replaced. **Pending rerun on `b940624`.** |
+| Required-cgroup source smoke | **GREEN on `cf87abf`** — two consecutive runs passed with exact marker `SMOKE PASS (contained host — verified delivery on the run branch)`; status `done`; final verifier green; feature only on the run branch; original checkout unchanged |
+| Exact preview tarball | **GREEN on `cf87abf`** — artifact commit `cf87abfee5426178e8883c176b66032631ada9ca`; tarball `relayforge-1.0.0-rc.1.tgz`; sha256 `92020efe10080fe617151a1af093f41c0bd953d43d1aa3fbeeb51df7919147ff`; **1,645,603** bytes |
+| Packed deep smoke | **GREEN on `cf87abf`** — release-artifact preview clean-install/deep smoke/native binding/public API/link closure passed (`better-sqlite3` native load, public ESM/external TypeScript, forbidden authority exports, canonical init/dry-run, legacy config plus existing `.loop` adoption, control start/status/stop, packed Markdown link closure) |
+| Packed real-browser gate | **GREEN on `cf87abf`** — Google Chrome **150.0.7871.128**; DOM rendered; lifecycle **connected → degraded → recovered**; `serviceReplaced` **true** |
 | Workspace hygiene | Generated preview moved outside the repository; no test process, disposable worktree, cgroup, socket, or temporary release artifact retained in the source tree |
 
 Release testing found and fixed five concrete issues before the prior packed
@@ -91,11 +91,12 @@ checkpoint, plus the close-membership drain race fixed on `b940624`:
    regression is **60/60** on `b940624`.
 
 The release-workflow test now rejects the nondeterministic verifier tokens, and
-the current required-cgroup source smoke on `b940624` proved the strong
+the current required-cgroup source smoke on `cf87abf` proved the strong
 contained branch with two consecutive `SMOKE PASS` runs and a green final
-verifier. After `ee93223` / `de23f74` / `82c6b32` / `a8433de` / `1d365fc` /
-`b940624`, re-run pack and browser gates before treating packed artifact proof
-as current. Do not invent a tarball digest.
+verifier. Exact packed artifact and real-browser proof were re-collected on
+HEAD `cf87abf` (artifact commit `cf87abfee5426178e8883c176b66032631ada9ca`,
+tarball digest above). Local preview gates no longer block publish; only the
+real same-runner native-adapter receipts remain open.
 
 ## Native-adapter release boundary
 
@@ -152,16 +153,16 @@ authorized npm/GitHub release.
 ## Handoff sequence
 
 1. Fetch or push `agent/loop-engineering-hardening` as appropriate and verify
-   the remote branch contains HEAD `b940624` and the current characterization
-   and fix commits (`ee93223`, `de23f74`, `82c6b32`, `a8433de`, `1d365fc`,
-   `b940624`).
+   the remote branch contains HEAD `cf87abf` and the current characterization,
+   fix, and smoke-handoff commits (`ee93223`, `de23f74`, `82c6b32`, `a8433de`,
+   `1d365fc`, `b940624`, `cf87abf`).
 2. On the designated Linux runner, install/pin the exact OpenCode, Pi and Grok
    runtimes and credentials without sharing one provider's secret with another.
 3. Run the same-job collector/consumer path for all three adapters. Preserve
    only the digest-bound receipt bundle; never upload raw evidence or secrets.
-4. Re-run packed artifact and real-browser gates on current HEAD `b940624`, then
-   run the publishable artifact workflow. It must repeat the cgroup/strong
-   backend gates and bind the three receipts to the exact tarball.
+4. Run the publishable artifact workflow. It must repeat the cgroup/strong
+   backend gates and bind the three real same-runner receipts to the exact
+   tarball (local packed/browser preview is already green on `cf87abf`).
 5. Only with explicit operator authorization after every gate is green: create
    an RC tag, publish npm, create a GitHub Release, or rename the repository.
 
