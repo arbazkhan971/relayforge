@@ -12,6 +12,18 @@ const prompt = process.argv[process.argv.length - 1] || "";
 const cwd = process.cwd();
 const cost = process.env.FAKE_COST;
 
+// Optional readiness assertion used by provisioning E2E tests. Every provider role executes this
+// before recording its invocation or emitting a response, so a successful planner/implementer/
+// reviewer trace proves that the parent made the named checkout-relative dependency available
+// before the provider was allowed to observe the worktree.
+if (process.env.FAKE_REQUIRE_FILE) {
+  const required = resolve(cwd, process.env.FAKE_REQUIRE_FILE);
+  if (!existsSync(required)) {
+    process.stderr.write(`required worktree file is absent: ${process.env.FAKE_REQUIRE_FILE}\n`);
+    process.exit(72);
+  }
+}
+
 // Record every invocation (role + the full in-band prompt) so tests can prove that role,
 // intelligence, and guardrails were delivered consistently.
 if (process.env.LOOP_CAPTURE) {

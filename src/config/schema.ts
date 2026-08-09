@@ -129,6 +129,22 @@ export const RoleSchema = z
   })
   .strict();
 
+/**
+ * A parent-side, offline dependency tree made available to every worktree used by a loop.
+ * The schema deliberately only bounds shape and input size; portable path safety, aliases,
+ * overlaps, and executable containment are enforced by the shared provisioning validator so
+ * configuration, doctor, and execution cannot drift apart.
+ */
+export const ProvisionSpecSchema = z
+  .object({
+    path: z.string().min(1, "provision path must not be empty").max(4096, "provision path is too long"),
+    requiredExecutables: z
+      .array(z.string().min(1, "required executable path must not be empty").max(4096, "required executable path is too long"))
+      .max(64, "a provision spec may require at most 64 executables")
+      .optional()
+  })
+  .strict();
+
 export const LoopSchema = z
   .object({
     name: idString("loop name"),
@@ -184,6 +200,9 @@ export const LoopSchema = z
     /** Ordered list of verifier commands (run in sequence; all must pass). Empty = auto-detect
      *  the project's test then build command from PROJECT-INTELLIGENCE. */
     verify: z.array(z.string()).default([]),
+    /** Offline dependency trees copied by the parent into integration, attempt, and review
+     *  worktrees before any agent or verifier may observe them. Empty/absent disables the gate. */
+    provision: z.array(ProvisionSpecSchema).max(32, "a loop may configure at most 32 provision specs").default([]),
     /** Re-run verify after merge for each accepted task to catch cross-cutting regressions. */
     postMergeVerify: z.boolean().default(true),
     /** Max SMEs working concurrently. Each task always runs in its own git worktree; isolation

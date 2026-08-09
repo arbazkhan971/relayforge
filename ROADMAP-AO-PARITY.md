@@ -1,19 +1,29 @@
-# AO parity roadmap
+# RelayForge build roadmap (Loop Orchestrator predecessor)
 
 ## Status and ordering
 
-This is a forward-looking plan based on
-[the file-cited comparison](docs/reference/ao-gap-analysis.md), not a feature
-list. AO is an Apache-2.0 reference for design questions only. Loop’s
-fail-closed containment, parent-owned board/ledger, clean-tree gate, and no
-auto-merge-to-`main` rules are non-negotiable throughout.
+This is a forward-looking migration plan from Loop Orchestrator to RelayForge,
+based on [the original Agent Orchestrator comparison](docs/reference/ao-gap-analysis.md)
+and a source-level ecosystem audit before every phase—not a feature list.
+Untrivial's Agent Orchestrator remains the primary baseline, but no repository
+is presumed best at every subsystem. RelayForge's fail-closed containment,
+parent-owned board/ledger, clean-tree gate, and no auto-merge-to-`main` rules are
+non-negotiable throughout.
+
+Every implementation phase now begins with a Reference Matrix covering the
+primary reference plus at least three independent relevant repositories when
+they exist. The audit must inspect source, tests, design records, current
+history, important bug fixes, and licensing before code begins. Reuse is tracked
+in [the upstream-source ledger](docs/upstream-sources.md), and ecosystem rescans
+are recorded in [the ecosystem watch](docs/ecosystem-watch.md). Phase 00's gate
+is [complete](docs/reference/phase-00-worktree-provisioning-audit.md).
 
 Pillars are ordered **P0 → P6** because live control features must not outrun
 the worktree/toolchain and safety foundations:
 
 | Pillar | Outcome | Current status |
 | --- | --- | --- |
-| P0 | Self-hosting DX: dependency provisioning and verifier-scope design | Wave 0 active; P0(2) implementation deferred behind an ADR |
+| P0 | Self-hosting DX: dependency provisioning and verifier-scope design | P0(1) shipped and verified; P0(2) audit, ADR, and policy kernel complete; real Linux integration active |
 | P1 | Persistent loopback daemon and derived control-plane views | Planned after P0 |
 | P2 | Safe parent-owned session steering | Planned after P1 |
 | P3 | Trusted SCM feedback loop | Planned after P2 |
@@ -31,34 +41,37 @@ This wave contains three P0 items:
    uncertain settlement from kernel-evaluated completed calls. Drafted by the
    SME team over four independently reviewed attempts; finalized by the operator
    with the reviewer's line-level corrections applied. No source or test changes.
-2. **P0(1): attempt-worktree dependency provisioning — not started.** Add a
-   first-class, offline-safe copy/provisioning flow plus `loop doctor` reporting.
+2. **P0(1): worktree dependency provisioning — shipped and verified.** The
+   required multi-repository reference audit and legal ledger are complete. A
+   first-class, offline-safe copy/provisioning flow plus `loop doctor` reporting
+   now gates integration, attempt, and isolated-review worktrees.
    It must not hardlink a human checkout’s `node_modules`, must leave a working
    local toolchain, and must prove inode isolation with a deterministic test.
    (A first attempt was rejected for exactly those two failure modes — sharing
    inodes with the human checkout, and shipping without tests; both are now
    binding learned constraints in the run goal.)
-3. **P0(2): verifier scope delegation and skip-guard removal — deferred to
-   Wave 1 behind an ADR.** Record the intended delegated-subtree boundary and
-   the eventual removal of the scope-dependent skips. The learned constraint
-   from a first execution attempt is that delegation exposes nested provider
-   execution inside the verifier jail; therefore Wave 0 does **not** remove
-   guards or delegate a broad scope. The ADR is the blocking deliverable before
-   the implementation wave.
+3. **P0(2): verifier scope delegation and skip-guard removal — implementation
+   active under accepted ADR 001.** The source-level ecosystem audit, explicit
+   delegated-subtree boundary, closed capability model, FD/gate protocol,
+   versioned identity/journal grammar, and cleanup/recovery decision kernel are
+   complete. No skip or guard is removed until the real Bubblewrap/kernel
+   behavior and nested suites pass; no broad scope has been delegated.
 
-Wave 0 exit evidence so far: `npm run typecheck` and `npm test` pass on the
-delegated host (689/689 at the commit introducing this roadmap) and inside the
-verifier-identical jail with the honest scope skips (556 passed / 133 skipped /
-0 failed; commit b157c9a). The remaining Wave 0 item — P0(1) provisioning —
-must keep both green.
+Current checkpoint evidence: `npm run typecheck` and `npm run build` pass; the
+complete host suite passes 832/832 across 60 files. The formerly failing
+six-million-frame transport regression now completes well within its unchanged
+bound after a source-audited reusable-slab correction. Verifier-jail skips
+remain honest until Wave 1's real Linux acceptance gate passes.
 
 ## Wave 1 — finish P0(2) only after an ADR (4 tasks)
 
-1. Write an ADR delimiting the verifier-owned pre-created cgroup subtree,
-   nested-launch behavior, cleanup ownership, and the failure mode when
-   delegation is unavailable.
-2. Add a fail-closed verifier delegation mechanism that exposes only that
-   subtree, with injection seams for deterministic tests.
+1. **Complete.** ADR 001 delimits the verifier-owned pre-created cgroup subtree,
+   nested-launch behavior, cleanup ownership, structural limits, and the
+   failure mode when delegation is unavailable.
+2. **Active.** The fail-closed typed policy/protocol kernel and deterministic
+   seams are complete. The real pinned-FD launcher, behavioral probe, sandbox
+   wiring, durable v2 journal integration, and operator diagnostics are being
+   integrated before any production capability can become available.
 3. Restore the currently skipped scope-dependent tests only once their nested
    launch and settlement evidence paths work in the verifier jail; remove each
    debt marker as it is restored.

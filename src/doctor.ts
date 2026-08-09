@@ -8,6 +8,7 @@ import { getProject } from "./config/load.js";
 import { sandboxInfo } from "./sandbox.js";
 import { scopeInfo } from "./scope.js";
 import { isCleanWorktree, worktreesSupported } from "./worktree.js";
+import { inspectProvisioning, type ProvisionIssue, type ProvisionSpec } from "./provision.js";
 
 export type DoctorCheck = { name: string; status: "ok" | "warn" | "fail"; detail: string; fix?: string };
 export type DoctorReport = { ok: boolean; checks: DoctorCheck[] };
@@ -19,6 +20,18 @@ function has(command: string): { ok: boolean; version?: string } {
   const flag = command === "tmux" ? "-V" : "--version";
   const v = spawnSync(command, [flag], { encoding: "utf8", timeout: 5000 });
   return { ok: true, version: ((v.stdout || v.stderr) ?? "").trim().split("\n")[0] };
+}
+
+function renderHumanPath(path: string): string {
+  return path.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (codePoint) => `\\u{${codePoint.codePointAt(0)!.toString(16)}}`);
+}
+
+function provisionIssueDetail(loopName: string, specs: readonly ProvisionSpec[], issue: ProvisionIssue): string {
+  const indexText = issue.path?.split(".", 1)[0];
+  const index = indexText !== undefined && /^\d+$/.test(indexText) ? Number(indexText) : undefined;
+  const configuredPath = index !== undefined ? specs[index]?.path : undefined;
+  const location = issue.path ? `provision.${issue.path}` : "provision";
+  return `loop ${loopName}${configuredPath ? ` path ${renderHumanPath(configuredPath)}` : ""} ${location}: [${issue.code}] ${issue.message}`;
 }
 
 /**
@@ -146,6 +159,52 @@ export function runDoctor(loaded: LoadedConfig | undefined, cwd: string, project
         : { name: "workingDir", status: "fail", detail: `workingDir does not exist: ${workingDir}`, fix: `Create it or fix projects.${project.name}.workingDir.` }
     );
 
+    const configuredLoops = project.loops.filter((loop) => loop.provision.length > 0);
+    if (configuredLoops.length === 0) {
+      checks.push({ name: "provision", status: "ok", detail: "disabled — no loop provision specs configured" });
+    } else {
+      const failures: string[] = [];
+      const ready: string[] = [];
+      for (const loop of configuredLoops) {
+        // Inspection is deliberately source-only and read-only: no transaction or worktree path is
+        // supplied, so doctor cannot stage, publish, execute a hook, or make a network request.
+        try {
+          const inspection = inspectProvisioning({ sourceRoot: workingDir, specs: loop.provision });
+          for (const issue of inspection.issues) failures.push(provisionIssueDetail(loop.name, loop.provision, issue));
+          if (inspection.ok) {
+            ready.push(
+              ...inspection.inspected.map(
+                (summary, index) =>
+                  `loop ${loop.name} provision.${index}.path (${renderHumanPath(summary.path)}): ` +
+                  `${summary.files} files, ${summary.directories} directories, ${summary.symlinks} links, ` +
+                  `${summary.executables} required executables, ${summary.bytes} bytes`
+              )
+            );
+          }
+        } catch (error) {
+          failures.push(
+            `loop ${loop.name} provision: inspection failed safely: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+
+      checks.push(
+        failures.length === 0
+          ? {
+              name: "provision",
+              status: "ok",
+              detail: `source ready/eligible now (read-only inspection; copy not attempted): ${ready.join(", ")}`
+            }
+          : {
+              name: "provision",
+              status: "fail",
+              detail: failures.join("; "),
+              fix:
+                "Fix each cited provision spec in loop.config.yaml, or restore its source directory and required executable markers inside the selected project's workingDir. Sources must be real, readable directories and all links must remain internal."
+            }
+      );
+    }
+
     const auth = getAuthStatus(project);
     // Headless execution needs the provider CLI on PATH. An API key WITHOUT the CLI is not ready.
     const ready = auth.filter((a) => a.cliAvailable);
@@ -158,7 +217,12 @@ export function runDoctor(loaded: LoadedConfig | undefined, cwd: string, project
       checks.push({ name: "providers", status: "warn", detail: "no provider CLI installed", fix: "Install a provider CLI (claude/codex/gemini). Dry-run (`loop run`) still works with none." });
     }
   } catch (error) {
-    checks.push({ name: "providers", status: "warn", detail: error instanceof Error ? error.message : String(error) });
+    checks.push({
+      name: "providers",
+      status: "warn",
+      detail: error instanceof Error ? error.message : String(error),
+      fix: "Select an existing project name and fix that project's provider configuration before running agents."
+    });
   }
 
   return { ok: checks.every((c) => c.status !== "fail"), checks };

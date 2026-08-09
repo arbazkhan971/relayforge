@@ -26,8 +26,9 @@ import { createStreamingNormalizer, NormalizedTurn, ProviderKind } from "./norma
 import { FrameFatal, MAX_FRAME_BYTES, StdoutStream } from "./streaming.js";
 import { changedFiles, discoverTestFiles, gitTopLevel, hashFiles, headSha, repoRootCommit } from "./git.js";
 import { analyzeProject } from "./intelligence.js";
-import { assertId } from "./ids.js";
+import { assertId, containedJoin, containsSymlink } from "./ids.js";
 import { AgentRole, buildHeadlessCommand } from "./providers.js";
+import { provisionWorktree, type ProvisionResult } from "./provision.js";
 import {
   buildProviderChain,
   bumpRouteEpoch,
@@ -82,6 +83,7 @@ import {
   publishCandidate,
   removeWorktree,
   Worktree,
+  worktreeRoot,
   worktreesSupported
 } from "./worktree.js";
 
@@ -248,6 +250,83 @@ function logLoopEvent(ctx: RunContext, event: Omit<LoopLogEvent, "ts" | "runId">
   appendFileSync(ctx.runLog, `${JSON.stringify(entry)}\n`);
 }
 
+/** A provisioning refusal is already recorded by the readiness gate. Callers distinguish it from
+ * ordinary dispatch/runtime errors so the same failure is not emitted a second time while it
+ * unwinds to the run-level fail-closed boundary. */
+class ProvisioningRefusal extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProvisioningRefusal";
+  }
+}
+
+/**
+ * Synchronous parent-owned readiness barrier for a worktree. The transaction area is a sibling of
+ * (never inside) agent-visible checkouts under the private, ownership-marked run root, which also
+ * keeps staging/publication on the same filesystem as its target. An empty plan does not even call
+ * the core, preserving the pre-provisioning behavior and leaving no transaction state behind.
+ */
+function requireProvisionedWorktree(
+  ctx: RunContext,
+  target: Worktree,
+  purpose: "integration" | "attempt" | "review",
+  iteration = 0
+): void {
+  const specs = ctx.loop.provision;
+  if (!specs.length) return;
+
+  const refuse = (result?: ProvisionResult): never => {
+    const issue = result?.issues[0];
+    const code = issue?.code ?? "COPY_FAILED";
+    const issuePath = issue?.path ? issue.path.slice(0, 96) : "-";
+    const issueCount = result?.issues.length ?? 1;
+    // Do not include exception messages or absolute paths: this event is bounded and contains only
+    // stable operator-safe identifiers/counts from the structured result.
+    const detail = `purpose=${purpose} code=${code} path=${JSON.stringify(issuePath)} issues=${issueCount}`.slice(0, 240);
+    logLoopEvent(ctx, { iter: iteration, event: "provision_failed", role: target.role, detail });
+    throw new ProvisioningRefusal(`Worktree provisioning refused: ${detail}`);
+  };
+
+  const privateRunRoot = worktreeRoot(ctx.cwd, ctx.project.name, ctx.runId);
+  const transactionRoot = containedJoin(privateRunRoot, ".provision");
+  // Never create through a planted link. This pre-check prevents even the transaction directory
+  // mkdir from escaping before the core gets a chance to perform its stricter physical-root checks.
+  if (containsSymlink(transactionRoot)) return refuse();
+
+  let result: ProvisionResult;
+  try {
+    chmodSync(privateRunRoot, 0o700);
+    // The core accepts only existing, physical, pairwise-disjoint roots. Create this parent-private
+    // sibling before entering the transaction; a planted link or unsafe ancestor is still rejected
+    // by the core's physical-root validation rather than followed.
+    mkdirSync(transactionRoot, { recursive: true, mode: 0o700 });
+    result = provisionWorktree({
+      sourceRoot: ctx.cwd,
+      targetRoot: target.path,
+      transactionRoot,
+      specs
+    });
+  } catch {
+    return refuse();
+  }
+  if (!result.ok) return refuse(result);
+
+  const totals = result.provisioned.reduce(
+    (sum, entry) => ({
+      files: sum.files + entry.files,
+      directories: sum.directories + entry.directories,
+      symlinks: sum.symlinks + entry.symlinks,
+      executables: sum.executables + entry.executables,
+      bytes: sum.bytes + entry.bytes
+    }),
+    { files: 0, directories: 0, symlinks: 0, executables: 0, bytes: 0 }
+  );
+  const detail =
+    `purpose=${purpose} specs=${result.provisioned.length} files=${totals.files} directories=${totals.directories} ` +
+    `symlinks=${totals.symlinks} executables=${totals.executables} bytes=${totals.bytes} changed=${result.changed ? "yes" : "no"}`;
+  logLoopEvent(ctx, { iter: iteration, event: "provision_ready", role: target.role, detail: detail.slice(0, 240) });
+}
+
 function heartbeat(ctx: RunContext, iteration: number): void {
   writeFileSync(ctx.heartbeatPath, `${nowIso()}\titer=${iteration}\n`);
 }
@@ -351,6 +430,7 @@ export function selectLoop(project: ProjectConfig, loopName?: string): LoopConfi
     maxSameFailureCount: 2,
     contextTokenBudget: 16000,
     verify: [],
+    provision: [],
     postMergeVerify: true,
     maxParallel: 1
   };
@@ -2403,6 +2483,7 @@ export async function runAutonomyLoop(
     if (options.execute) {
       const ignore = [".loop", ctx.loaded.config.defaults.runDir, ctx.loaded.config.defaults.promptDir, ctx.project.intelligence];
       ctx.target = prepareExecutionTarget(ctx.cwd, ctx.project.name, ctx.runId, ignore);
+      requireProvisionedWorktree(ctx, ctx.target.integration, "integration");
       state.runBranch = ctx.target.integration.branch;
     } else {
       state.runBranch = undefined;
@@ -2528,6 +2609,7 @@ export async function runAutonomyLoop(
             try {
               const baseTip = integrationTip(ctx.target!.integration) ?? ctx.target!.integration.branch;
               wt = createAttemptWorktree(ctx.cwd, ctx.project.name, ctx.runId, ctx.target!.integration, task.id, task.attempts + 1);
+              requireProvisionedWorktree(ctx, wt, "attempt", iteration);
               attempts.set(task.id, { wt, baseTip });
               journalAttempt(ctx, { taskId: task.id, event: "attempt_created", branch: wt.branch, detail: `base=${baseTip.slice(0, 12)}` });
               const outcome = await dispatchTask(ctx, role, task, panes[role.name] ?? "", verifyCmds, state, iterationContext, wt);
@@ -2542,6 +2624,10 @@ export async function runAutonomyLoop(
               // so neither disk nor the review pass carries a half-built attempt forward.
               if (wt) removeWorktree(ctx.cwd, wt, ctx.project.name, ctx.runId);
               attempts.delete(task.id);
+              // The provisioning gate already emitted its one bounded parent event. Re-throw so the
+              // whole run refuses immediately; do not turn a globally unready checkout into a
+              // repairable task failure or emit a duplicate dispatch event.
+              if (error instanceof ProvisioningRefusal) throw error;
               logLoopEvent(ctx, { iter: iteration, event: "dispatch_error", role: role.name, taskId: task.id, detail: detail.slice(0, 300) });
               noteLoopFailure(ctx, state, summary, role.name, task.id, "dispatch_error");
               addEvent(ctx.boardDir, { ts: nowIso(), role: role.name, taskId: task.id, status: "blocked", summary });
@@ -2552,6 +2638,7 @@ export async function runAutonomyLoop(
         // ever does — a throw from the failure handling itself — it is logged, never swallowed.
         for (const s of settled) {
           if (s.status === "rejected") {
+            if (s.reason instanceof ProvisioningRefusal) throw s.reason;
             logLoopEvent(ctx, { iter: iteration, event: "dispatch_error", detail: String(s.reason).slice(0, 300) });
           }
         }
@@ -2616,7 +2703,9 @@ export async function runAutonomyLoop(
     state.status = "blocked";
     state.phase = "stopped";
     state.lastStopReason = error instanceof Error ? error.message : String(error);
-    logLoopEvent(ctx, { iter: state.iteration, event: "error", detail: state.lastStopReason });
+    if (!(error instanceof ProvisioningRefusal)) {
+      logLoopEvent(ctx, { iter: state.iteration, event: "error", detail: state.lastStopReason });
+    }
     saveLoopState(ctx, state);
     await finalize();
     throw error;
@@ -2747,6 +2836,7 @@ async function reviewPass(
     // Review in a SEPARATE, detached, read-only checkout of the OID — the reviewer cannot mutate
     // the attempt branch or influence what merges.
     const reviewCheckout = createReviewCheckout(ctx.cwd, ctx.project.name, ctx.runId, task.id, oid);
+    if (reviewCheckout.isolated) requireProvisionedWorktree(ctx, reviewCheckout, "review", state.iteration);
     const reviewCwd = reviewCheckout.isolated ? reviewCheckout.path : attempt.wt.path;
     const verdict = await runReviewAgent(ctx, reviewerRole, task, panes[reviewerRole.name], reviewCwd, diff, state);
     // The attempt branch OID must be UNCHANGED after review (defense in depth).

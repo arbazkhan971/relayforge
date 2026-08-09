@@ -135,6 +135,10 @@ loops:
     maxSameFailureCount: 2
     contextTokenBudget: 16000
     verify: []
+    provision:
+      - path: node_modules
+        requiredExecutables:
+          - .bin/tsc
     postMergeVerify: true
     maxParallel: 2
     budgetUsd: 0
@@ -155,9 +159,65 @@ Field reference:
 - `maxSameFailureCount`: stop when the same failure signature repeats this many times
 - `contextTokenBudget`: budget for each iteration's context snapshot (characters)
 - `verify`: ordered list of verifier commands (run in sequence; all must pass). Empty = auto-detect the project's test then build command from PROJECT-INTELLIGENCE.
+- `provision`: bounded offline dependency trees copied from the selected project's `workingDir`
+  into every loop-owned worktree before it can become ready. See [Offline worktree
+  provisioning](#offline-worktree-provisioning).
 - `postMergeVerify`: re-run verifier immediately after accepted merge
 - `maxParallel`: max simultaneous role dispatches per round. Each task always runs in its own git worktree; isolation is mandatory and cannot be disabled.
 - `budgetUsd`: stop if total estimated USD spend reaches this limit (0 = unlimited). Budgets are checked before every planner/worker/reviewer call; when a provider reports no cost, spend is recorded as unknown, never silently zero.
 - `maxCostPerCallUsd`: the per-call reservation cap. **Required whenever `budgetUsd > 0`** — it must be `> 0` and `<= budgetUsd`. A positive budget with no per-call cap **fails closed before the planner** (the run ends `blocked`), because without a cap every call would have to reserve the entire budget, making the budget a one-call limit rather than a real ceiling. Leave it `0` only when `budgetUsd` is `0` (unlimited).
 - `allowUnknownCostCalls` (default 0): under a positive `budgetUsd`, the run **fails closed** when providers report unknown cost more than this many times, so an unmetered provider can't silently blow past the budget.
 - `budgetMode` (default `estimated-usd`): `estimated-usd` is a soft post-response ledger (the direct CLIs report cost only after each turn); `subscription-quota` meters no USD (do not set `budgetUsd`); `unlimited` disables the USD budget. `hard-usd` — a provable pre-authorized ceiling — is **not available in this release**: it requires a real preauthorizing billing-gateway adapter (server-side cap, idempotency key, authoritative receipt), which is not integrated, so selecting it **fails closed**. The `preauthorizingGateway` flag is reserved for that future adapter and does not by itself enable `hard-usd`.
+
+## Offline worktree provisioning
+
+`provision` makes an already-installed local dependency tree available inside isolated Git
+worktrees without running an installer. It is configured per loop as a list of strict objects:
+
+```yaml
+loops:
+  - name: delivery-loop
+    provision:
+      - path: node_modules
+        requiredExecutables:
+          - .bin/tsc
+          - .bin/vitest
+      - path: vendor
+```
+
+An absent or empty list disables provisioning. A loop may contain at most 32 specs; each spec has
+one canonical repository-relative `path` and an optional bounded `requiredExecutables` list. Those
+executable paths are relative to that spec, so `.bin/tsc` above means
+`node_modules/.bin/tsc`. Validation rejects absolute, rooted, backslash, traversal, duplicate,
+case-alias, overlapping, and Git/Loop control paths rather than normalizing ambiguous input.
+
+Provisioning is a parent-owned readiness gate for **all three worktree roles**:
+
+- the integration worktree used for accepted merges and deterministic verification;
+- each isolated implementation-attempt worktree;
+- each independent review checkout.
+
+A worktree is not runnable while its dependencies are being staged. RelayForge builds a private
+staging tree, validates it completely, and only then publishes it into the worktree. A provider,
+reviewer, or verifier may start only after the worktree is ready. A configured source that is
+missing, unreadable, not a real directory, unsafe, or lacks a `requiredExecutables` marker blocks
+the run; it is never downgraded to a warning. `loop doctor` reports the affected loop and path and
+performs only this same read-only source inspection—it does not create staging or destination
+state, and an eligible result is not a promise that a later filesystem copy cannot fail.
+
+The operation is deliberately offline and inert:
+
+- it does not run package managers, lifecycle hooks, setup scripts, or any child process;
+- it performs no network access and uses no package-registry credentials;
+- it never uses hardlinks or shares a writable dependency directory with the human checkout;
+- it prefers filesystem copy-on-write clones and otherwise copies bytes into distinct files;
+- it accepts only constrained relative symlinks whose lexical and physical targets remain inside
+  the configured source tree; absolute, dangling, cyclic, or escaping links block readiness.
+
+Current limitations are intentional. Provisioning copies existing local bytes; it does not resolve
+or install dependencies, refresh lockfiles, deduplicate copies across worktrees, or execute trusted
+repository setup hooks. Large trees can therefore consume copy time and, where filesystem reflinks
+are unavailable, additional disk space. `requiredExecutables` is a readiness marker for a contained
+executable file—it is not a general command probe and doctor never executes it. Prepare the source
+tree in the selected `workingDir` before starting the loop, then use `loop doctor` to verify its
+eligibility.

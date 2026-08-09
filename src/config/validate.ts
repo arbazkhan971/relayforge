@@ -1,6 +1,7 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { LoadedConfig } from "./load.js";
 import { ProjectConfig } from "./schema.js";
+import { validateProvisionSpecs } from "../provision.js";
 
 export type SemanticIssue = { path: string; message: string };
 
@@ -78,6 +79,18 @@ export function validateProjectSemantics(project: ProjectConfig): SemanticIssue[
     }
     if (loop.reviewer === loop.orchestrator && project.roles.length > 1) {
       issues.push({ path: at(`loops.${loop.name}.reviewer`), message: `loop "${loop.name}" reviewer must differ from the orchestrator so review is independent` });
+    }
+
+    // Provisioning paths have one canonical validator shared with doctor and the execution gate.
+    // Its issue path is relative to the provision array (`0.path`,
+    // `0.requiredExecutables.1`, ...); retain that precision in config diagnostics so an operator
+    // can fix the exact spec rather than hunting through a loop-wide error.
+    const provisionPrefix = at(`loops.${loop.name}.provision`);
+    for (const issue of validateProvisionSpecs(loop.provision)) {
+      issues.push({
+        path: issue.path ? `${provisionPrefix}.${issue.path}` : provisionPrefix,
+        message: `[${issue.code}] ${issue.message}`
+      });
     }
   }
 

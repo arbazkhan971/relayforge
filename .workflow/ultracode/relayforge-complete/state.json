@@ -1,0 +1,32 @@
+{
+  "run": "relayforge-complete",
+  "baseSha": "66b60821d45466c9c5e15640a48ad3de25919376",
+  "packets": {
+    "discover-base": "done",
+    "audit-ao-worktrees": "done",
+    "audit-worktree-ux": "done",
+    "audit-modern-worktrees": "done",
+    "audit-setup-workflows": "done",
+    "provision-threat-review": "done",
+    "diagnose-baseline-tests": "done",
+    "phase0-synthesis": "done",
+    "provision-core": "done",
+    "provision-wiring": "done",
+    "provision-doctor": "done",
+    "baseline-streaming-fix": "done",
+    "p0-closeout": "done",
+    "p0.2-reference-audit": "done",
+    "p0.2-adr": "done",
+    "p0.2-policy-kernel": "done",
+    "p0.2-linux-integration": "running",
+    "p1-reference-audit": "running"
+  },
+  "verification": {
+    "baselineTypecheck": "passed",
+    "baselineBuild": "passed",
+    "baselineTests": "discovery: 2 failed, 687 passed, 689 total",
+    "checkpointTypecheck": "passed",
+    "checkpointBuild": "passed",
+    "checkpointTests": "60 files passed, 832 tests passed, 0 failed"
+  }
+}

@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { runHeadlessChild } from "../src/orchestrator.js";
 import { BoundedTail, RawFramer, StdoutStream } from "../src/streaming.js";
 import { createStreamingNormalizer, normalizeTurn } from "../src/normalize.js";
@@ -157,6 +157,192 @@ describe("Priority A — the frame ceiling is enforced on RAW INPUT BYTES", () =
       expect(() => new RawFramer(bad, () => {}), `maxFrameBytes=${String(bad)}`).toThrow(TypeError);
       expect(() => new BoundedTail(bad), `tailCap=${String(bad)}`).toThrow(TypeError);
     }
+  });
+});
+
+describe("Priority A — reusable small slabs preserve the synchronous raw-byte lease", () => {
+  it("uses O(1) slab allocations for 100,000 tiny frames while preserving exact frame metadata", () => {
+    const input = Buffer.from("i\n".repeat(100_000));
+    const allocUnsafe = vi.spyOn(Buffer, "allocUnsafe");
+    let count = 0;
+    let first: { text: string; byte: number | undefined; bytes: number; offset: number; index: number; terminated: boolean } | undefined;
+    let last: typeof first;
+
+    try {
+      const framer = new RawFramer(4096, (frame) => {
+        const observed = {
+          text: frame.text,
+          byte: frame.raw[0],
+          bytes: frame.raw.length,
+          offset: frame.offset,
+          index: frame.index,
+          terminated: frame.terminated
+        };
+        first ??= observed;
+        last = observed;
+        count++;
+      });
+      framer.push(input);
+      framer.finish();
+
+      expect(count).toBe(100_000);
+      expect(first).toEqual({ text: "i", byte: 0x69, bytes: 1, offset: 0, index: 0, terminated: true });
+      expect(last).toEqual({ text: "i", byte: 0x69, bytes: 1, offset: 199_998, index: 99_999, terminated: true });
+      expect(framer.retainedBytes()).toBe(0); // cached capacity is not logically retained payload
+      expect(framer.fatal()).toBeUndefined();
+      expect(allocUnsafe).toHaveBeenCalledTimes(1);
+      expect(allocUnsafe).toHaveBeenCalledWith(4096);
+    } finally {
+      allocUnsafe.mockRestore();
+    }
+  });
+
+  it("does not reuse an outer callback's slab during a reentrant push", () => {
+    const calls: Array<{ text: string; raw: string; offset: number; index: number }> = [];
+    let framer!: RawFramer;
+    framer = new RawFramer(1024, (frame) => {
+      calls.push({ text: frame.text, raw: frame.raw.toString("utf8"), offset: frame.offset, index: frame.index });
+      if (frame.text === "outer") {
+        const beforeReentry = Buffer.from(frame.raw);
+        framer.push(Buffer.from("inner\n"));
+        // The outer raw view is still inside its valid synchronous lifetime and must not be overwritten.
+        expect(frame.raw.equals(beforeReentry)).toBe(true);
+      }
+    });
+
+    framer.push(Buffer.from("outer\n"));
+    framer.push(Buffer.from("later\n"));
+    framer.finish();
+
+    expect(calls).toEqual([
+      { text: "outer", raw: "outer", offset: 0, index: 0 },
+      { text: "inner", raw: "inner", offset: 6, index: 1 },
+      { text: "later", raw: "later", offset: 12, index: 2 }
+    ]);
+  });
+
+  it("returns a slab in finally when the callback throws and remains recoverable for a later push", () => {
+    const firstInput = Buffer.from("boom\n");
+    const secondInput = Buffer.from("ok\n");
+    const allocUnsafe = vi.spyOn(Buffer, "allocUnsafe");
+    const calls: Array<{ text: string; rawByte: number | undefined; offset: number; index: number }> = [];
+    let throwFirst = true;
+
+    try {
+      const framer = new RawFramer(4096, (frame) => {
+        calls.push({ text: frame.text, rawByte: frame.raw[0], offset: frame.offset, index: frame.index });
+        if (throwFirst) {
+          throwFirst = false;
+          throw new Error("sink failed");
+        }
+      });
+
+      expect(() => framer.push(firstInput)).toThrow("sink failed"); // callback errors still propagate
+      expect(framer.retainedBytes()).toBe(0);
+      expect(framer.fatal()).toBeUndefined();
+      framer.push(secondInput);
+      framer.finish();
+
+      expect(calls).toEqual([
+        { text: "boom", rawByte: 0x62, offset: 0, index: 0 },
+        { text: "ok", rawByte: 0x6f, offset: 5, index: 1 }
+      ]);
+      expect(allocUnsafe).toHaveBeenCalledTimes(1); // the thrown callback did not lose the spare lease
+    } finally {
+      allocUnsafe.mockRestore();
+    }
+  });
+
+  it("isolates copied source bytes and a callback-mutated raw view from the next tiny frame", () => {
+    const calls: Array<{ text: string; rawBeforeMutation: string; offset: number; index: number }> = [];
+    const framer = new RawFramer(128, (frame) => {
+      calls.push({ text: frame.text, rawBeforeMutation: frame.raw.toString("utf8"), offset: frame.offset, index: frame.index });
+      if (frame.index === 0) frame.raw.fill(0x78); // mutation is confined to this valid callback window
+    });
+    const source = Buffer.from("first");
+
+    framer.push(source); // retain an unterminated copy
+    source.fill(0x7a); // recycling the caller's chunk must not affect the retained frame
+    framer.push(Buffer.from("\n"));
+    framer.push(Buffer.from("ok\n")); // overwrites the reused slab with the new exact frame
+    framer.finish();
+
+    expect(calls).toEqual([
+      { text: "first", rawBeforeMutation: "first", offset: 0, index: 0 },
+      { text: "ok", rawBeforeMutation: "ok", offset: 6, index: 1 }
+    ]);
+  });
+
+  it("keeps multi-slab and unterminated frames owned, bounded, and exactly offset", () => {
+    const cap = 64 * 1024 + 17;
+    const largeSource = Buffer.alloc(cap, 0x6d);
+    const largeSha256 = createHash("sha256").update(largeSource).digest("hex");
+    const calls: Array<{
+      textLength: number;
+      rawLength: number;
+      rawSha256: string;
+      offset: number;
+      index: number;
+      terminated: boolean;
+    }> = [];
+    const framer = new RawFramer(cap, (frame) => {
+      calls.push({
+        textLength: frame.text.length,
+        rawLength: frame.raw.length,
+        rawSha256: createHash("sha256").update(frame.raw).digest("hex"),
+        offset: frame.offset,
+        index: frame.index,
+        terminated: frame.terminated
+      });
+    });
+
+    framer.push(largeSource);
+    expect(framer.retainedBytes()).toBe(cap);
+    largeSource.fill(0x78); // a multi-slab frame must not retain source subarray views
+    framer.push(Buffer.from("\n"));
+    expect(framer.retainedBytes()).toBe(0);
+
+    const tailSource = Buffer.from("tail");
+    framer.push(tailSource);
+    expect(framer.retainedBytes()).toBe(4);
+    tailSource.fill(0x79);
+    framer.finish();
+
+    expect(calls).toEqual([
+      {
+        textLength: cap,
+        rawLength: cap,
+        rawSha256: largeSha256,
+        offset: 0,
+        index: 0,
+        terminated: true
+      },
+      {
+        textLength: 4,
+        rawLength: 4,
+        rawSha256: createHash("sha256").update("tail").digest("hex"),
+        offset: cap + 1,
+        index: 1,
+        terminated: false
+      }
+    ]);
+    expect(framer.retainedBytes()).toBe(0);
+  });
+
+  it("still makes cap-plus-one fatal without emitting the offending prefix or accepting later input", () => {
+    const calls: string[] = [];
+    const framer = new RawFramer(3, (frame) => calls.push(frame.text));
+
+    framer.push(Buffer.from("ok\n"));
+    framer.push(Buffer.from("abc"));
+    expect(framer.retainedBytes()).toBe(3);
+    framer.push(Buffer.from("d")); // the exact first byte beyond the cap
+    framer.push(Buffer.from("ignored\n"));
+    framer.finish();
+
+    expect(calls).toEqual(["ok"]);
+    expect(framer.fatal()).toMatchObject({ kind: "oversize", limitBytes: 3, observedBytes: 4 });
+    expect(framer.retainedBytes()).toBe(0);
   });
 });
 

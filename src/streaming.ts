@@ -84,6 +84,11 @@ export type AcceptedFrame = FrameBytes & {
 export class RawFramer {
   private full: Buffer[] = []; // filled slabs
   private cur: Buffer | undefined; // partially filled slab
+  /** One inactive first-slab allocation. It is never populated from source views and is unavailable
+   *  while an emitted raw view is leased to `onFrame`. This cached capacity is not logically retained
+   *  frame data: `held` remains exact, and `held + cached capacity` is bounded by
+   *  `maxFrameBytes + min(SLAB_BYTES, maxFrameBytes)`. */
+  private cachedSmallSlab: Buffer | undefined;
   private curLen = 0;
   private held = 0; // retained bytes of the frame in progress — never exceeds maxFrameBytes
   private seen = 0; // EXACT raw bytes of the frame in progress (may exceed the cap by 1, then fatal)
@@ -147,15 +152,30 @@ export class RawFramer {
    *  all slabs is bounded by `maxFrameBytes` exactly, whatever the chunk sizes or event count. */
   private allocSlab(): void {
     const remaining = this.maxFrameBytes - this.held; // > 0: held === max would have gone fatal above
-    this.cur = Buffer.allocUnsafe(Math.min(SLAB_BYTES, remaining));
+    const size = Math.min(SLAB_BYTES, remaining);
+    if (this.cachedSmallSlab !== undefined && this.cachedSmallSlab.length === size) {
+      this.cur = this.cachedSmallSlab;
+      this.cachedSmallSlab = undefined; // leased to the live frame until its callback has returned
+    } else {
+      this.cur = Buffer.allocUnsafe(size);
+    }
     this.curLen = 0;
   }
 
-  private assemble(): Buffer {
-    if (this.held === 0) return EMPTY;
-    if (this.full.length === 0) return this.cur!.subarray(0, this.curLen); // single-slab fast path
+  /** Assemble one accepted frame and identify a directly exposed single slab, if any. Multi-slab
+   *  records retain the existing concatenate-and-release path. */
+  private assemble(): { raw: Buffer; leasedSlab?: Buffer } {
+    if (this.held === 0) return { raw: EMPTY };
+    if (this.full.length === 0) {
+      const slab = this.cur!;
+      return { raw: slab.subarray(0, this.curLen), leasedSlab: slab }; // single-slab fast path
+    }
+    if (this.full.length === 1 && this.curLen === 0) {
+      const slab = this.full[0];
+      return { raw: slab, leasedSlab: slab }; // exactly one full slab is still a single-slab frame
+    }
     const parts = this.curLen > 0 ? [...this.full, this.cur!.subarray(0, this.curLen)] : this.full;
-    return Buffer.concat(parts, this.held);
+    return { raw: Buffer.concat(parts, this.held) };
   }
 
   private reset(): void {
@@ -170,15 +190,23 @@ export class RawFramer {
    *  to every sink. The offset accounting is exact: every byte of the stream belongs to exactly one
    *  frame or to the newline that terminates it. */
   private emit(terminated: boolean): void {
-    const raw = this.assemble();
+    const { raw, leasedSlab } = this.assemble();
     const text = raw.toString("utf8");
     const offset = this.consumed;
     const index = this.frameIndex++;
     this.consumed += raw.length + (terminated ? 1 : 0);
-    this.reset(); // drop the slabs BEFORE the sinks run, so a slow sink never holds them alive
-    // `raw` stays valid across `reset()` (it is a view onto the detached slab bytes) but is NOT retained
-    // by the framer, so it dies with this call unless a sink illegally holds it.
-    this.onFrame({ text, terminated, raw, offset, index });
+    this.reset(); // clear live framing state BEFORE the sink runs, so reentrant push() starts a new frame
+    // A directly exposed slab remains leased and unavailable for reuse throughout this synchronous call.
+    // Reentrant push() therefore cannot overwrite `raw`; after return (or throw), one spare is cached.
+    try {
+      this.onFrame({ text, terminated, raw, offset, index });
+    } finally {
+      if (leasedSlab !== undefined && this.cachedSmallSlab === undefined) {
+        // A reentrant frame may already have returned its own slab. Preserve that cached slab and drop
+        // this one rather than making an outer callback's still-live bytes available during the lease.
+        this.cachedSmallSlab = leasedSlab;
+      }
+    }
   }
 
   /** A record exceeded the ceiling. This is FATAL uncertainty: we emit NOTHING (a bounded prefix could
