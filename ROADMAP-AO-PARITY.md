@@ -201,9 +201,9 @@ and P7. **Current:**
   publication/SCM/integration **13/13**.
 - P7 local preview/browser/source gates are **green** on committed source:
   required-cgroup aggregate **171** files / **1,927** tests + clean TypeScript
-  build; source smoke strong-path marker; exact preview
-  `relayforge-1.0.0-rc.1.tgz` (**1,628,899** bytes, SHA-256
-  `bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35`); packed
+  build; source smoke strong-path marker; deterministic exact preview
+  `relayforge-1.0.0-rc.1.tgz` with its digest recorded by the repository-only
+  campaign state rather than self-embedded in packed Markdown; packed
   Chrome **150.0.7871.128** with DOM rendered and lifecycle connected →
   degraded → recovered (`serviceReplaced` true).
 - Preview defects fixed: public declarations no longer leak implementation-only

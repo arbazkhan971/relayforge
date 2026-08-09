@@ -62,7 +62,7 @@ These are committed-tree results, not a dirty-worktree preview.
 | Required-cgroup aggregate | **GREEN** — **171** test files, **1,927** tests, TypeScript and build green |
 | Environment | Node **v20.20.2**, npm **10.8.2**, Linux **6.17.0-1021-gcp**, Bubblewrap **0.9.0** |
 | Required-cgroup source smoke | **GREEN** — exact marker `SMOKE PASS (contained host — verified delivery on the run branch)`; `done`; feature only on the run branch; original checkout unchanged |
-| Exact preview tarball | **GREEN** — `relayforge-1.0.0-rc.1.tgz`, **1,628,899** bytes, SHA-256 `bb51e456f099b24859569e7ad09d218bfc4da281ae3eae541f82836f1db6ec35` |
+| Exact preview tarball | **GREEN** — `relayforge-1.0.0-rc.1.tgz`; deterministic pack and clean-install smoke passed. The exact digest is emitted by the release manifest and recorded in the repository-only campaign state rather than self-embedded in this packed document |
 | Packed deep smoke | **GREEN** — deterministic pack, packed Markdown link closure, clean lifecycle install, `better-sqlite3` native load, public ESM/external TypeScript, forbidden authority exports, canonical init/dry-run, legacy config plus existing `.loop` adoption, and control start/status/stop |
 | Packed real-browser gate | **GREEN** — Google Chrome **150.0.7871.128**; DOM rendered; lifecycle **connected → degraded → recovered**; service instance replaced |
 | Workspace hygiene | Generated preview moved outside the repository; no test process, disposable worktree, cgroup, socket, or temporary release artifact retained in the source tree |
