@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ProcessScopeCaps } from "../src/runtime.js";
 import { FakeCgroupFs, osWith } from "./fake-cgroup.js";
 import { setTrustedRunner } from "../src/sandbox.js";
+import { serializeVerifierCgroupJournalRecord, verifierCgroupScopeId } from "../src/cgroup-delegation.js";
 import {
   cgroupScopeAlive,
   parseScopeId,
@@ -465,6 +466,23 @@ describe("recoverAbandonedScopes: the durable record is only cleared by a PROOF"
     expect(result.retained).toEqual([corrupt, junk]); // kept…
     expect(result.unresolved.map((u) => u.id)).toEqual([corrupt, junk]); // …and they BLOCK the run.
     expect(result.unresolved[0].advice).toMatch(/not a readable scope id/i);
+  });
+
+  it("recognizes a valid v2 verifier record and never downgrades it to legacy inode-only recovery", () => {
+    const line = serializeVerifierCgroupJournalRecord({
+      v: 2,
+      kind: "verifier-cgroup",
+      runId: "run-v2",
+      attemptId: "verify-v2",
+      leaseId: "lease-v2",
+      scopeId: verifierCgroupScopeId({ version: 2, dev: "29", ino: "1009", name: "loop-0123456789abcdef", pid: 4242, startTicks: "9001" }),
+      maxDescendants: 256,
+      maxDepth: 16
+    }).trim();
+    const result = recoverAbandonedScopes(line, () => { throw new Error("legacy reaper must not receive v2"); });
+    expect(result.retained).toEqual([line]);
+    expect(result.unresolved[0].outcome).toBe("unsupported");
+    expect(result.unresolved[0].advice).toMatch(/device\/inode-pinned verifier recovery/);
   });
 
   it("a pgid scope is never blind-signalled, and never counts as proof either", () => {

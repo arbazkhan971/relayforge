@@ -15,4 +15,5 @@ export * from "./cost.js";
 export * from "./worktree.js";
 export * from "./provision.js";
 export * from "./cgroup-delegation.js";
+export * from "./cgroup-delegation-linux.js";
 export * from "./dashboard/data.js";

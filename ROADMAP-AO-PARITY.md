@@ -68,15 +68,15 @@ remain honest until Wave 1's real Linux acceptance gate passes.
 1. **Complete.** ADR 001 delimits the verifier-owned pre-created cgroup subtree,
    nested-launch behavior, cleanup ownership, structural limits, and the
    failure mode when delegation is unavailable.
-2. **Active.** The fail-closed typed policy/protocol kernel and deterministic
-   seams are complete. The real pinned-FD launcher, behavioral probe, sandbox
-   wiring, durable v2 journal integration, and operator diagnostics are being
-   integrated before any production capability can become available.
-3. Restore the currently skipped scope-dependent tests only once their nested
-   launch and settlement evidence paths work in the verifier jail; remove each
-   debt marker as it is restored.
-4. Re-measure jail timing and decide in a reviewed change whether the transport
-   wall-clock scaling can be tightened.
+2. **Complete.** The pinned-FD launcher, behavioral probe, sandbox wiring,
+   authenticated pre-exec handshake, durable v2 journal/recovery, operator
+   diagnostics, and async bounded verifier transport are integrated.
+3. **Complete on the required host.** The nested launch/settlement and provider
+   evidence suites ran through the production verifier jail with zero capability
+   skips. Cross-platform guards remain truthful on unsupported ordinary jobs.
+4. Jail timing and exact structural limits were characterized: 256 descendants
+   and depth 16 succeed and the next creation returns `EAGAIN`. Keep the required-
+   capability CI job and expand its kernel/Bubblewrap matrix before release.
 
 Guardrails: no generic cgroup delegation, no environment escape hatch, no
 provider execution outside containment, and no weakening of settlement proof.

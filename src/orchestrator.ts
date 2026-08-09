@@ -56,6 +56,13 @@ import {
 } from "./runtime.js";
 import { containCommand, containmentAvailable, trustedRunnerActive, verifierNetworkIsolationAvailable } from "./sandbox.js";
 import {
+  getCachedLinuxVerifierCgroupRuntime,
+  linuxVerifierCgroupBackend,
+  reapLinuxVerifierCgroupJournalLine,
+  type LinuxVerifierCgroupRuntime
+} from "./cgroup-delegation-linux.js";
+import { parseVerifierCgroupJournalLine } from "./cgroup-delegation.js";
+import {
   closeLaunchGate,
   reapAbandonedScope,
   reapProofOf,
@@ -134,6 +141,10 @@ export type RunContext = {
   /** The scope backend every provider is launched into. Defaults to the strongest one this host can
    *  actually give us; real execution FAILS CLOSED when there is none (`requireScopeBackend`). */
   scopeBackend?: ScopeBackend;
+  /** Active exclusive run lease. Verifier v2 journal records bind every launch to this nonce. */
+  activeLeaseId?: string;
+  /** Runtime-identity-keyed behavioral capability reused by all verifiers in this run. */
+  verifierCgroupRuntime?: LinuxVerifierCgroupRuntime;
   /** The dedicated integration worktree, populated under --execute. */
   target?: ExecutionTarget;
   /** Injectable monotonic wall clock (ms). Defaults to `Date.now`. Provider cooldowns are marked at
@@ -874,43 +885,97 @@ export function verifyEnv(source: NodeJS.ProcessEnv = process.env): Record<strin
  * mechanism is available (and no test trusted runner is injected) the command is NOT run and the
  * result is red (`unverified`), so a missing sandbox can never be mistaken for a passing gate.
  */
-function runOneVerify(cwd: string, verifyCmd: string): VerifyResult {
+async function runOneVerify(ctx: RunContext, cwd: string, verifyCmd: string, attemptId: string): Promise<VerifyResult> {
   let command = "bash";
   let args = ["-lc", verifyCmd];
-  try {
-    const outcome = containCommand("bash", ["-lc", verifyCmd], { writableRoot: cwd, network: false, cwd });
-    command = outcome.command;
-    args = outcome.args;
-  } catch (error) {
-    const output = `verifier NOT run — ${error instanceof Error ? error.message : String(error)}`;
-    return { ok: false, code: -1, output, fingerprint: fingerprint(false, output) };
+  let verifierScopeBackend: ScopeBackend | undefined;
+  if (trustedRunnerActive()) {
+    // Import-only test seam: production can never select it. Tests still exercise the shared bounded
+    // transport rather than growing a second output/timeout implementation.
+    try {
+      const outcome = containCommand(command, args, { writableRoot: cwd, network: false, cwd });
+      command = outcome.command;
+      args = outcome.args;
+    } catch (error) {
+      const output = `verifier NOT run — ${error instanceof Error ? error.message : String(error)}`;
+      return { ok: false, code: -1, output, fingerprint: fingerprint(false, output) };
+    }
+  } else {
+    const runtime = ctx.verifierCgroupRuntime ?? await getCachedLinuxVerifierCgroupRuntime();
+    ctx.verifierCgroupRuntime = runtime;
+    if (!runtime.capability.available) {
+      const output = `verifier NOT run — cgroup jail unavailable [${runtime.capability.reasonCode}]: ${runtime.capability.detail}`;
+      return { ok: false, code: -1, output, fingerprint: fingerprint(false, output) };
+    }
+    if (!ctx.activeLeaseId) {
+      const output = "verifier NOT run — no active run lease is bound to the verifier journal";
+      return { ok: false, code: -1, output, fingerprint: fingerprint(false, output) };
+    }
+    try {
+      verifierScopeBackend = linuxVerifierCgroupBackend(runtime, {
+        runId: ctx.runId,
+        attemptId,
+        leaseId: ctx.activeLeaseId
+      }, cwd);
+    } catch (error) {
+      const output = `verifier NOT run — ${error instanceof Error ? error.message : String(error)}`;
+      return { ok: false, code: -1, output, fingerprint: fingerprint(false, output) };
+    }
   }
-  const result = spawnSync(command, args, { cwd, encoding: "utf8", timeout: 300_000, env: verifyEnv() });
-  const timedOut = result.error && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
-  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}${timedOut ? "\n[verifier timed out — treated as failure]" : ""}`;
-  const ok = !timedOut && result.status === 0;
-  return { ok, code: result.status ?? -1, output, fingerprint: fingerprint(ok, output) };
+  const transcriptDir = resolve(ctx.runDir, "verifier-transcripts");
+  mkdirSync(transcriptDir, { recursive: true, mode: 0o700 });
+  const result = await runHeadlessChild(
+    ctx,
+    command,
+    args,
+    verifyEnv(),
+    "",
+    cwd,
+    undefined,
+    transcriptDir,
+    300_000,
+    undefined,
+    MAX_TERMINAL_RECORD,
+    {
+      ...(verifierScopeBackend ? { scopeBackend: verifierScopeBackend } : {}),
+      cancelled: () => isCancelled(ctx.runDir)
+    }
+  );
+  const output = `${result.stdout}\n${result.stderr}${result.uncertainReason ? `\n[verifier transport refused: ${result.uncertainReason}]` : ""}`;
+  const ok = result.ok && result.transportOk && result.scopeTrusted;
+  return { ok, code: ok ? 0 : result.code ?? -1, output, fingerprint: fingerprint(ok, output) };
 }
 
 /**
  * Run an ORDERED list of verifier commands. They run in sequence; the first failure stops the
  * chain and the whole gate is red. Success requires every command to pass, in order.
  */
-export function runOrderedVerify(cwd: string, cmds: string[]): VerifyResult {
+export async function runOrderedVerify(
+  ctx: RunContext,
+  cwd: string,
+  cmds: string[],
+  phase = "ordered"
+): Promise<VerifyResult> {
   if (!cmds.length) return { ok: true, code: 0, output: "", fingerprint: fingerprint(true, "") };
   let combined = "";
-  for (const cmd of cmds) {
-    const r = runOneVerify(cwd, cmd);
+  for (const [index, cmd] of cmds.entries()) {
+    const attemptId = `verify-${createHash("sha256").update(phase).update("\0").update(String(index)).update("\0").update(cmd).digest("hex").slice(0, 32)}`;
+    const r = await runOneVerify(ctx, cwd, cmd, attemptId);
     combined += `\n$ ${cmd}\n${r.output}`;
     if (!r.ok) return { ok: false, code: r.code, output: combined, fingerprint: fingerprint(false, combined) };
   }
   return { ok: true, code: 0, output: combined, fingerprint: fingerprint(true, combined) };
 }
 
-function runOrderedVerifyStable(cwd: string, cmds: string[], runs: number): { runs: number; results: VerifyResult[]; stable: boolean } {
+async function runOrderedVerifyStable(
+  ctx: RunContext,
+  cwd: string,
+  cmds: string[],
+  runs: number
+): Promise<{ runs: number; results: VerifyResult[]; stable: boolean }> {
   const iterations = Math.max(1, runs);
   const results: VerifyResult[] = [];
-  for (let i = 0; i < iterations; i++) results.push(runOrderedVerify(cwd, cmds));
+  for (let i = 0; i < iterations; i++) results.push(await runOrderedVerify(ctx, cwd, cmds, `preflight-${i}`));
   return { runs: iterations, results, stable: stableFingerprints(results) };
 }
 
@@ -1202,7 +1267,8 @@ export function runHeadlessChild(
   /** HARD cap on a single stdout record, in RAW INPUT BYTES, enforced identically by the capture tail
    *  and the streaming authority. Overridable so the adversarial suite can drive the COMPLETE real-child
    *  transport at an exact `cap`/`cap + 1` boundary instead of only unit-testing the helper classes. */
-  maxLineBytes = MAX_TERMINAL_RECORD
+  maxLineBytes = MAX_TERMINAL_RECORD,
+  transportOptions?: { scopeBackend?: ScopeBackend; cancelled?: () => boolean }
 ): Promise<ChildResult> {
   return new Promise((resolvePromise) => {
     // Open the evidentiary transcript BEFORE spawning. If a transcript was requested but cannot be
@@ -1286,7 +1352,7 @@ export function runHeadlessChild(
     // boundary is never silently downgraded to a weaker one.
     let scope: ProcessScope;
     try {
-      const backend = ctx.scopeBackend ?? requireScopeBackend();
+      const backend = transportOptions?.scopeBackend ?? ctx.scopeBackend ?? requireScopeBackend();
       scope = backend.open(); // the scope EXISTS and is EMPTY before anything is spawned into it
     } catch (error) {
       closeTranscriptOnFailure();
@@ -1311,8 +1377,9 @@ export function runHeadlessChild(
     let child: ReturnType<typeof spawn>;
     // The scope decorates the argv: an exec-safe trampoline that enters the cgroup and then EXECs the
     // real command — same pid, same pgid, same cwd/env/stdio, the exact argv, no wrapper left behind.
-    const launch = scope.launch(command, args);
+    let launch: ReturnType<ProcessScope["launch"]>;
     try {
+      launch = scope.launch(command, args);
       child = spawn(launch.command, launch.args, {
         cwd,
         // `env` is already a COMPLETE scrubbed environment (see buildProviderEnv) — inherited host
@@ -1373,7 +1440,12 @@ export function runHeadlessChild(
      * `cgroup.kill` → `populated 0` → `rmdir` sequence every other path uses). `scopeTrusted` is that proof
      * and nothing weaker: if the scope cannot be proven empty, the run keeps owning it and says so.
      */
+    let launchRefused = false;
+    let timeout: NodeJS.Timeout | undefined;
     const refuseLaunch = async (why: string): Promise<void> => {
+      if (launchRefused) return;
+      launchRefused = true;
+      if (timeout) clearTimeout(timeout);
       const reaped = await scope.reap(LAUNCH_ABORT_GRACE_MS);
       ctx.children.delete(child);
       if (reaped) {
@@ -1389,6 +1461,7 @@ export function runHeadlessChild(
       }
       const hadTranscript = transcriptFd !== undefined; // closeTranscriptOnFailure clears the handle
       closeTranscriptOnFailure();
+      if (timeout) clearTimeout(timeout);
       const scopeId = scope.scopeId();
       resolvePromise({
         ok: false,
@@ -1402,7 +1475,7 @@ export function runHeadlessChild(
           ? `launch refused before exec: scope ${scopeId} proven empty (no provider was executed)`
           : `launch refused before exec: scope ${scopeId} could NOT be proven empty`,
         uncertainReason:
-          `launch refused: the scope journal ${ctx.scopesPath} could not be durably appended (${why}). ` +
+          `launch refused before exec: a gated launch precondition failed (${why}); journal=${ctx.scopesPath}. ` +
           "No provider was executed: a provider that cannot be recorded could not be found and killed if this run were " +
           `SIGKILLed, so it is never released to run. ${reaped ? "The gated child was killed and its scope proven empty." : `THE SCOPE ${scopeId} COULD NOT BE PROVEN EMPTY — inspect it before re-running.`} ` +
           "Fix the run directory (disk full, read-only, permissions) and re-run.",
@@ -1423,24 +1496,47 @@ export function runHeadlessChild(
       scope.bind(child.pid);
       ctx.ownedGroups.add(child.pid);
       ctx.ownedScopes?.add(scope);
+    }
+    const requiresAuthenticatedStatus = Boolean(statusStream && scope.noteStatusEnd);
+    let handshakeCompleted = false;
+    const journalAndRelease = (): void => {
+      if (handshakeCompleted || launchRefused) return;
+      handshakeCompleted = true;
+      if (!child.pid) {
+        closeLaunchGate(gate);
+        void refuseLaunch("spawned launcher has no PID");
+        return;
+      }
+      if (requiresAuthenticatedStatus && !scope.enrolled()) {
+        closeLaunchGate(gate);
+        void refuseLaunch(scope.preExecFailure() ?? "authenticated enrollment status was not accepted");
+        return;
+      }
       try {
-        recordLaunchedScope(ctx, scope.scopeId());
+        recordLaunchedScope(ctx, scope.journalLine?.() ?? scope.scopeId());
       } catch (error) {
         journalFailure = (error as Error).message;
       }
+      if (journalFailure !== undefined) {
+        closeLaunchGate(gate);
+        child.on("error", () => {
+          /* a late spawn error on a launch we already refused must not throw */
+        });
+        void refuseLaunch(journalFailure);
+        return;
+      }
+      releaseLaunchGate(gate, launch.gateToken); // authenticated + on disk — the provider may now exec
+    };
+    if (requiresAuthenticatedStatus && statusStream) {
+      const statusEnded = (): void => {
+        scope.noteStatusEnd?.();
+        journalAndRelease();
+      };
+      statusStream.once("end", statusEnded);
+      statusStream.once("close", statusEnded);
+    } else {
+      journalAndRelease();
     }
-    if (journalFailure !== undefined) {
-      // FAIL CLOSED, with nothing left running. Close the gate (the shell exits 126 without exec), then
-      // kill the scope and PROVE it empty before resolving — a refused launch that left a live process
-      // behind would be exactly the unrecorded agent this handshake exists to make impossible.
-      closeLaunchGate(gate);
-      child.on("error", () => {
-        /* a late spawn error on a launch we already refused must not throw */
-      });
-      void refuseLaunch(journalFailure);
-      return;
-    }
-    releaseLaunchGate(gate); // the scope is on disk — the provider may now exec
 
     const hash = createHash("sha256");
     let bytesWritten = 0;
@@ -1509,9 +1605,9 @@ export function runHeadlessChild(
     let stdinGraceTimer: NodeJS.Timeout | undefined;
 
     const doFinish = (): void => {
-      if (settled) return;
+      if (settled || launchRefused) return;
       settled = true;
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       if (stdinGraceTimer) clearTimeout(stdinGraceTimer);
       ctx.children.delete(child);
       // Reconcile SCOPE and process-group OWNERSHIP on EVERY completion path. A group PROVEN gone (ESRCH)
@@ -1587,6 +1683,7 @@ export function runHeadlessChild(
       const outcome = out.finish();
       const framingFatal = outcome.fatal;
       const reasons: string[] = [];
+      if (transportOptions?.cancelled?.()) reasons.push("cancelled");
       if (timedOut) reasons.push("timeout");
       if (timedOut && !timedOutScopeReaped) reasons.push("process scope not proven reaped after timeout");
       // A clean leader close with a surviving descendant means the provider left live scope behind — the
@@ -1675,7 +1772,7 @@ export function runHeadlessChild(
     // Resolve only once BOTH the child has closed AND stdin has settled (or after a bounded grace),
     // so we never accept a turn while the prompt may still be mid-delivery.
     function maybeFinish(): void {
-      if (settled || !childClosed) return;
+      if (settled || launchRefused || !childClosed) return;
       // While a timed-out turn is reaping its process group, ONLY the reap's completion may finalize —
       // a leader 'close' arriving mid-reap must not resolve the turn before the scope is proven empty.
       if (awaitingTimeoutReap || awaitingScopeReap) return;
@@ -1717,7 +1814,7 @@ export function runHeadlessChild(
       }
     }
 
-    const timeout = setTimeout(() => {
+    timeout = setTimeout(() => {
       timedOut = true;
       awaitingTimeoutReap = true; // suppress close-driven finish until the reap resolves the turn
       scopeSettled = true; // this IS the turn's one scope teardown — maybeFinish must not start another
@@ -2218,7 +2315,7 @@ async function dispatchTask(
   const isRepair = task.attempts > 0 || task.status === "blocked" || task.status === "rejected";
   const testFiles = discoverTestFiles(workCwd);
   const testHashBefore = hashFiles(workCwd, testFiles);
-  const baselineVerify = runOrderedVerify(workCwd, verifyCmds);
+  const baselineVerify = await runOrderedVerify(ctx, workCwd, verifyCmds, `baseline-${task.id}`);
 
   const context = gatherContext(ctx.boardDir, role.name, task);
   const taskText = [
@@ -2261,7 +2358,7 @@ async function dispatchTask(
     return block("Agent reported success but made no changes to the working tree.", "no_change");
   }
 
-  const verify = runOrderedVerify(workCwd, verifyCmds);
+  const verify = await runOrderedVerify(ctx, workCwd, verifyCmds, `implementation-${task.id}`);
   state.verifyFingerprint = verify.fingerprint;
   if (baselineVerify.ok && !verify.ok) {
     return block(`Verification regressed — ${failureTail(verify.output, "")}`, "verify_regression");
@@ -2302,6 +2399,7 @@ export async function runAutonomyLoop(
   // processes for the same run can never both proceed. We do NOT clear a pending cancel on
   // startup: a run that was asked to stop stays stopped.
   const lease = acquireRunLease(ctx.runDir);
+  ctx.activeLeaseId = lease.nonce;
   const verifyCmds = detectVerifyCommands(ctx);
   initCostLedger(ctx.boardDir);
   let state = loadLoopState(ctx);
@@ -2382,6 +2480,7 @@ export async function runAutonomyLoop(
       cleanupRun(ctx.cwd, ctx.project.name, ctx.runId);
     }
     lease.release();
+    ctx.activeLeaseId = undefined;
     return reports;
   };
 
@@ -2462,7 +2561,7 @@ export async function runAutonomyLoop(
     // cgroup.kill and did our best" is not proof — only the cgroup being gone is (rmdir succeeds solely
     // on an empty cgroup). Anything less and we would be re-dispatching a task that is still being
     // worked on by a process we cannot see, cannot bill, and cannot stop.
-    const recovery = reapAbandonedScopes(ctx);
+    const recovery = await reapAbandonedScopes(ctx);
     if (recovery.unresolved.length) {
       const detail = recovery.unresolved.map((u) => `  ${u.id} [${u.outcome}]\n    → ${u.advice}`).join("\n");
       state.status = "blocked";
@@ -2518,13 +2617,25 @@ export async function runAutonomyLoop(
     saveLoopState(ctx, state);
     logLoopEvent(ctx, { iter: 0, event: "loop_start", detail: `roles=${ctx.project.roles.length} execute=${options.execute}` });
 
+    if (options.execute && verifyCmds.length && !trustedRunnerActive()) {
+      ctx.verifierCgroupRuntime = await getCachedLinuxVerifierCgroupRuntime();
+      const capability = ctx.verifierCgroupRuntime.capability;
+      logLoopEvent(ctx, {
+        iter: 0,
+        event: capability.available ? "verifier_cgroup_ready" : "verifier_cgroup_unavailable",
+        detail: capability.available
+          ? `strict cgroup2 verifier jail ready on ${capability.runtimeIdentity.cgroupMountDevice}`
+          : `[${capability.reasonCode}] ${capability.detail}`
+      });
+    }
+
     const isolate = Boolean(options.execute && ctx.target);
     const maxParallel = isolate ? Math.max(1, ctx.loop.maxParallel) : 1;
     const verifyStabilityRuns = Math.max(1, ctx.loop.verifyStabilityRuns);
 
     // Preflight: prove the verifier is deterministic on the integration baseline.
     if (options.execute && ctx.target && verifyCmds.length) {
-      const preflight = runOrderedVerifyStable(ctx.target.integration.path, verifyCmds, verifyStabilityRuns);
+      const preflight = await runOrderedVerifyStable(ctx, ctx.target.integration.path, verifyCmds, verifyStabilityRuns);
       const final = preflight.results[preflight.results.length - 1];
       if (final) state.verifyFingerprint = final.fingerprint;
       logLoopEvent(ctx, { iter: 0, event: "preflight_verify", detail: `runs=${preflight.runs} stable=${preflight.stable} ok=${final?.ok}` });
@@ -2534,6 +2645,14 @@ export async function runAutonomyLoop(
         state.lastStopReason = "preflight verifier unstable";
         saveLoopState(ctx, state);
         logLoopEvent(ctx, { iter: 0, event: "stopped", detail: state.lastStopReason });
+        return finalize();
+      }
+      if (final?.code === -1 && final.output.includes("verifier NOT run")) {
+        state.status = "unverified";
+        state.phase = "stopped";
+        state.lastStopReason = `verifier launch capability unavailable: ${failureTail(final.output, "")}`;
+        saveLoopState(ctx, state);
+        logLoopEvent(ctx, { iter: 0, event: "verifier_launch_refused", detail: state.lastStopReason });
         return finalize();
       }
       state.repeatFailures = 0;
@@ -2670,7 +2789,7 @@ export async function runAutonomyLoop(
         logLoopEvent(ctx, { iter: iteration, event: "budget_limit", detail: state.lastStopReason });
         break;
       }
-      if (applyCompletion(ctx, state, evaluateCompletion(ctx, options.execute, verifyCmds, state))) {
+      if (applyCompletion(ctx, state, await evaluateCompletion(ctx, options.execute, verifyCmds, state))) {
         logLoopEvent(ctx, { iter: iteration, event: "complete", detail: `${state.status}: ${state.lastStopReason}` });
         break;
       }
@@ -2689,7 +2808,7 @@ export async function runAutonomyLoop(
     // deterministic verifier is green (dry-run success is `planned`). Everything else is a
     // non-success terminal state. Cancelled/blocked/budget never succeed.
     if (state.status === "running") {
-      const completion = evaluateCompletion(ctx, options.execute, verifyCmds, state);
+      const completion = await evaluateCompletion(ctx, options.execute, verifyCmds, state);
       if (!applyCompletion(ctx, state, completion)) {
         state.status = "blocked";
         state.phase = "stopped";
@@ -2722,7 +2841,7 @@ type Completion = "done" | "planned" | "unverified" | "incomplete";
  *  - unverified: --execute, every task accepted but there is NO green final verifier (no
  *                verifier configured, or it is red). Terminal but NOT success.
  */
-function evaluateCompletion(ctx: RunContext, execute: boolean, verifyCmds: string[], state: LoopRunState): Completion {
+async function evaluateCompletion(ctx: RunContext, execute: boolean, verifyCmds: string[], state: LoopRunState): Promise<Completion> {
   const views = foldBoard(ctx.boardDir);
   if (!views.length) return "incomplete";
   const allAccepted = views.every((t) => t.status === "done");
@@ -2734,7 +2853,7 @@ function evaluateCompletion(ctx: RunContext, execute: boolean, verifyCmds: strin
     logLoopEvent(ctx, { iter: state.iteration, event: "unverified", detail: "all tasks accepted but no verifier configured" });
     return "unverified";
   }
-  const v = runOrderedVerify(ctx.target.integration.path, verifyCmds);
+  const v = await runOrderedVerify(ctx, ctx.target.integration.path, verifyCmds, "final");
   state.verifyFingerprint = v.fingerprint;
   if (v.ok) {
     state.lastGreenCommit = integrationTip(ctx.target.integration);
@@ -2887,7 +3006,7 @@ async function reviewPass(
     // Verify the candidate BEFORE it is published. On failure, ABANDON the candidate (reattach to the
     // unmoved branch) — non-destructive, no rewind of any published history.
     if (ctx.loop.postMergeVerify && verifyCmds.length) {
-      const v = runOrderedVerify(ctx.target.integration.path, verifyCmds);
+      const v = await runOrderedVerify(ctx, ctx.target.integration.path, verifyCmds, `post-merge-${task.id}`);
       state.verifyFingerprint = v.fingerprint;
       if (!v.ok) {
         abandonCandidate(ctx.target.integration);
@@ -3064,8 +3183,17 @@ export function parseVerdict(raw: string): Verdict {
  */
 function recordLaunchedScope(ctx: RunContext, scopeId: string): void {
   const fsync = ctx.scopeJournalFsync ?? fsyncSync;
-  const fd = openSync(ctx.scopesPath, "a", 0o600);
+  if (!scopeId || scopeId.includes("\n") || scopeId.includes("\r")) throw new Error("scope journal record must be one non-empty physical line");
+  const fd = openSync(
+    ctx.scopesPath,
+    fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
+    0o600
+  );
   try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || (process.geteuid && stat.uid !== process.geteuid())) {
+      throw new Error("scope journal is not a private, singly-linked file owned by the effective uid");
+    }
     writeFull(fd, Buffer.from(`${scopeId}\n`, "utf8")); // a SHORT write is not a record — writeFull throws
     fsync(fd);
   } finally {
@@ -3105,7 +3233,7 @@ function recordLaunchedScope(ctx: RunContext, scopeId: string): void {
  */
 type ScopeRecovery = { reaped: number; unresolved: { id: string; outcome: ReapOutcome; advice: string }[] };
 
-function reapAbandonedScopes(ctx: RunContext): ScopeRecovery {
+async function reapAbandonedScopes(ctx: RunContext): Promise<ScopeRecovery> {
   let record: string;
   try {
     record = readFileSync(ctx.scopesPath, "utf8");
@@ -3117,9 +3245,37 @@ function reapAbandonedScopes(ctx: RunContext): ScopeRecovery {
   // just SIGKILLed. An injected (in-memory) scope tree has no kernel and kills synchronously, so it needs
   // no grace — and a test must never sit through a 5s wait for a fake process to "die".
   const os = ctx.scopeOs;
-  const result = recoverAbandonedScopes(record, (ref) =>
+  const legacyLines: string[] = [];
+  const verifierReaped: string[] = [];
+  const verifierRetained: string[] = [];
+  const verifierUnresolved: ScopeRecovery["unresolved"] = [];
+  for (const line of record.split("\n").map((value) => value.trim()).filter(Boolean)) {
+    const parsed = parseVerifierCgroupJournalLine(line);
+    if (parsed.kind !== "v2") {
+      legacyLines.push(line);
+      continue;
+    }
+    const outcome = await reapLinuxVerifierCgroupJournalLine(line);
+    if (outcome === "reaped") verifierReaped.push(line);
+    else if (outcome !== "gone") {
+      verifierRetained.push(line);
+      verifierUnresolved.push({
+        id: line,
+        outcome,
+        advice: outcome === "foreign"
+          ? "the recorded verifier cgroup name now resolves to a different device/inode; it was not touched. Confirm the old scope is gone and remove the retained record manually."
+          : "the exact v2 verifier cgroup could not be proven empty and removed; its record is retained and the run remains blocked."
+      });
+    }
+  }
+  const legacy = recoverAbandonedScopes(legacyLines.join("\n"), (ref) =>
     os ? reapAbandonedScope(ref, os, { timeoutMs: 0 }) : reapAbandonedScope(ref)
   );
+  const result = {
+    reaped: [...legacy.reaped, ...verifierReaped],
+    retained: [...legacy.retained, ...verifierRetained],
+    unresolved: [...legacy.unresolved, ...verifierUnresolved]
+  };
 
   for (const line of result.reaped) {
     logLoopEvent(ctx, { iter: 0, event: "orphan_scope_reaped", detail: `killed the agents abandoned in ${line}` });
@@ -3136,7 +3292,7 @@ function reapAbandonedScopes(ctx: RunContext): ScopeRecovery {
   // If the rewrite itself fails we keep the old, LARGER record: re-probing an already-dead scope next
   // time costs one `stat` and yields `gone`. Losing a line costs a ghost.
   try {
-    writeFileSync(ctx.scopesPath, result.retained.length ? `${result.retained.join("\n")}\n` : "");
+    writeStateFileDurable(ctx.scopesPath, result.retained.length ? `${result.retained.join("\n")}\n` : "");
   } catch {
     // Keep the stale (superset) record — it can only ever make us MORE careful, never less.
   }

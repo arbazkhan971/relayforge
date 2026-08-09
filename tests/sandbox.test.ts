@@ -38,6 +38,12 @@ describe("bwrap policy (deterministic argv proof)", () => {
     const shared = buildBwrapArgs("bash", ["-lc", "x"], { writableRoots: ["/w"], cwd: "/w" }, false);
     expect(shared).not.toContain("--unshare-net");
   });
+
+  it("never grants a writable bind to /sys or a lexical descendant", () => {
+    expect(() => buildBwrapArgs("bash", ["-lc", "x"], { writableRoots: ["/sys"], cwd: "/" }, true)).toThrow(/beneath \/sys/);
+    expect(() => buildBwrapArgs("bash", ["-lc", "x"], { writableRoots: ["/sys/fs/cgroup"], cwd: "/" }, true)).toThrow(/beneath \/sys/);
+    expect(() => buildBwrapArgs("bash", ["-lc", "x"], { writableRoots: ["/tmp/../sys/kernel"], cwd: "/" }, true)).toThrow(/beneath \/sys/);
+  });
 });
 
 describe("fails closed without a launchable sandbox", () => {

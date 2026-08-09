@@ -1,6 +1,6 @@
 # ADR 001: verifier-owned nested cgroup-v2 delegation
 
-- Status: Accepted; implementation not yet landed
+- Status: Accepted and implemented; required-host characterization passed
 - Date: 2026-08-09
 - Decision owners: RelayForge maintainers
 - Research gate: [Phase 00.2 verifier cgroup delegation audit](../reference/phase-00-2-verifier-cgroup-delegation-audit.md)
@@ -37,6 +37,36 @@ occupy the namespace root, so enabling a domain controller there may correctly
 fail under the no-internal-process rule. CPU, memory, swap, pids, cpuset, and I/O
 controller policy remain parent-owned. A later controller-delegation design
 must use a supervisor/payload topology and a separate ADR.
+
+## Implementation and characterization status
+
+The production implementation is in `src/cgroup-delegation.ts` and
+`src/cgroup-delegation-linux.ts`, with the shared handshake/transport integration
+in `src/scope.ts` and `src/orchestrator.ts`. It independently implements the
+audited behavior; no upstream source or test was copied.
+
+On 2026-08-09 the required Linux characterization passed on kernel
+`6.17.0-1021-gcp`, cgroup2 device `0:29`, and canonical `/usr/bin/bwrap`:
+
+- every behavioral capability field passed, including private namespace root,
+  exact FD-bound device/inode, organizational child lifecycle, root-policy
+  denial, parent/sibling hiding, zero effective capabilities, source-FD
+  closure, unchanged host mount options, and exact scope settlement;
+- the real per-verifier session passed authenticated FD3 EOF/status, v2
+  journal fsync-before-`GO`, bounded transport, timeout/cancellation cleanup,
+  journal-fsync refusal, foreign-inode recovery, and no-leaked-scope tests;
+- exactly 256 descendants and depth 16 succeeded, while each next `mkdir`
+  failed with `EAGAIN` as required;
+- the actual nested transport/launch/settlement suites passed 46/46, and the
+  remaining streaming, fallback, receipt, resume, cost, ledger, and containment
+  suites passed 193/193 through the production delegated verifier jail, with
+  zero capability skips.
+
+The ordinary test job still retains platform guards and asserts a typed stable
+unavailable reason where this primitive does not exist. The designated
+`RELAYFORGE_TEST_REQUIRE_CGROUP=1` invocation converts any such result into a
+failure; this environment variable exists only in test code and cannot alter
+product capability or launch behavior.
 
 ## Non-negotiable capability contract
 

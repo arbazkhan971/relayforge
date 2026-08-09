@@ -8,11 +8,11 @@ let a Bubblewrap-confined verifier create nested cgroup-v2 scopes without
 exposing the host hierarchy, weakening the existing process-settlement proof,
 or silently dropping containment on an unsupported host.
 
-The gate is complete at the design level. Implementation may proceed only
-under [ADR 001](../adr/001-verifier-cgroup-delegation.md), and the existing
-scope-dependent skips may be removed only after the required real-Linux job
-passes without capability skips. No product source or tests were changed by
-this audit.
+The research gate and its ADR-governed implementation are complete. The
+required real-Linux invocation passed the capability, exact-limit, production
+session, recovery, and nested-suite characterization described below. Platform
+guards remain only for ordinary unsupported-host jobs; the required job ran the
+corresponding suites with zero capability skips.
 
 The result is a synthesis, not a port. No coding-agent sandbox surveyed safely
 delegates a bounded writable cgroup subtree through Bubblewrap end to end.
@@ -180,8 +180,8 @@ capability, and pre-launch rejection. At the audited pin the KEP is
 
 ## Current RelayForge baseline and precise gap
 
-RelayForge already has stronger outer settlement semantics than the primary
-reference:
+Before P0(2), RelayForge already had stronger outer settlement semantics than
+the primary reference:
 
 - `src/scope.ts` creates a unique `loop-<hex>` child below the process's
   delegated cgroup, records its inode, enrolls a pre-exec trampoline, gates the
@@ -194,9 +194,10 @@ reference:
 - `src/sandbox.ts` gives Bubblewrap a read-only `/`, private `/tmp`, optional
   network namespace, and narrow writable checkout binds. It neither creates a
   cgroup namespace nor exposes a writable exact subtree.
-- `runOneVerify` currently uses synchronous verifier execution outside the
-  centralized scoped transport. The scope-dependent suites consequently skip
-  inside the verifier-identical jail because cgroupfs remains read-only.
+- `runOneVerify` used synchronous verifier execution outside the centralized
+  scoped transport. The P0(2) implementation replaced it with async ordered
+  verification through that same bounded transport and a verifier-specific
+  typed cgroup backend; no second output/timeout authority remains.
 
 The missing feature is not a generic writable path. It is a verifier-only
 composition that preserves the outer inode-pinned settlement object while
@@ -379,12 +380,19 @@ Any future substantial copy or close port must update
 identify exact source files and commits, preserve required copyright/license
 headers and NOTICE material, and receive a separate license review.
 
-## Remaining empirical gates
+## Implementation evidence and remaining matrix work
 
-The architecture has no unresolved design fork: ADR 001 fixes the P0(2)
-boundary, defaults, failure behavior, and defers domain controllers. Two facts
-must still be proven before integration or skip removal: the supported
-Bubblewrap/kernel combinations must exhibit the required monitor/namespace/FD
-placement, and the values 256 descendants/depth 16 must accommodate the actual
-nested RelayForge suites. Failure of either characterization blocks integration
-and requires an ADR amendment; it does not authorize a fallback.
+The initial required host (Linux `6.17.0-1021-gcp`, cgroup2 device `0:29`,
+canonical `/usr/bin/bwrap`) proved every namespace/FD/placement assertion,
+unchanged mount options, authenticated gated launch, v2 recovery, and exact
+structural enforcement: 256 descendants and depth 16 succeeded and the next
+creation at each boundary returned `EAGAIN`. The production jail then ran the
+actual nested RelayForge suites: 46/46 transport/launch/settlement tests and
+193/193 streaming/fallback/receipt/resume/cost/ledger/containment tests passed
+with zero capability skips.
+
+This closes the implementation gate for the characterized host. Release CI
+should retain the required-capability invocation and expand the matrix across
+supported kernel/Bubblewrap versions. A future matrix failure is a typed
+unsupported result or an ADR amendment; it never authorizes path binding,
+opportunistic namespaces, disabled limits, or unsandboxed verification.

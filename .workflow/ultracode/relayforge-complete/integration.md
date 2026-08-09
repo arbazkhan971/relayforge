@@ -56,9 +56,14 @@ contention that made the sibling CLI traversal test exceed its unchanged bound.
 - The pure policy/protocol kernel is implemented with 33 focused tests covering
   all 15 unavailable reasons, mount/delegation parsing, limits, identity,
   journal/status/gate grammar, state transitions, cleanup, and recovery.
-- The host exposes the required cgroup-v2 and Bubblewrap primitives. The real
-  behavioral probe, launcher/wiring, and non-skipping nested-suite acceptance
-  remain active; no product path advertises availability yet.
+- The real Linux adapter, authenticated FD3/4/5 launcher, runtime-identity cache,
+  shared bounded verifier transport, v2 journal/recovery, doctor reporting and
+  `/sys` writable-root denial are integrated. Availability is published only
+  after the disposable behavioral probe passes.
+- Required-host characterization passed 21/21 three times. The production jail
+  ran 46/46 transport/launch/settlement tests and 193/193 streaming, fallback,
+  receipt, resume, cost, ledger and containment tests with zero skips. Exact
+  descendant/depth boundaries fail with `EAGAIN`; no process or cgroup leaked.
 
 ## Checkpoint verification
 

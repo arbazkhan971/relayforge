@@ -27,7 +27,7 @@ Begins only after `phase0-synthesis` is complete.
 | `provision-core` | worker | `src/provision.ts`, `tests/provision.test.ts` | running |
 | `provision-wiring` | worker | orchestrator/index/fake provider/new E2E test | running |
 | `provision-doctor` | worker | config/doctor/config docs/new focused test | running |
-| `p0-closeout` | parent | roadmap, audit, attribution, workflow results | Integrated review plus committed-HEAD verification |
+| `p0-closeout` | parent | roadmap, audit, attribution, workflow results | done |
 
 Workers must not modify existing safety, settlement, CI, or unrelated test files.
 The parent will assign exact disjoint ownership after auditing the current API and
@@ -37,7 +37,7 @@ the rejected historical attempt.
 
 Each later capability wave is preceded by a new research wave and Reference Audit:
 
-1. P0.2 verifier-scope delegation.
+1. P0.2 verifier-scope delegation — implementation and required-host characterization done.
 2. P1 durable daemon and event transport.
 3. P2 steering and lifecycle derivation.
 4. P3 SCM feedback.

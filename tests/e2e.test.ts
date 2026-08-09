@@ -426,12 +426,15 @@ describe("verifier normalization", () => {
 });
 
 describe("ordered verifiers", () => {
-  it("runs commands in order and stops the chain at the first failure", () => {
-    const both = runOrderedVerify(tmpdir(), ["true", "echo SECOND_RAN"]);
+  it("runs commands in order and stops the chain at the first failure", async () => {
+    const { repoDir } = setupRepo();
+    const loaded = loadConfig(join(repoDir, "loop.config.yaml"));
+    const ctx = prepareRun(loaded, loaded.config.projects[0], "ordered-verify", "test ordered verification");
+    const both = await runOrderedVerify(ctx, tmpdir(), ["true", "echo SECOND_RAN"]);
     expect(both.ok).toBe(true);
     expect(both.output).toContain("SECOND_RAN");
 
-    const stop = runOrderedVerify(tmpdir(), ["false", "echo SECOND_RAN"]);
+    const stop = await runOrderedVerify(ctx, tmpdir(), ["false", "echo SECOND_RAN"]);
     expect(stop.ok).toBe(false);
     expect(stop.output).not.toContain("SECOND_RAN");
   });

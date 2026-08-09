@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
@@ -40,6 +40,17 @@ export type SandboxPolicy = {
   /** Working directory inside the sandbox. */
   cwd: string;
 };
+
+function assertNoSysWritableRoots(roots: readonly string[]): void {
+  for (const configured of roots) {
+    const lexical = resolve(configured);
+    let physical = lexical;
+    try { physical = realpathSync(lexical); } catch { /* a missing root is still checked lexically */ }
+    if (physical === "/sys" || physical.startsWith("/sys/") || lexical === "/sys" || lexical.startsWith("/sys/")) {
+      throw new Error(`refusing writable sandbox bind beneath /sys: ${configured}`);
+    }
+  }
+}
 
 function which(cmd: string): boolean {
   return spawnSync("bash", ["-lc", `command -v '${cmd.replaceAll("'", "'\\''")}'`], { stdio: "ignore" }).status === 0;
@@ -182,6 +193,7 @@ export function containCommand(command: string, args: string[], policy: SandboxP
 export function wrapCommand(command: string, args: string[], policy: SandboxPolicy): { command: string; args: string[] } {
   const mech = detectSandbox();
   const writable = [policy.writableRoot, ...(policy.extraWritable ?? [])].map((p) => resolve(p)).filter((p) => existsSync(p));
+  assertNoSysWritableRoots([policy.writableRoot, ...(policy.extraWritable ?? [])]);
 
   if (mech === "bwrap") {
     return { command: "bwrap", args: buildBwrapArgs(command, args, { ...policy, writableRoots: writable }, !policy.network && netnsSupported()) };
@@ -209,6 +221,7 @@ export function buildBwrapArgs(
   policy: { writableRoots: string[]; cwd: string },
   isolateNetwork: boolean
 ): string[] {
+  assertNoSysWritableRoots(policy.writableRoots);
   const jail = [
     "--ro-bind", "/", "/",
     "--dev", "/dev",

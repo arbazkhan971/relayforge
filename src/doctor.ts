@@ -9,6 +9,7 @@ import { sandboxInfo } from "./sandbox.js";
 import { scopeInfo } from "./scope.js";
 import { isCleanWorktree, worktreesSupported } from "./worktree.js";
 import { inspectProvisioning, type ProvisionIssue, type ProvisionSpec } from "./provision.js";
+import { cachedLinuxVerifierCgroupCapability } from "./cgroup-delegation-linux.js";
 
 export type DoctorCheck = { name: string; status: "ok" | "warn" | "fail"; detail: string; fix?: string };
 export type DoctorReport = { ok: boolean; checks: DoctorCheck[] };
@@ -127,6 +128,29 @@ export function runDoctor(loaded: LoadedConfig | undefined, cwd: string, project
           detail: `no strong process scope: ${scope.detail}`,
           fix: "`loop run --execute` FAILS CLOSED without one: a provider's descendants could escape a process group via setsid/double-fork. Run under a systemd user session with a delegated cgroup v2 (`systemd-run --user --scope loop run …`), or on a host with cgroup v2 delegation."
         }
+  );
+
+  const verifierCgroup = cachedLinuxVerifierCgroupCapability();
+  checks.push(
+    verifierCgroup?.available
+      ? {
+          name: "verifier-cgroup-jail",
+          status: "ok",
+          detail: `behaviorally proven cgroup2 jail (${verifierCgroup.runtimeIdentity.cgroupMountDevice}; strict namespaces + FD bind)`
+        }
+      : verifierCgroup
+        ? {
+            name: "verifier-cgroup-jail",
+            status: "fail",
+            detail: `[${verifierCgroup.reasonCode}] ${verifierCgroup.detail}`,
+            fix: "Verifier execution fails closed on this host. Provide delegated cgroup v2 with nsdelegate and a trusted Bubblewrap installation; the execute preflight records the same typed refusal."
+          }
+        : {
+            name: "verifier-cgroup-jail",
+            status: "warn",
+            detail: "not behaviorally probed in this process yet; --execute performs the disposable-scope probe before any verifier launch",
+            fix: "Run an execute preflight on the target host to populate the runtime-identity-keyed capability result."
+          }
   );
 
   // A missing config is a warn (run `loop init`); a config that exists but does not load is a

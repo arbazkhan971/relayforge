@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, 
 import { resolve } from "node:path";
 import { isProcessGroupAlive, realScopeCaps, terminateScope, type ProcessScopeCaps } from "./runtime.js";
 import { trustedRunnerActive } from "./sandbox.js";
+import { parseVerifierCgroupJournalLine } from "./cgroup-delegation.js";
 
 /**
  * THE PROCESS-SCOPE BACKEND — containment a provider cannot walk out of.
@@ -260,10 +261,10 @@ const GATE_SH = [
  * Release a child parked at the pre-exec gate: it may now `exec` the provider. The caller must have
  * DURABLY journaled the scope's exact identity first — that ordering is the whole point of the gate.
  */
-export function releaseLaunchGate(gate: NodeJS.WritableStream | null | undefined): void {
+export function releaseLaunchGate(gate: NodeJS.WritableStream | null | undefined, token = GATE_RELEASE): void {
   if (!gate) return;
   try {
-    gate.write(GATE_RELEASE);
+    gate.write(token);
     gate.end();
   } catch {
     // A child that is already gone cannot exec anything either; the transport's own teardown decides.
@@ -632,6 +633,16 @@ export function recoverAbandonedScopes(
   for (const line of record.split("\n").map((l) => l.trim()).filter(Boolean)) {
     const ref = parseScopeId(line);
     if (!ref) {
+      const verifier = parseVerifierCgroupJournalLine(line);
+      if (verifier.kind === "v2") {
+        retained.push(line);
+        unresolved.push({
+          id: line,
+          outcome: "unsupported",
+          advice: "this is a valid v2 verifier-cgroup journal record and requires device/inode-pinned verifier recovery; it is retained rather than downgraded to legacy inode-only recovery."
+        });
+        continue;
+      }
       // Not a scope id we can read. It is NOT therefore harmless: it may be a corrupted/truncated line
       // for a scope this run really owns. Keep it, and fail closed.
       retained.push(line);
@@ -661,7 +672,15 @@ export function recoverAbandonedScopes(
  *  has durably recorded it. `statusFd` carries the pre-exec enrolment token (absent for a backend with
  *  no enrolment step); `gateFd` is the pipe whose release token is the child's only permission to
  *  `exec` the provider — every backend has one, because the durable-record invariant is not optional. */
-export type LaunchSpec = { command: string; args: string[]; stdio: StdioOptions; statusFd?: number; gateFd: number };
+export type LaunchSpec = {
+  command: string;
+  args: string[];
+  stdio: StdioOptions;
+  statusFd?: number;
+  gateFd: number;
+  /** Defaults to the legacy `go\n`; verifier cgroup sessions require the ADR's exact `GO\n`. */
+  gateToken?: string;
+};
 
 /** One call's owned scope: created BEFORE the provider, torn down after it, removed only by us. */
 export interface ProcessScope {
@@ -676,8 +695,12 @@ export interface ProcessScope {
   ref(): ScopeRef | undefined;
   /** The durable scope id, or "unspawned". */
   scopeId(): string;
+  /** Optional versioned record; fsynced as one physical line before the launch gate is released. */
+  journalLine?(): string;
   /** Feed the trampoline's fd-3 status bytes (no-op for a backend without one). */
   noteStatus(chunk: Buffer): void;
+  /** Optional exact-message boundary notification for authenticated status protocols. */
+  noteStatusEnd?(): void;
   /** Whether the child reported that it entered the scope BEFORE exec'ing the provider. */
   enrolled(): boolean;
   /** Why the child failed BEFORE exec (so a provider that never ran is not read as a provider failure). */
