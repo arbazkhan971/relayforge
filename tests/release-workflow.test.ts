@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 const releaseText = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+const sourceSmokeText = readFileSync(new URL("../scripts/smoke.mjs", import.meta.url), "utf8");
 const release = parse(releaseText) as { jobs: Record<string, { needs?: string | string[]; if?: string; permissions?: Record<string, string>; "runs-on"?: string | string[]; steps?: Array<Record<string, unknown>> }> };
 const ci = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8")) as { jobs: Record<string, unknown> };
 
@@ -107,6 +108,8 @@ describe("release workflow authority", () => {
     expect(smokeRun).toContain("SMOKE PASS (contained host — verified delivery on the run branch):");
     expect(smokeRun).not.toContain("fail-closed on a host without containment");
     expect(smokeRun).toContain("set -euo pipefail");
+    expect(sourceSmokeText).toContain("verification: feature present");
+    expect(sourceSmokeText).not.toMatch(/\$\{?RANDOM|\$\(date/iu);
     // Browser proof is same-job, after exact artifact build, driven by the manifest tarball path.
     const browserRun = String(steps[browser]?.run);
     expect(browserRun).toContain("set -euo pipefail");

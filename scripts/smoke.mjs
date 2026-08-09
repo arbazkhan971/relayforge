@@ -62,7 +62,10 @@ const dir = mkdtempSync(join(tmpdir(), "loop-smoke-"));
 try {
   // 1. Baseline disposable repo.
   sh("git init -q && git config user.email t@t.t && git config user.name t && git config commit.gpgsign false", dir);
-  writeFileSync(join(dir, "verify.sh"), '#!/usr/bin/env bash\necho "verify at $(date +%H:%M:%S) ${RANDOM}ms"\ntest -f feature.txt\n');
+  // The release smoke requests two stable verifier runs, so its own fixture
+  // output must be deterministic. Nondeterministic-verifier refusal is covered
+  // separately; putting wall-clock and random output here made the strong-path smoke probabilistic.
+  writeFileSync(join(dir, "verify.sh"), '#!/usr/bin/env bash\necho "verification: feature present"\ntest -f feature.txt\n');
   writeFileSync(join(dir, "app.test.js"), "// grader\n");
   writeFileSync(join(dir, ".gitignore"), ".loop/\nPROJECT-INTELLIGENCE.md\n");
   writeFileSync(
