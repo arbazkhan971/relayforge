@@ -85,6 +85,8 @@ describe("public steering package surface", () => {
     }
   });
 
+  // Two strict child `tsc` processes (skipLibCheck: false) exceed Vitest's 30s default under the
+  // serialized required-cgroup full suite; assertions and temp cleanup are unchanged.
   it("typechecks an external consumer against safe root steering exports and rejects authority names", () => {
     expect(existsSync(typescriptCli)).toBe(true);
     const prefix = mkdtempSync(resolve(tmpdir(), "relayforge-steering-consumer-"));
@@ -197,7 +199,7 @@ void [createParentSteeringService, sendSteeringIpcRequest, startSteeringIpcServe
     } finally {
       rmSync(prefix, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 
   it.each([
     "relayforge/steering",
