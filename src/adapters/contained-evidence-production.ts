@@ -976,6 +976,23 @@ function decodeSessionCreateFromDurableTranscript(
   }
 }
 
+function requireWorkerPromptEvidence(events: readonly NormalizedAdapterEvent[]): number {
+  const assistantBytes = assistantOutputBytes(events);
+  if (assistantBytes <= 0) {
+    throw new ContainedAdapterCharacterizationUnavailable(
+      "opencode",
+      "worker prompt produced no assistant output; prompt-roundtrip is unproven"
+    );
+  }
+  if (!hasStreamingDeltas(events)) {
+    throw new ContainedAdapterCharacterizationUnavailable(
+      "opencode",
+      "worker prompt produced no streaming assistant deltas; streaming is unproven"
+    );
+  }
+  return assistantBytes;
+}
+
 function deriveBehavioralEvidence(input: Readonly<{
   version: ChildResult;
   worker: ChildResult;
@@ -994,19 +1011,7 @@ function deriveBehavioralEvidence(input: Readonly<{
   observedVersion: string;
 }>): Readonly<Record<BehavioralProbeCheck, string>> {
   // Empty successful terminals without assistant output must not prove prompt-roundtrip or streaming.
-  const workerAssistantBytes = assistantOutputBytes(input.workerEvents);
-  if (workerAssistantBytes <= 0) {
-    throw new ContainedAdapterCharacterizationUnavailable(
-      "opencode",
-      "worker prompt produced no assistant output; prompt-roundtrip is unproven"
-    );
-  }
-  if (!hasStreamingDeltas(input.workerEvents)) {
-    throw new ContainedAdapterCharacterizationUnavailable(
-      "opencode",
-      "worker prompt produced no streaming assistant deltas; streaming is unproven"
-    );
-  }
+  const workerAssistantBytes = requireWorkerPromptEvidence(input.workerEvents);
   const correlation = input.workerTerminal.bind.adapter?.correlation;
   const newSessionRequestId =
     correlation &&
@@ -1198,6 +1203,10 @@ async function characterizeOpenCode(
     assertContainedExecutablePin(executablePin, "after worker prompt");
     assertContainedWorkspaceUnchanged(work, baselineWorkspace, "worker prompt");
     const workerTerminal = exactTerminal(ctx, worker, "worker prompt");
+    // Fail before spending more provider/containment work when the primary
+    // prompt cannot establish the minimum semantic roundtrip. The derivation
+    // repeats this check as defense in depth over the final evidence set.
+    requireWorkerPromptEvidence(workerEvents);
 
     const reviewerTarget = join(work, "reviewer-target.txt");
     const reviewerOriginal = "parent-owned reviewer sentinel\n";
