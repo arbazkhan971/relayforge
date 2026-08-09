@@ -49,15 +49,18 @@ import {
   CONTAINED_WORKSPACE_MAX_RELATIVE_PATH_BYTES,
   ContainedAdapterCharacterizationUnavailable,
   isCharacterizationOwnerAlive,
+  observeContainedGrokHandshake,
   observeContainedOpenCodeSessionCreate,
   observeContainedPiStateAndStats,
   parseCharacterizationDirectoryOwner,
+  parseContainedGrokVersionText,
   pinContainedExecutable,
   pinContainedEvidenceRepository,
   piReviewerToolTitleMatchesTarget,
   reconcileDeadCharacterizationRoots,
   snapshotContainedWorkspace
 } from "../src/adapters/contained-evidence-production.js";
+import { GROK_EGRESS_RELAY_RUNTIME } from "../src/adapters/grok-egress-contract.js";
 import { runGit } from "../src/git.js";
 import { detectScopeCapability } from "../src/scope.js";
 
@@ -332,30 +335,6 @@ describe("contained adapter evidence collector finalizer", () => {
     };
   }
 
-  it("keeps production grok characterization explicitly unavailable", async () => {
-    const root = privateRoot();
-    const checkout = join(root, "checkout");
-    const runner = join(root, "runner");
-    const bin = join(root, "bin");
-    mkdirSync(checkout, { mode: 0o700 });
-    mkdirSync(runner, { mode: 0o700 });
-    mkdirSync(bin, { mode: 0o700 });
-    const commitSha = initCleanGitRepo(checkout);
-    writeFileSync(join(bin, "grok"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
-    const outputPath = join(runner, "grok-production.json");
-    await expect(collectProductionContainedAdapterEvidence({
-      adapterId: "grok",
-      outputPath,
-      commitSha,
-      jobNonce: NONCE,
-      repositoryRoot: checkout,
-      paidProbeAuthorized: true,
-      characterizationRoot: runner,
-      environment: { PATH: bin, XAI_API_KEY: "fixture-grok-key" }
-    })).rejects.toBeInstanceOf(ContainedAdapterCharacterizationUnavailable);
-    expect(existsSync(outputPath)).toBe(false);
-  });
-
   function piProductionLayout(fixtureApiKey?: string): Readonly<{
     root: string;
     checkout: string;
@@ -382,6 +361,239 @@ describe("contained adapter evidence collector finalizer", () => {
       source: { PATH: bin, ANTHROPIC_API_KEY: fixtureApiKey ?? "fixture-pi-key" }
     };
   }
+
+  function grokProductionLayout(fixtureApiKey?: string): Readonly<{
+    root: string;
+    checkout: string;
+    runner: string;
+    bin: string;
+    commitSha: string;
+    source: Readonly<Record<string, string>>;
+  }> {
+    const root = privateRoot();
+    const checkout = join(root, "checkout");
+    const runner = join(root, "runner");
+    const bin = join(root, "bin");
+    mkdirSync(checkout, { mode: 0o700 });
+    mkdirSync(runner, { mode: 0o700 });
+    mkdirSync(bin, { mode: 0o700 });
+    const commitSha = initCleanGitRepo(checkout);
+    writeFileSync(join(bin, "grok"), readFileSync(new URL("fixtures/adapters/grok-production.mjs", import.meta.url)), { mode: 0o700 });
+    return {
+      root,
+      checkout,
+      runner,
+      bin,
+      commitSha,
+      source: { PATH: bin, XAI_API_KEY: fixtureApiKey ?? "fixture-grok-key" }
+    };
+  }
+
+  it.skipIf(!SCOPE.strong)("runs the production Grok entrypoint and emits one canonical private receipt", async () => {
+    const layout = grokProductionLayout();
+    const outputPath = join(layout.runner, "grok-production.json");
+    const beforeTemporaryRoots = new Set(
+      readdirSync(layout.runner).filter((name) => name.startsWith(characterizationRootPrefix("grok")))
+    );
+    const collected = await collectProductionContainedAdapterEvidence({
+      adapterId: "grok",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source,
+      forbiddenSentinels: ["fixture-grok-key"]
+    });
+    expect(statSync(outputPath).mode & 0o777).toBe(0o600);
+    expect(readFileSync(outputPath, "utf8")).not.toContain("fixture-grok-key");
+    expect(readFileSync(outputPath, "utf8")).toBe(`${canonicalContainedAdapterEvidenceJson(collected)}\n`);
+    const reread = readContainedAdapterEvidenceFile(outputPath, {
+      adapterId: "grok",
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      configurationSha256: containedAdapterProbeConfigurationSha256("grok", layout.source),
+      now: new Date(collected.collectedAt),
+      allowedRoot: layout.runner
+    });
+    expect(reread.receiptDigest).toBe(collected.receiptDigest);
+    expect(reread.availability.status).toBe("available");
+    expect(reread.containment.backend).toBe("linux-cgroup-v2");
+    expect(reread.settlement.terminal).toBe(true);
+    expect(Object.keys(reread.checks).sort()).toEqual([
+      "cancellationSettled",
+      "configurationIsolated",
+      "networkToolPolicyEnforced",
+      "promptCompleted",
+      "replayMatched",
+      "reviewerWriteDenied",
+      "scopeEmpty",
+      "unapprovedUploadDenied"
+    ]);
+    expect(reread.runtime.trustedHelpers).toHaveLength(1);
+    expect(reread.runtime.trustedHelpers[0]?.runtimeName).toBe(GROK_EGRESS_RELAY_RUNTIME);
+    expect(reread.availability.observedExecutableVersion).toBe("1.0.0");
+    expect(reread.checks.reviewerWriteDenied.evidenceSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(reread.checks.configurationIsolated.evidenceSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(reread.checks.networkToolPolicyEnforced.evidenceSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(reread.checks.unapprovedUploadDenied.evidenceSha256).toMatch(/^[a-f0-9]{64}$/u);
+    if (reread.availability.status === "available") {
+      expect(reread.availability.behavioralChecks.find((check) => check.check === "network-tool-policy")?.evidenceSha256)
+        .toBe(reread.checks.networkToolPolicyEnforced.evidenceSha256);
+      expect(reread.availability.behavioralChecks.find((check) => check.check === "configuration-isolation")?.evidenceSha256)
+        .toBe(reread.checks.configurationIsolated.evidenceSha256);
+      expect(reread.availability.behavioralChecks.find((check) => check.check === "unapproved-upload-denial")?.evidenceSha256)
+        .toBe(reread.checks.unapprovedUploadDenied.evidenceSha256);
+      expect(reread.availability.behavioralChecks.find((check) => check.check === "read-only-denial")?.evidenceSha256)
+        .toBe(reread.checks.reviewerWriteDenied.evidenceSha256);
+    }
+    const expectedRuntime = containedAdapterRuntimeIdentitySha256(
+      reread.runtime.executable,
+      reread.runtime.trustedHelpers,
+      reread.configurationSha256
+    );
+    expect(reread.settlement.receiptDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(reread.settlement.receiptDigest).not.toBe(reread.receiptDigest);
+    const checkDigests = Object.values(reread.checks).map((check) => check.evidenceSha256);
+    expect(new Set(checkDigests).size).toBe(checkDigests.length);
+    expect(reread.configurationSha256).toBe(containedAdapterProbeConfigurationSha256("grok", layout.source));
+    expect(reread.availability.consultedConfigSha256).toBe(reread.configurationSha256);
+    expect(expectedRuntime).toMatch(/^[a-f0-9]{64}$/u);
+    expect(readdirSync(layout.runner).filter(
+      (name) => name.startsWith(characterizationRootPrefix("grok")) && !beforeTemporaryRoots.has(name)
+    )).toEqual([]);
+    expect(pinContainedEvidenceRepository(layout.checkout, layout.commitSha, "grok").commitSha).toBe(layout.commitSha);
+  }, 90_000);
+
+  it.skipIf(!SCOPE.strong)("removes private run state and emits nothing when Grok handshake fails", async () => {
+    const layout = grokProductionLayout("fixture-fail-handshake");
+    const outputPath = join(layout.runner, "grok-failed.json");
+    const before = new Set(readdirSync(layout.runner).filter((name) => name.startsWith(characterizationRootPrefix("grok"))));
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "grok",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source,
+      forbiddenSentinels: ["fixture-fail-handshake"]
+    })).rejects.toBeInstanceOf(ContainedAdapterCharacterizationUnavailable);
+    expect(existsSync(outputPath)).toBe(false);
+    expect(readdirSync(layout.runner).filter(
+      (name) => name.startsWith(characterizationRootPrefix("grok")) && !before.has(name)
+    )).toEqual([]);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Grok when ACP initialize omits grokShell metadata", async () => {
+    const layout = grokProductionLayout("fixture-omit-grok-meta");
+    const outputPath = join(layout.runner, "grok-omit-meta.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "grok",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toBeInstanceOf(ContainedAdapterCharacterizationUnavailable);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Grok worker no-write probes that create a new file", async () => {
+    const layout = grokProductionLayout("fixture-worker-write-new");
+    const outputPath = join(layout.runner, "grok-worker-write.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "grok",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/mutated the characterization workspace|no-write/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 90_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Grok synthetic unrelated reviewer permission without named-target correlation", async () => {
+    const layout = grokProductionLayout("fixture-reviewer-unrelated");
+    const outputPath = join(layout.runner, "grok-reviewer-unrelated.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "grok",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/correlated|lifecycle|named mutation|unavailable/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 90_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Grok empty successful terminals as prompt-roundtrip proof", async () => {
+    const layout = grokProductionLayout("fixture-empty-success");
+    const outputPath = join(layout.runner, "grok-empty-success.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "grok",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/assistant output|prompt-roundtrip|unproven/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 90_000);
+
+  it.skipIf(!SCOPE.strong)("refuses Grok version/build outside the characterized stable contract", async () => {
+    const layout = grokProductionLayout("fixture-wrong-version");
+    const outputPath = join(layout.runner, "grok-wrong-version.json");
+    await expect(collectProductionContainedAdapterEvidence({
+      adapterId: "grok",
+      outputPath,
+      commitSha: layout.commitSha,
+      jobNonce: NONCE,
+      repositoryRoot: layout.checkout,
+      paidProbeAuthorized: true,
+      characterizationRoot: layout.runner,
+      environment: layout.source
+    })).rejects.toThrow(/version|build|characterized|unavailable/i);
+    expect(existsSync(outputPath)).toBe(false);
+  }, 30_000);
+
+  it("parses exact Grok version/build/channel text and refuses malformed records", () => {
+    expect(parseContainedGrokVersionText("grok 1.0.0 (3cd0d0cbce) [stable]")).toEqual({
+      version: "1.0.0",
+      buildCommit: "3cd0d0cbce",
+      channel: "stable"
+    });
+    expect(parseContainedGrokVersionText("1.0.0 (3cd0d0cbce) [stable]")).toEqual({
+      version: "1.0.0",
+      buildCommit: "3cd0d0cbce",
+      channel: "stable"
+    });
+    expect(() => parseContainedGrokVersionText("1.0.0")).toThrow(/canonical Grok version/i);
+    expect(() => observeContainedGrokHandshake({
+      initializeRequestId: "init-1"
+    })).toThrow(/durable transcript|handshake|invent/i);
+  });
+
+  it("adversarial: Grok executable pin revalidation fails closed after version substitution", () => {
+    const root = privateRoot();
+    const executable = join(root, "grok");
+    writeFileSync(executable, "#!/bin/sh\necho 'grok 1.0.0 (3cd0d0cbce) [stable]'\n", { mode: 0o700 });
+    const pin = pinContainedExecutable("grok", executable);
+    expect(assertContainedExecutablePin(pin, "before version probe", "grok").identity).toBe(pin.evidence.identity);
+    writeFileSync(executable, "#!/bin/sh\necho TOCTOU\n", { mode: 0o700 });
+    expect(() => assertContainedExecutablePin(pin, "before terminal evidence receipt", "grok")).toThrow(/substituted|unreadable/i);
+  });
+
 
   it.skipIf(!SCOPE.strong)("runs the production Pi entrypoint and emits one canonical private receipt", async () => {
     const layout = piProductionLayout();

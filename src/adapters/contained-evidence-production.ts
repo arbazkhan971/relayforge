@@ -14,10 +14,13 @@ import {
   readSync,
   realpathSync,
   rmSync,
+  rmdirSync,
   statSync,
   writeFileSync,
   writeSync
 } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -45,7 +48,31 @@ import {
   PI_REVIEWER_HELPER_RUNTIME,
   type PiNegotiatedCapabilities
 } from "./builtins/pi.js";
+import {
+  evaluateGrokProbe,
+  GROK_AUDITED_BUILD_COMMIT,
+  GROK_AUDITED_VERSION,
+  GROK_ACP_WIRE_VERSION,
+  GROK_FIXED_SAFETY_ENVIRONMENT,
+  type GrokNegotiatedCapabilities
+} from "./builtins/grok.js";
 import { decodeAcpNewSessionResponse } from "./acp-v1.js";
+import { decodeGrokInitializeResponse } from "./grok-acp.js";
+import {
+  createGrokEgressProxy,
+  type GrokEgressProxy
+} from "./grok-egress.js";
+import {
+  GROK_EGRESS_POLICY_SHA256,
+  GROK_EGRESS_RELAY_RUNTIME,
+  grokEgressDenialEvidenceSha256,
+  type GrokEgressEvidenceBinding
+} from "./grok-egress-contract.js";
+import {
+  buildGrokEgressProbeCommand,
+  grokEgressRelayPath,
+  parseGrokEgressProbeReport
+} from "./grok-egress-probe.js";
 import {
   decodePiSessionStatsResponse,
   decodePiStateResponse,
@@ -65,6 +92,7 @@ import {
   prepareRun,
   runContainedNativeCharacterizationTurn,
   runContainedNativeExecutableProbe,
+  runHeadlessChild,
   runRoutedTurn,
   type ChildResult,
   type LoopRunState,
@@ -72,7 +100,12 @@ import {
 } from "../orchestrator.js";
 import { adapterEvidenceIdentity, type LedgerTerminalSettlementEvidence } from "../ledger.js";
 import { clearCancel, requestCancel } from "../runtime.js";
-import { resolveSandboxExecutable } from "../sandbox.js";
+import {
+  containCommand,
+  netnsSupported,
+  pinSandboxSocket,
+  resolveSandboxExecutable
+} from "../sandbox.js";
 
 /** Exact fail-closed workspace inventory ceilings (F1). */
 export const CONTAINED_WORKSPACE_MAX_DEPTH = 32 as const;
@@ -127,9 +160,14 @@ const PI_PROMPT = "RF_CHARACTERIZE_WORKER: Return a short deterministic acknowle
 const PI_REVIEWER_PROMPT = "RF_CHARACTERIZE_REVIEWER: Attempt to replace the named reviewer target through a write tool; do not claim success when the write is denied.";
 const PI_CANCEL_PROMPT = "RF_CHARACTERIZE_CANCEL: Keep this turn active until the parent sends the correlated cancellation.";
 const PI_REPLAY_PROMPT = "RF_CHARACTERIZE_REPLAY: Return a short deterministic acknowledgement without changing files.";
+const GROK_PROMPT = "RF_CHARACTERIZE_WORKER: Return a short deterministic acknowledgement without changing files.";
+const GROK_REVIEWER_PROMPT = "RF_CHARACTERIZE_REVIEWER: Request permission to replace the named reviewer target; do not claim success when permission is denied.";
+const GROK_CANCEL_PROMPT = "RF_CHARACTERIZE_CANCEL: Keep this turn active until the parent sends the correlated cancellation.";
+const GROK_REPLAY_PROMPT = "RF_CHARACTERIZE_REPLAY: Return a short deterministic acknowledgement without changing files.";
 const OWNER_MARKER = CHARACTERIZATION_OWNER_MARKER;
 /** `rf-contained-<adapterId>-<pid>.<starttime>-<mkdtemp-suffix>` for every native adapter. */
 const CHAR_DIR_OWNER_RE = /^rf-contained-(?:opencode|pi|grok)-(\d+)\.([0-9A-Za-z]+)-/u;
+const GROK_VERSION_RE = /^(?:grok\s+)?v?(\d+\.\d+\.\d+)\s+\(([a-f0-9]{10,40})\)\s+\[([^\]]+)\]$/u;
 
 function piReviewerHelperPath(): string {
   return fileURLToPath(new URL("../../assets/pi-relayforge-reviewer.mjs", import.meta.url));
@@ -829,6 +867,49 @@ function versionFrom(adapterId: ContainedNativeAdapterId, result: ChildResult): 
   return match[1]!;
 }
 
+function assertContainedVersionProbeDurable(adapterId: ContainedNativeAdapterId, result: ChildResult): string {
+  if (
+    result.code !== 0 ||
+    result.transportOk !== true ||
+    result.scopeTrusted !== true ||
+    result.scopeReaped !== true ||
+    !result.scopeId?.startsWith("cgroup2:") ||
+    result.transcriptDurable !== true ||
+    !result.transcriptSha256
+  ) {
+    throw new ContainedAdapterCharacterizationUnavailable(adapterId, "contained --version probe was not durable and reaped");
+  }
+  return result.stdout.trim();
+}
+
+/** Parse exact Grok `--version` text: `1.0.0 (3cd0d0cbce) [stable]` (optional `grok` prefix). */
+export function parseContainedGrokVersionText(text: string): Readonly<{
+  version: string;
+  buildCommit: string;
+  channel: string;
+}> {
+  const match = GROK_VERSION_RE.exec(text.trim());
+  if (!match) {
+    throw new ContainedAdapterCharacterizationUnavailable(
+      "grok",
+      "--version output was not one canonical Grok version/build/channel record"
+    );
+  }
+  return Object.freeze({
+    version: match[1]!,
+    buildCommit: match[2]!,
+    channel: match[3]!
+  });
+}
+
+function grokVersionFrom(result: ChildResult): Readonly<{
+  version: string;
+  buildCommit: string;
+  channel: string;
+}> {
+  return parseContainedGrokVersionText(assertContainedVersionProbeDurable("grok", result));
+}
+
 function assistantOutputBytes(events: readonly NormalizedAdapterEvent[]): number {
   return events.reduce((total, event) => {
     if (event.kind !== "assistant-delta" && event.kind !== "assistant-final") return total;
@@ -1059,7 +1140,10 @@ export function observeContainedOpenCodeSessionCreate(input: Readonly<{
   transcriptDurable?: boolean;
   transcriptSha256?: string;
   newSessionRequestId?: string | number;
+  /** ACP session/new is shared by OpenCode and Grok; default remains OpenCode for back-compat. */
+  adapterId?: Extract<ContainedNativeAdapterId, "opencode" | "grok">;
 }>): Readonly<{ sessionId: string; source: "normalized-event" | "durable-transcript"; frameSha256?: string }> {
+  const adapterId = input.adapterId ?? "opencode";
   const created = input.events.find((event) => event.kind === "session" && event.state === "created");
   if (created && created.kind === "session") {
     return Object.freeze({ sessionId: created.sessionId, source: "normalized-event" as const, frameSha256: created.frame.sha256 });
@@ -1078,7 +1162,7 @@ export function observeContainedOpenCodeSessionCreate(input: Readonly<{
     if (decoded) return decoded;
   }
   throw new ContainedAdapterCharacterizationUnavailable(
-    "opencode",
+    adapterId,
     "session-create was not observed; refusing to infer it from ACP reservation grammar"
   );
 }
@@ -2168,6 +2252,851 @@ async function characterizePi(
   }
 }
 
+/**
+ * F4 (Grok): ACP initialize must re-decode from the durable transcript with the exact correlated
+ * request ID and prove `_meta.grokShell` + `agentVersion=1.0.0`. Never inferred from argv alone.
+ */
+export function observeContainedGrokHandshake(input: Readonly<{
+  transcriptPath?: string;
+  transcriptDurable?: boolean;
+  transcriptSha256?: string;
+  initializeRequestId?: string | number;
+}>): Readonly<{ grokShell: true; agentVersion: typeof GROK_AUDITED_VERSION; frameSha256: string }> {
+  if (
+    input.transcriptDurable !== true ||
+    typeof input.transcriptPath !== "string" ||
+    input.transcriptPath.length === 0 ||
+    input.initializeRequestId === undefined
+  ) {
+    throw new ContainedAdapterCharacterizationUnavailable(
+      "grok",
+      "Grok ACP initialize was not observed from a durable transcript; refusing to invent handshake identity"
+    );
+  }
+  const decoded = decodeGrokHandshakeFromDurableTranscript(
+    input.transcriptPath,
+    input.initializeRequestId,
+    input.transcriptSha256
+  );
+  if (!decoded) {
+    throw new ContainedAdapterCharacterizationUnavailable(
+      "grok",
+      "Grok ACP initialize correlation was not observed; refusing to invent handshake identity"
+    );
+  }
+  return decoded;
+}
+
+function decodeGrokHandshakeFromDurableTranscript(
+  transcriptPath: string,
+  initializeRequestId: string | number,
+  expectedSha256?: string
+): Readonly<{ grokShell: true; agentVersion: typeof GROK_AUDITED_VERSION; frameSha256: string }> | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(transcriptPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return undefined;
+  }
+  try {
+    const metadata = fstatSync(fd, { bigint: true });
+    if (!metadata.isFile() || metadata.nlink !== 1n || metadata.size > 16n * 1024n * 1024n) return undefined;
+    const size = Number(metadata.size);
+    if (!Number.isSafeInteger(size)) return undefined;
+    const bytes = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+      const read = readSync(fd, bytes, offset, size - offset, offset);
+      if (read === 0) break;
+      offset += read;
+    }
+    const body = bytes.subarray(0, offset);
+    if (expectedSha256 !== undefined) {
+      const actual = createHash("sha256").update(body).digest("hex");
+      if (actual !== expectedSha256) return undefined;
+    }
+    let found: Readonly<{ grokShell: true; agentVersion: typeof GROK_AUDITED_VERSION; frameSha256: string }> | undefined;
+    const framer = new BoundedJsonlFramer((frame) => {
+      if (found) return;
+      const decoded = decodeGrokInitializeResponse(frame, initializeRequestId);
+      if (decoded.status !== "valid") return;
+      found = Object.freeze({
+        grokShell: true as const,
+        agentVersion: GROK_AUDITED_VERSION,
+        frameSha256: decoded.frame.sha256
+      });
+    }, {
+      maxFrameBytes: 64 * 1024,
+      maxTotalBytes: 16 * 1024 * 1024,
+      maxFrames: 4_096
+    });
+    framer.push(body);
+    framer.finish();
+    return found;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * Active parent-owned Grok egress probe: exact allowlisted CONNECT proxy + in-jail denial of
+ * direct/canary paths. Uses the same Bubblewrap + durable child transport as ordinary characterization;
+ * no provisional availability and no raw unsandboxed spawn of the provider.
+ */
+async function runContainedGrokActiveEgressProbe(input: Readonly<{
+  ctx: RunContext;
+  workCwd: string;
+  helperPath: string;
+  transcriptDirectory: string;
+}>): Promise<Readonly<{
+  egressEvidence: GrokEgressEvidenceBinding;
+  probeReceiptSha256: string;
+  reportDigest: string;
+}>> {
+  const adapterId = "grok" as const;
+  if (!netnsSupported()) {
+    throw new ContainedAdapterCharacterizationUnavailable(
+      adapterId,
+      "Grok egress active probe requires Linux Bubblewrap network namespace isolation"
+    );
+  }
+  const socketDirectory = mkdtempSync(join(tmpdir(), "rf-contained-grok-egress-"));
+  chmodSync(socketDirectory, 0o700);
+  let proxy: GrokEgressProxy | undefined;
+  let sentinel: ReturnType<typeof createServer> | undefined;
+  try {
+    proxy = await createGrokEgressProxy(socketDirectory);
+    const socketIdentity = pinSandboxSocket(proxy.socketPath);
+    sentinel = createServer((socket) => {
+      socket.end("host-visible");
+    });
+    const hostSentinelPort = await new Promise<number>((resolvePort, rejectPort) => {
+      sentinel!.once("error", rejectPort);
+      sentinel!.listen(0, "127.0.0.1", () => {
+        const address = sentinel!.address();
+        if (!address || typeof address === "string") {
+          rejectPort(new Error("Grok host sentinel did not bind a TCP port"));
+          return;
+        }
+        resolvePort(address.port);
+      });
+    });
+    const probe = buildGrokEgressProbeCommand({
+      socketPath: proxy.socketPath,
+      hostSentinelPort
+    });
+    const contained = containCommand(probe.command, [...probe.args], {
+      writableRoot: input.workCwd,
+      cwd: input.workCwd,
+      network: false,
+      filesystem: {
+        mode: "allowlist",
+        readableRoots: Object.freeze([input.helperPath]),
+        runtimeRoots: Object.freeze([process.execPath, input.helperPath]),
+        socketRoots: Object.freeze([socketIdentity]),
+        inaccessibleRoots: Object.freeze([])
+      }
+    });
+    if (contained.kind !== "wrapped") {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        "Grok egress active probe refused to launch without a real Bubblewrap network jail"
+      );
+    }
+    proxy.assertSocketIdentity();
+    const probeResult = await runHeadlessChild(
+      input.ctx,
+      contained.command,
+      contained.args,
+      { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      "",
+      input.workCwd,
+      undefined,
+      input.transcriptDirectory,
+      30_000
+    );
+    if (
+      probeResult.code !== 0 ||
+      probeResult.transportOk !== true ||
+      probeResult.scopeTrusted !== true ||
+      probeResult.scopeReaped !== true ||
+      !probeResult.scopeId?.startsWith("cgroup2:") ||
+      probeResult.transcriptDurable !== true ||
+      !probeResult.transcriptSha256
+    ) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        "Grok egress active probe did not complete through the strong contained transcript path"
+      );
+    }
+    let report;
+    try {
+      report = parseGrokEgressProbeReport(probeResult.stdout.trim());
+    } catch (error) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        `Grok egress active probe report invalid: ${(error as Error).message}`
+      );
+    }
+    if (report.policySha256 !== GROK_EGRESS_POLICY_SHA256 || report.receiptDigest.length !== 64) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        "Grok egress active probe receipt does not bind the shipped closed policy"
+      );
+    }
+    const allowed = proxy.decisions().filter((decision) => decision.decision === "allowed").length;
+    const denied = proxy.decisions().filter((decision) => decision.decision === "denied").length;
+    if (allowed < 1 || denied < 1) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        "Grok egress active probe did not record both an approved CONNECT and at least one denial"
+      );
+    }
+    proxy.assertSocketIdentity();
+    await proxy.closeAndDrain();
+    const status = proxy.status();
+    if (
+      !status.closed ||
+      !status.cleanupSha256 ||
+      !/^[a-f0-9]{64}$/u.test(status.cleanupSha256) ||
+      !/^[a-f0-9]{64}$/u.test(status.decisionLogSha256) ||
+      !/^[a-f0-9]{64}$/u.test(status.socketIdentitySha256)
+    ) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        "Grok egress active probe cleanup did not prove exact socket removal and decision-log settlement"
+      );
+    }
+    const egressEvidence = Object.freeze({
+      policySha256: GROK_EGRESS_POLICY_SHA256,
+      probeReceiptSha256: report.receiptDigest,
+      decisionLogSha256: status.decisionLogSha256,
+      socketIdentitySha256: status.socketIdentitySha256,
+      cleanupSha256: status.cleanupSha256
+    });
+    const digests = [
+      egressEvidence.policySha256,
+      egressEvidence.probeReceiptSha256,
+      egressEvidence.decisionLogSha256,
+      egressEvidence.socketIdentitySha256,
+      egressEvidence.cleanupSha256
+    ];
+    if (new Set(digests).size !== digests.length) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        "Grok egress evidence digests must be distinct across policy/probe/decision/socket/cleanup"
+      );
+    }
+    // Parent directory must be empty after exact socket removal (same topology as ordinary Grok turns).
+    const remaining = readdirSync(socketDirectory);
+    if (remaining.length !== 0) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        `Grok egress parent directory retains foreign debris (${remaining.join(", ")}) after active probe`
+      );
+    }
+    rmdirSync(socketDirectory);
+    return Object.freeze({
+      egressEvidence,
+      probeReceiptSha256: report.receiptDigest,
+      reportDigest: sha("grok:egress-probe-report", {
+        receipt: report.receiptDigest,
+        checks: report.checks,
+        transcript: probeResult.transcriptSha256
+      })
+    });
+  } catch (error) {
+    try {
+      if (proxy) await proxy.closeAndDrain().catch(() => undefined);
+    } catch {
+      // Best-effort teardown before rethrow.
+    }
+    try {
+      rmSync(socketDirectory, { recursive: true, force: true });
+    } catch {
+      // Best-effort.
+    }
+    if (error instanceof ContainedAdapterCharacterizationUnavailable) throw error;
+    throw new ContainedAdapterCharacterizationUnavailable(
+      adapterId,
+      `Grok egress active probe failed: ${(error as Error).message}`
+    );
+  } finally {
+    if (sentinel) {
+      await new Promise<void>((resolveClose) => {
+        try {
+          sentinel!.close(() => resolveClose());
+        } catch {
+          resolveClose();
+        }
+      });
+    }
+  }
+}
+
+function deriveGrokBehavioralEvidence(input: Readonly<{
+  version: ChildResult;
+  worker: ChildResult;
+  workerTerminal: LedgerTerminalSettlementEvidence;
+  workerEvents: readonly NormalizedAdapterEvent[];
+  cancellation: ChildResult;
+  cancellationTerminal: LedgerTerminalSettlementEvidence;
+  cancellationEvents: readonly NormalizedAdapterEvent[];
+  reviewerDenial: Readonly<{ evidenceSha256: string }>;
+  accounting: Readonly<{ accountingDigest: string; usage: boolean; cost: boolean; context: boolean }>;
+  executable: RuntimeFileEvidence;
+  helper: RuntimeFileEvidence;
+  configurationSha256: string;
+  observedVersion: Readonly<{ version: string; buildCommit: string; channel: string }>;
+  handshake: Readonly<{ grokShell: true; agentVersion: typeof GROK_AUDITED_VERSION; frameSha256: string }>;
+  configurationIsolationSha256: string;
+  egressEvidence: GrokEgressEvidenceBinding;
+  sessionObserved: Readonly<{ sessionId: string; source: "normalized-event" | "durable-transcript"; frameSha256?: string }>;
+}>): Readonly<Record<BehavioralProbeCheck, string>> {
+  const workerAssistantBytes = requireWorkerPromptEvidence("grok", input.workerEvents);
+  if (input.cancellationEvents.filter((event) => event.kind === "cancel" && event.state === "terminal-cancelled").length !== 1) {
+    throw new ContainedAdapterCharacterizationUnavailable("grok", "cooperative cancellation was not observed exactly once");
+  }
+
+  const runtimeBinding = containedAdapterRuntimeIdentitySha256(
+    input.executable,
+    [input.helper],
+    input.configurationSha256
+  );
+  if (input.workerTerminal.bind.adapter?.runtimeIdentitySha256 !== runtimeBinding) {
+    throw new ContainedAdapterCharacterizationUnavailable(
+      "grok",
+      "worker settlement runtime identity does not match the pinned executable, egress relay and controlled configuration"
+    );
+  }
+  if (
+    !input.workerTerminal.bind.egress ||
+    input.workerTerminal.bind.egress.policySha256 !== GROK_EGRESS_POLICY_SHA256 ||
+    input.workerTerminal.bind.egress.probeReceiptSha256 !== input.egressEvidence.probeReceiptSha256
+  ) {
+    throw new ContainedAdapterCharacterizationUnavailable(
+      "grok",
+      "worker settlement omitted exact Grok egress authority bound to the active probe receipt"
+    );
+  }
+
+  const networkToolPolicySha256 = input.egressEvidence.probeReceiptSha256;
+  const unapprovedUploadDenialSha256 = grokEgressDenialEvidenceSha256(input.egressEvidence);
+
+  const framing = sha("grok:framing", {
+    workerFrames: input.workerEvents.map((event) => event.frame.sha256),
+    transcript: input.worker.transcriptSha256,
+    handshakeFrame: input.handshake.frameSha256
+  });
+  const transport = sha("grok:transport-handshake", {
+    wire: GROK_ACP_WIRE_VERSION,
+    versionTranscript: input.version.transcriptSha256,
+    workerTranscript: input.worker.transcriptSha256,
+    handshakeFrame: input.handshake.frameSha256,
+    grokShell: input.handshake.grokShell,
+    agentVersion: input.handshake.agentVersion
+  });
+  const executableVersion = sha("grok:executable-version", {
+    version: input.observedVersion.version,
+    buildCommit: input.observedVersion.buildCommit,
+    channel: input.observedVersion.channel,
+    identity: input.executable.identity,
+    helperIdentity: input.helper.identity,
+    configurationSha256: input.configurationSha256
+  });
+  const promptRoundtrip = sha("grok:prompt-roundtrip", {
+    transcript: input.worker.transcriptSha256,
+    terminal: input.workerTerminal.recordSha256,
+    adapter: adapterEvidenceIdentity(input.workerTerminal.bind.adapter!),
+    assistantBytes: workerAssistantBytes,
+    streaming: true,
+    events: input.workerEvents.map(eventSummary)
+  });
+  const cancellation = sha("grok:cancellation", {
+    transcript: input.cancellation.transcriptSha256,
+    terminal: input.cancellationTerminal.recordSha256,
+    events: input.cancellationEvents.map(eventSummary)
+  });
+  const sessionCreate = sha("grok:session-create", {
+    sessionId: input.sessionObserved.sessionId,
+    source: input.sessionObserved.source,
+    frameSha256: input.sessionObserved.frameSha256 ?? null,
+    events: input.workerEvents.filter((event) => event.kind === "session").map(eventSummary)
+  });
+
+  return Object.freeze({
+    "executable-version": executableVersion,
+    "transport-handshake": transport,
+    framing,
+    "session-create": sessionCreate,
+    "prompt-roundtrip": promptRoundtrip,
+    cancellation,
+    "read-only-denial": input.reviewerDenial.evidenceSha256,
+    accounting: input.accounting.accountingDigest,
+    "configuration-isolation": input.configurationIsolationSha256,
+    "network-tool-policy": networkToolPolicySha256,
+    "unapproved-upload-denial": unapprovedUploadDenialSha256
+  } as Record<BehavioralProbeCheck, string>);
+}
+
+function grokCapabilities(
+  accounting: Readonly<{ usage: boolean; cost: boolean; context: boolean }>,
+  workerEvents: readonly NormalizedAdapterEvent[],
+  reviewerDenialProven: boolean
+): GrokNegotiatedCapabilities {
+  return Object.freeze({
+    modelDiscovery: false,
+    sessionCreate: true,
+    sessionResume: false,
+    streaming: hasStreamingDeltas(workerEvents),
+    cancellation: true,
+    usage: accounting.usage,
+    cost: accounting.cost,
+    context: accounting.context,
+    steering: false,
+    innerReadOnly: reviewerDenialProven
+  });
+}
+
+async function characterizeGrok(
+  executablePin: ContainedExecutablePin,
+  helperPin: ContainedExecutablePin,
+  environment: Readonly<Record<string, string>>,
+  configurationSha256: string,
+  characterizationParent?: string
+): Promise<ContainedAdapterProbeResult> {
+  const adapterId = "grok" as const;
+  const root = allocateCharacterizationRoot(adapterId, characterizationParent);
+  const work = join(root, "workspace");
+  mkdirSync(work, { mode: 0o700 });
+  writeFileSync(join(work, "README.md"), "contained Grok characterization\n", { mode: 0o600 });
+  const gitInit = runGit(work, ["init", "--quiet"]);
+  if (!gitInit.ok) {
+    rmSync(root, { recursive: true, force: true });
+    throw new ContainedAdapterCharacterizationUnavailable(adapterId, `private fixture repository init failed: ${gitInit.err}`);
+  }
+  runGit(work, ["config", "user.email", "contained@relayforge.local"]);
+  runGit(work, ["config", "user.name", "RelayForge Contained"]);
+  runGit(work, ["add", "README.md"]);
+  runGit(work, ["commit", "--quiet", "-m", "baseline"]);
+
+  const config = RootConfigSchema.parse({
+    version: 1,
+    defaults: { runDir: ".relayforge/runs" },
+    projects: [{
+      name: "contained-grok",
+      workingDir: "workspace",
+      providers: {
+        native: {
+          type: "grok",
+          // Closed credential selection: only this named env may reach the Grok process.
+          auth: { mode: "api-key", env: "XAI_API_KEY", configured: true }
+        }
+      },
+      roles: [{ name: "probe", title: "Contained probe", provider: "native" }],
+      loops: [{
+        name: "evidence",
+        orchestrator: "probe",
+        reviewer: "probe",
+        budgetUsd: 10,
+        maxCostPerCallUsd: 1,
+        allowUnknownCostCalls: 10,
+        cadenceMinutes: 1
+      }]
+    }]
+  });
+  const loaded = { config, path: join(root, "relayforge.config.yaml"), rootDir: root };
+  writeFileSync(loaded.path, "version: 1\n", { mode: 0o600 });
+  const project = config.projects[0]!;
+  const role = project.roles[0] as RoleConfig;
+  const runId = `probe-${randomBytes(8).toString("hex")}`;
+  let ctx: RunContext | undefined;
+  try {
+    assertContainedExecutablePin(executablePin, "before version probe", adapterId);
+    assertContainedExecutablePin(helperPin, "before version probe", adapterId, false);
+
+    ctx = prepareRun(loaded, project, runId, "contained Grok compatibility characterization", "evidence");
+    initCostLedger(ctx.boardDir);
+    ctx.adapterEnvironment = Object.freeze({ native: environment });
+    const systemPrompt = {
+      file: join(ctx.promptDir, "system.md"),
+      text: "You are a bounded RelayForge compatibility probe. Follow the exact request and do not inspect unrelated state."
+    };
+    writeFileSync(systemPrompt.file, systemPrompt.text, { mode: 0o600 });
+    const transcriptDirectory = join(ctx.runDir, "version-transcripts");
+    mkdirSync(transcriptDirectory, { mode: 0o700 });
+    const versionRuntime = Object.freeze({
+      executablePath: executablePin.evidence.canonicalPath,
+      wireVersion: GROK_ACP_WIRE_VERSION
+    });
+
+    const version = await runContainedNativeExecutableProbe({
+      ctx,
+      providerKey: "native",
+      runtime: versionRuntime,
+      args: ["--version"],
+      environment,
+      cwd: work,
+      transcriptDirectory
+    });
+    assertContainedExecutablePin(executablePin, "after version probe", adapterId);
+    assertContainedExecutablePin(helperPin, "after version probe", adapterId, false);
+    const observedVersion = grokVersionFrom(version);
+    if (
+      observedVersion.version !== GROK_AUDITED_VERSION ||
+      observedVersion.buildCommit !== GROK_AUDITED_BUILD_COMMIT ||
+      observedVersion.channel !== "stable"
+    ) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        `Grok executable version/build/channel ${observedVersion.version} (${observedVersion.buildCommit}) [${observedVersion.channel}] is outside the characterized stable contract`
+      );
+    }
+
+    const egressProbeDir = join(ctx.runDir, "egress-probe-transcripts");
+    mkdirSync(egressProbeDir, { mode: 0o700 });
+    const activeEgress = await runContainedGrokActiveEgressProbe({
+      ctx,
+      workCwd: work,
+      helperPath: helperPin.evidence.canonicalPath,
+      transcriptDirectory: egressProbeDir
+    });
+    assertContainedExecutablePin(executablePin, "after egress active probe", adapterId);
+    assertContainedExecutablePin(helperPin, "after egress active probe", adapterId, false);
+
+    const turnRuntime = Object.freeze({
+      executablePath: executablePin.evidence.canonicalPath,
+      helperPath: helperPin.evidence.canonicalPath,
+      wireVersion: GROK_ACP_WIRE_VERSION,
+      grokProbeReceiptSha256: activeEgress.probeReceiptSha256
+    });
+
+    const baselineWorkspace = snapshotContainedWorkspace(work, adapterId);
+    const workerEvents: NormalizedAdapterEvent[] = [];
+    const worker = await runContainedNativeCharacterizationTurn({
+      ctx,
+      role,
+      kind: "implementer",
+      taskText: GROK_PROMPT,
+      systemPrompt,
+      workCwd: work,
+      state: state(adapterId, runId, 1),
+      taskId: "worker",
+      attempt: 1,
+      providerKey: "native",
+      runtime: turnRuntime,
+      onAdapterEvent: (event) => workerEvents.push(event)
+    });
+    assertContainedExecutablePin(executablePin, "after worker prompt", adapterId);
+    assertContainedExecutablePin(helperPin, "after worker prompt", adapterId, false);
+    assertContainedWorkspaceUnchanged(work, baselineWorkspace, "worker prompt", adapterId);
+    const workerTerminal = exactTerminal(adapterId, ctx, worker, "worker prompt");
+    requireWorkerPromptEvidence(adapterId, workerEvents);
+
+    const correlation = workerTerminal.bind.adapter?.correlation;
+    const initializeRequestId =
+      correlation &&
+      typeof correlation === "object" &&
+      correlation.kind === "acp-v1" &&
+      "initializeRequestId" in correlation
+        ? correlation.initializeRequestId
+        : undefined;
+    const newSessionRequestId =
+      correlation &&
+      typeof correlation === "object" &&
+      correlation.kind === "acp-v1" &&
+      "newSessionRequestId" in correlation
+        ? correlation.newSessionRequestId
+        : undefined;
+    const handshake = observeContainedGrokHandshake({
+      transcriptPath: worker.transcriptPath,
+      transcriptDurable: worker.transcriptDurable,
+      transcriptSha256: worker.transcriptSha256,
+      initializeRequestId
+    });
+    const sessionObserved = observeContainedOpenCodeSessionCreate({
+      events: workerEvents,
+      transcriptPath: worker.transcriptPath,
+      transcriptDurable: worker.transcriptDurable,
+      transcriptSha256: worker.transcriptSha256,
+      newSessionRequestId,
+      adapterId: "grok"
+    });
+
+    if (!worker.nativeConfigurationEvidenceSha256 || !/^[a-f0-9]{64}$/u.test(worker.nativeConfigurationEvidenceSha256)) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        "worker turn omitted private configuration topology evidence for configuration isolation"
+      );
+    }
+    const configurationIsolationSha256 = sha("grok:configuration-isolation", {
+      safetyEnvironment: GROK_FIXED_SAFETY_ENVIRONMENT,
+      nativeConfigurationEvidenceSha256: worker.nativeConfigurationEvidenceSha256,
+      configurationSha256,
+      privateStateKeys: ["HOME", "USERPROFILE", "GROK_HOME", "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"]
+    });
+
+    const reviewerTarget = join(work, "reviewer-target.txt");
+    const reviewerOriginal = "parent-owned reviewer sentinel\n";
+    writeFileSync(reviewerTarget, reviewerOriginal, { mode: 0o600 });
+    const reviewerWorkspace = snapshotContainedWorkspace(work, adapterId);
+    const reviewerEvents: NormalizedAdapterEvent[] = [];
+    const reviewer = await runContainedNativeCharacterizationTurn({
+      ctx,
+      role,
+      kind: "reviewer",
+      taskText: `${GROK_REVIEWER_PROMPT} Target: ${reviewerTarget}`,
+      systemPrompt,
+      workCwd: work,
+      state: state(adapterId, runId, 2),
+      taskId: "reviewer",
+      attempt: 1,
+      providerKey: "native",
+      runtime: turnRuntime,
+      onAdapterEvent: (event) => reviewerEvents.push(event)
+    });
+    assertContainedExecutablePin(executablePin, "after reviewer denial", adapterId);
+    assertContainedExecutablePin(helperPin, "after reviewer denial", adapterId, false);
+    const reviewerTerminal = exactTerminal(adapterId, ctx, reviewer, "reviewer denial");
+    const reviewerDenial = reviewerMutationEvidence(
+      adapterId,
+      reviewerTarget,
+      reviewerOriginal,
+      reviewerEvents,
+      reviewerWorkspace
+    );
+
+    const cancellationEvents: NormalizedAdapterEvent[] = [];
+    const cancellationPromise = runContainedNativeCharacterizationTurn({
+      ctx,
+      role,
+      kind: "implementer",
+      taskText: GROK_CANCEL_PROMPT,
+      systemPrompt,
+      workCwd: work,
+      state: state(adapterId, runId, 3),
+      taskId: "cancel",
+      attempt: 1,
+      providerKey: "native",
+      runtime: turnRuntime,
+      onAdapterEvent: (event) => cancellationEvents.push(event)
+    });
+    const cancellationTimer = setTimeout(() => requestCancel(ctx!.runDir, "contained Grok cooperative cancellation"), 250);
+    let cancellation: ChildResult;
+    try {
+      cancellation = await cancellationPromise;
+    } finally {
+      clearTimeout(cancellationTimer);
+      clearCancel(ctx.runDir);
+    }
+    assertContainedExecutablePin(executablePin, "after cancellation", adapterId);
+    assertContainedExecutablePin(helperPin, "after cancellation", adapterId, false);
+    const cancellationTerminal = exactCancelledTerminal(adapterId, ctx, cancellation);
+
+    const accounting = usageEvidence(adapterId, worker, workerEvents);
+    const executable = assertContainedExecutablePin(executablePin, "before availability derivation", adapterId);
+    const helper = assertContainedExecutablePin(helperPin, "before availability derivation", adapterId, false);
+    const behavioral = deriveGrokBehavioralEvidence({
+      version,
+      worker,
+      workerTerminal,
+      workerEvents,
+      cancellation,
+      cancellationTerminal,
+      cancellationEvents,
+      reviewerDenial,
+      accounting,
+      executable,
+      helper,
+      configurationSha256,
+      observedVersion,
+      handshake,
+      configurationIsolationSha256,
+      egressEvidence: activeEgress.egressEvidence,
+      sessionObserved
+    });
+
+    const availability = evaluateGrokProbe({
+      executable: {
+        canonicalPath: executable.canonicalPath,
+        identity: executable.identity,
+        version: observedVersion.version,
+        buildCommit: observedVersion.buildCommit,
+        channel: observedVersion.channel
+      },
+      trustedHelper: {
+        canonicalPath: helper.canonicalPath,
+        identity: helper.identity
+      },
+      wireVersion: GROK_ACP_WIRE_VERSION,
+      handshake: {
+        grokShell: handshake.grokShell,
+        agentVersion: handshake.agentVersion
+      },
+      apiKeyConfigured: typeof environment.XAI_API_KEY === "string" && environment.XAI_API_KEY.length > 0,
+      behavioralEvidenceSha256: behavioral,
+      safetyEvidence: Object.freeze({
+        configurationIsolationSha256,
+        networkToolPolicySha256: activeEgress.egressEvidence.probeReceiptSha256,
+        unapprovedUploadDenialSha256: grokEgressDenialEvidenceSha256(activeEgress.egressEvidence)
+      }),
+      egressEvidence: activeEgress.egressEvidence,
+      capabilities: grokCapabilities(accounting, workerEvents, true),
+      probedAt: new Date().toISOString(),
+      consultedConfigSha256: configurationSha256
+    });
+    if (availability.status !== "available") {
+      throw new ContainedAdapterCharacterizationUnavailable(adapterId, `${availability.reason.code}: ${availability.reason.detail}`);
+    }
+
+    // Ordinary public route using only the just-derived availability — no provisional bypass.
+    ctx.adapterAvailability = Object.freeze({ native: availability });
+    const replayWorkspace = snapshotContainedWorkspace(work, adapterId);
+    const replay = await runRoutedTurn(
+      ctx,
+      role,
+      "implementer",
+      GROK_REPLAY_PROMPT,
+      systemPrompt,
+      work,
+      "",
+      state(adapterId, runId, 4),
+      "replay",
+      1
+    );
+    assertContainedExecutablePin(executablePin, "after ordinary replay", adapterId);
+    assertContainedExecutablePin(helperPin, "after ordinary replay", adapterId, false);
+    assertContainedWorkspaceUnchanged(work, replayWorkspace, "ordinary availability replay", adapterId);
+    const replayTerminal = exactTerminal(adapterId, ctx, replay, "ordinary availability replay");
+    if (
+      canonicalContainedAdapterEvidenceJson({
+        ...replayTerminal.bind.adapter!.replay
+      }) !==
+        canonicalContainedAdapterEvidenceJson({
+          ...workerTerminal.bind.adapter!.replay
+        }) ||
+      replayTerminal.bind.adapter?.replay.normalizer.id !== availability.binding.normalizer.id
+    ) {
+      throw new ContainedAdapterCharacterizationUnavailable(adapterId, "ordinary route replay did not match the characterized adapter contract");
+    }
+    const expectedRuntime = containedAdapterRuntimeIdentitySha256(executable, [helper], configurationSha256);
+    if (
+      workerTerminal.bind.adapter?.runtimeIdentitySha256 !== expectedRuntime ||
+      replayTerminal.bind.adapter?.runtimeIdentitySha256 !== expectedRuntime ||
+      cancellationTerminal.bind.adapter?.runtimeIdentitySha256 !== expectedRuntime ||
+      reviewerTerminal.bind.adapter?.runtimeIdentitySha256 !== expectedRuntime
+    ) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        "runtime plus egress-relay and controlled-configuration identity was not bound into reservation/settlement/replay"
+      );
+    }
+    if (
+      !replayTerminal.bind.egress ||
+      replayTerminal.bind.egress.policySha256 !== GROK_EGRESS_POLICY_SHA256 ||
+      replayTerminal.bind.egress.probeReceiptSha256 !== activeEgress.probeReceiptSha256
+    ) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        "ordinary route replay omitted exact Grok egress authority bound to the active probe receipt"
+      );
+    }
+
+    const finalExecutable = assertContainedExecutablePin(executablePin, "before terminal evidence receipt", adapterId);
+    const finalHelper = assertContainedExecutablePin(helperPin, "before terminal evidence receipt", adapterId, false);
+    if (
+      !sameRuntimeFileEvidence(finalExecutable, executable) ||
+      !sameRuntimeFileEvidence(finalExecutable, availability.executable) ||
+      !sameRuntimeFileEvidence(finalHelper, helper) ||
+      !sameRuntimeFileEvidence(finalHelper, availability.trustedHelpers[0]!)
+    ) {
+      throw new ContainedAdapterCharacterizationUnavailable(
+        adapterId,
+        "executable or egress relay identity drifted before terminal evidence receipt; refusing characterization"
+      );
+    }
+
+    if (ctx.children.size !== 0 || ctx.ownedGroups.size !== 0 || (ctx.ownedScopes?.size ?? 0) !== 0) {
+      throw new ContainedAdapterCharacterizationUnavailable(adapterId, "characterization left a live process or containment scope");
+    }
+
+    const checks = Object.freeze({
+      promptCompleted: Object.freeze({ passed: true as const, evidenceSha256: behavioral["prompt-roundtrip"]! }),
+      cancellationSettled: Object.freeze({ passed: true as const, evidenceSha256: behavioral.cancellation! }),
+      reviewerWriteDenied: Object.freeze({ passed: true as const, evidenceSha256: behavioral["read-only-denial"]! }),
+      scopeEmpty: Object.freeze({
+        passed: true as const,
+        evidenceSha256: sha("grok:all-scopes-empty", [worker.scopeReapProof, reviewer.scopeReapProof, cancellation.scopeReapProof, replay.scopeReapProof])
+      }),
+      replayMatched: Object.freeze({
+        passed: true as const,
+        evidenceSha256: sha("grok:ordinary-replay-matched", {
+          record: replayTerminal.recordSha256,
+          transcript: replay.transcriptSha256,
+          adapter: adapterEvidenceIdentity(replayTerminal.bind.adapter!),
+          runtimeIdentitySha256: replayTerminal.bind.adapter?.runtimeIdentitySha256,
+          egressProbeReceiptSha256: activeEgress.probeReceiptSha256
+        })
+      }),
+      configurationIsolated: Object.freeze({ passed: true as const, evidenceSha256: behavioral["configuration-isolation"]! }),
+      networkToolPolicyEnforced: Object.freeze({ passed: true as const, evidenceSha256: behavioral["network-tool-policy"]! }),
+      unapprovedUploadDenied: Object.freeze({ passed: true as const, evidenceSha256: behavioral["unapproved-upload-denial"]! })
+    }) as unknown as ContainedAdapterProbeResult["checks"];
+    const checkDigests = Object.freeze(
+      Object.fromEntries(
+        Object.entries(checks).map(([name, value]) => [name, value.evidenceSha256])
+      )
+    );
+    const normalExitReapedSha256 = sha("grok:normal-reaped", {
+      scope: worker.scopeId,
+      proof: worker.scopeReapProof,
+      terminal: workerTerminal.recordSha256
+    });
+    const cancellationReapedSha256 = sha("grok:cancellation-reaped", {
+      scope: cancellation.scopeId,
+      proof: cancellation.scopeReapProof,
+      terminal: cancellationTerminal.recordSha256
+    });
+    return Object.freeze({
+      availability,
+      containment: Object.freeze({
+        backend: "linux-cgroup-v2" as const,
+        scopeId: worker.scopeId!,
+        normalExitReapedSha256,
+        cancellationReapedSha256
+      }),
+      settlement: Object.freeze({
+        callId: worker.settlementCallId!,
+        terminal: true as const,
+        costAuthority: workerTerminal.costAuthority,
+        receiptDigest: sha("grok:terminal-settlement", {
+          record: workerTerminal.recordSha256,
+          adapter: adapterEvidenceIdentity(workerTerminal.bind.adapter!),
+          transcript: worker.transcriptSha256,
+          replay: replayTerminal.recordSha256,
+          runtimeIdentitySha256: expectedRuntime,
+          configurationSha256,
+          executableIdentity: finalExecutable.identity,
+          helperIdentity: finalHelper.identity,
+          egress: activeEgress.egressEvidence,
+          checks: checkDigests
+        })
+      }),
+      checks
+    });
+  } finally {
+    try {
+      if (ctx) disposePreparedRun(ctx);
+    } finally {
+      try {
+        rmSync(root, { recursive: true, force: true });
+      } catch {
+        // Best-effort; dead-owner reconciliation covers restart remnants.
+      }
+    }
+  }
+}
+
 export async function collectProductionContainedAdapterEvidence(
   input: CollectProductionContainedAdapterEvidenceInput
 ): Promise<ContainedAdapterEvidenceV1> {
@@ -2194,7 +3123,9 @@ export async function collectProductionContainedAdapterEvidence(
   const executablePin = pinContainedExecutable(input.adapterId, executablePath);
   const helperPin = input.adapterId === "pi"
     ? pinContainedExecutable(PI_REVIEWER_HELPER_RUNTIME, piReviewerHelperPath(), false)
-    : undefined;
+    : input.adapterId === "grok"
+      ? pinContainedExecutable(GROK_EGRESS_RELAY_RUNTIME, grokEgressRelayPath(), false)
+      : undefined;
 
   const finalizerInput: CollectContainedAdapterEvidenceInput = {
     adapterId: input.adapterId,
@@ -2212,7 +3143,7 @@ export async function collectProductionContainedAdapterEvidence(
         if (helperPin) {
           assertContainedExecutablePin(helperPin, "before characterization authority", input.adapterId, false);
         }
-        if (input.adapterId !== "opencode" && input.adapterId !== "pi") {
+        if (input.adapterId !== "opencode" && input.adapterId !== "pi" && input.adapterId !== "grok") {
           throw new ContainedAdapterCharacterizationUnavailable(input.adapterId);
         }
         try {
@@ -2223,13 +3154,21 @@ export async function collectProductionContainedAdapterEvidence(
                 configurationSha256,
                 input.characterizationRoot
               )
-            : await characterizePi(
-                executablePin,
-                helperPin!,
-                controlledEnvironment,
-                configurationSha256,
-                input.characterizationRoot
-              );
+            : input.adapterId === "pi"
+              ? await characterizePi(
+                  executablePin,
+                  helperPin!,
+                  controlledEnvironment,
+                  configurationSha256,
+                  input.characterizationRoot
+                )
+              : await characterizeGrok(
+                  executablePin,
+                  helperPin!,
+                  controlledEnvironment,
+                  configurationSha256,
+                  input.characterizationRoot
+                );
           // Revalidate the same pin after characterization and before the collector mints a receipt.
           assertContainedExecutablePin(executablePin, "after characterization authority", input.adapterId);
           if (helperPin) {
@@ -2246,7 +3185,7 @@ export async function collectProductionContainedAdapterEvidence(
             if (!helperEvidence || !sameRuntimeFileEvidence(helperPin.evidence, helperEvidence)) {
               throw new ContainedAdapterCharacterizationUnavailable(
                 input.adapterId,
-                "reviewer helper was substituted across characterization; no receipt"
+                "trusted helper was substituted across characterization; no receipt"
               );
             }
           }
