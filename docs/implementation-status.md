@@ -12,8 +12,8 @@ claims remain governed by the code, tests, ADRs, and phase reference audits.
 RelayForge engineering is approximately **9/10 complete**. P0 through P7 are
 implemented and the local committed release-candidate path is green, including
 packed artifact and real-browser proof collected on runtime proof commit
-`cf87abf`. Docs-only HEAD `44aad79` follows that fully tested runtime commit;
-no code changed after the proof. Contained production characterization paths
+`cf87abf`. The final handover commit is docs-only and changes no runtime code
+after that fully tested proof. Contained production characterization paths
 for OpenCode, Pi, and Grok are implemented and fixture-backed; Pi and Grok are
 no longer typed-unavailable locally. The branch is not publishable yet because
 the fail-closed release workflow requires three real, same-runner native-adapter
@@ -30,12 +30,12 @@ this handoff.
 | Item | Value |
 | --- | --- |
 | Working branch | `agent/loop-engineering-hardening` |
-| Current HEAD | `44aad790069310e7884b6178900eba91ecc311c9` (`docs: record current artifact and browser proof`) |
+| Current HEAD | docs-only final handover (use `git rev-parse HEAD`); changes no runtime code after the runtime proof commit |
 | Runtime proof commit | `cf87abfee5426178e8883c176b66032631ada9ca` (`docs: record final cgroup smoke handoff`) — exact required-cgroup smoke, packed artifact, and real-browser proof were built from this parent commit |
-| Current commits | `ee93223889c39354f03af330782434b313155097` (harden contained native evidence binding), `de23f74b9da4497842b143922fab4354e64206fd` (contained Pi production characterization), `82c6b32c67c8247deada9cc60cd05a58ed7107cd` (serialized package export typecheck), `a8433debf27a54ce5979c95ff5eadec87ab0311c` (contained Grok production characterization), `1d365fc67f94ee231d010a495baf188ded3f1f8b` (release handover after native characterization), `b94062430c82bed2236c86ec79855e814fe724d4` (drain verifier cgroup close race), `cf87abfee5426178e8883c176b66032631ada9ca` (final cgroup smoke handoff / runtime proof), `44aad790069310e7884b6178900eba91ecc311c9` (docs: record current artifact and browser proof) |
+| Current commits | `ee93223889c39354f03af330782434b313155097` (harden contained native evidence binding), `de23f74b9da4497842b143922fab4354e64206fd` (contained Pi production characterization), `82c6b32c67c8247deada9cc60cd05a58ed7107cd` (serialized package export typecheck), `a8433debf27a54ce5979c95ff5eadec87ab0311c` (contained Grok production characterization), `1d365fc67f94ee231d010a495baf188ded3f1f8b` (release handover after native characterization), `b94062430c82bed2236c86ec79855e814fe724d4` (drain verifier cgroup close race), `cf87abfee5426178e8883c176b66032631ada9ca` (final cgroup smoke handoff / runtime proof), then docs-only handoff commits with no runtime code change |
 | Product integration commit | `5880b008d81c20f746f728ef83d736306d546d81` (`feat: complete RelayForge control plane integration`) |
 | Stabilization commits | `3b6f78f2b89f0b4430e9f24cd535d3efa29e6e26`, `a0a877fcf4d67445a56656a88b653e7141082313` |
-| Packed/browser smoke checkpoint | `cf87abfee5426178e8883c176b66032631ada9ca` (exact preview run on the runtime proof commit; docs-only `44aad79` follows with no code change) |
+| Packed/browser smoke checkpoint | `cf87abfee5426178e8883c176b66032631ada9ca` (exact preview run on the runtime proof commit; final handover is docs-only and changes no runtime code) |
 | Previous remote handoff checkpoint | `860688c55207be051431d470b44b038025a12e5c` |
 | Package candidate | `relayforge@1.0.0-rc.1` |
 | Tag / npm publish / GitHub Release / repository rename | **Not performed** |
@@ -44,8 +44,8 @@ this handoff.
 The previous remote checkpoint contains the earlier documentation handoff. The
 closing branch push carries this document and the verified commits; after
 fetching, use `git rev-parse HEAD` rather than treating `860688c` as the product
-tree. Docs-only commit `44aad79` follows the fully tested runtime commit
-`cf87abf`; no code changed after the proof. Required-cgroup source smoke, packed
+tree. The final handover commit is docs-only and changes no runtime code after
+the fully tested runtime commit `cf87abf`. Required-cgroup source smoke, packed
 artifact preview, and real-browser gates remain exact for parent `cf87abf`.
 
 ## Phase status
@@ -60,7 +60,7 @@ artifact preview, and real-browser gates remain exact for parent `cf87abf`.
 | P4 | Capability adapter registry and OpenCode/Pi/Grok adapters | Implemented; native release receipts open | Registry, codecs, bounded routes and fail-closed policy are integrated. OpenCode, Pi, and Grok contained production characterization paths are implemented and fixture-backed; focused adapter/egress matrix **127/127** green. Real same-runner receipts still require exact binaries, live credentials, designated cgroup runner, and the release workflow. Ordinary structured-native execution refuses before run/control/worktree mutation when product evidence is absent |
 | P5 | Transcript ingestion and live control room | Implemented | Focused **125/125**; observations remain non-authoritative; reconnect degrades and recovers explicitly |
 | P6 | Multi-repository scheduling, isolation, recovery, integration and publication | Product-integrated | Authority **21/21**; orchestration **12/12**; product/recovery/verifier **6/6**; publication/SCM/integration **13/13**; real isolation and SIGKILL recovery paths |
-| P7 | RelayForge identity, package, workflow and browser/release proof | Local committed gates green on runtime proof commit | Required-cgroup aggregate, source smoke, typecheck/build, packed artifact preview, and real Chrome lifecycle green on runtime proof `cf87abf`; docs-only HEAD `44aad79` records that proof with no code change; publish remains blocked on real same-runner native receipts |
+| P7 | RelayForge identity, package, workflow and browser/release proof | Local committed gates green on runtime proof commit | Required-cgroup aggregate, source smoke, typecheck/build, packed artifact preview, and real Chrome lifecycle green on runtime proof `cf87abf`; the final handover commit is docs-only and changes no runtime code; publish remains blocked on real same-runner native receipts |
 
 ## Committed release-candidate verification
 
@@ -99,9 +99,10 @@ required-cgroup source smoke on runtime proof `cf87abf` proved the strong
 contained branch with two consecutive `SMOKE PASS` runs and a green final
 verifier. Exact packed artifact and real-browser proof were collected from that
 parent commit (artifact commit `cf87abfee5426178e8883c176b66032631ada9ca`,
-tarball digest above). Docs-only commit `44aad79` follows the fully tested
-runtime commit; no code changed after the proof. Local preview gates no longer
-block publish; only the real same-runner native-adapter receipts remain open.
+tarball digest above). The final handover commit is docs-only and changes no
+runtime code after the fully tested runtime commit. Local preview gates no
+longer block publish; only the real same-runner native-adapter receipts remain
+open.
 
 ## Native-adapter release boundary
 
@@ -158,10 +159,11 @@ authorized npm/GitHub release.
 ## Handoff sequence
 
 1. Fetch or push `agent/loop-engineering-hardening` as appropriate and verify
-   the remote branch contains HEAD `44aad79` (docs-only after runtime proof
-   `cf87abf`) and the current characterization, fix, smoke, and docs-handoff
-   commits (`ee93223`, `de23f74`, `82c6b32`, `a8433de`, `1d365fc`, `b940624`,
-   `cf87abf`, `44aad79`).
+   the remote branch tip with `git rev-parse HEAD` (final handover is docs-only
+   after runtime proof `cf87abf` and changes no runtime code) and the current
+   characterization, fix, smoke, and docs-handoff commits (`ee93223`, `de23f74`,
+   `82c6b32`, `a8433de`, `1d365fc`, `b940624`, `cf87abf`, then docs-only
+   handoff).
 2. On the designated Linux runner, install/pin the exact OpenCode, Pi and Grok
    runtimes and credentials without sharing one provider's secret with another.
 3. Run the same-job collector/consumer path for all three adapters. Preserve
@@ -169,7 +171,8 @@ authorized npm/GitHub release.
 4. Run the publishable artifact workflow. It must repeat the cgroup/strong
    backend gates and bind the three real same-runner receipts to the exact
    tarball (local packed/browser preview is already green on runtime proof
-   `cf87abf`; docs-only `44aad79` did not change code after that proof).
+   `cf87abf`; the final handover commit is docs-only and changes no runtime
+   code after that proof).
 5. Only with explicit operator authorization after every gate is green: create
    an RC tag, publish npm, create a GitHub Release, or rename the repository.
 
