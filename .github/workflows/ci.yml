@@ -86,16 +86,28 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: node scripts/release-artifact.mjs --preview --output .preview
+      - name: Build preview tarball outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep the preview under RUNNER_TEMP so workspace hygiene and gitignore
+          # never hide the artifact from upload-artifact.
+          preview="$RUNNER_TEMP/relayforge-preview"
+          mkdir -p -- "$preview"
+          node scripts/release-artifact.mjs --preview --output "$preview"
+          test -f "$preview/release-manifest.json"
+          test -f "$preview/relayforge-1.0.0-rc.1.tgz"
+          echo "PREVIEW_DIR=$preview" >> "$GITHUB_ENV"
       - name: Drive the exact preview tarball through the real browser dashboard smoke
         shell: bash
         run: |
           set -euo pipefail
-          tarball="$(node -p "require('./.preview/release-manifest.json').tarball.path")"
+          tarball="$PREVIEW_DIR/relayforge-1.0.0-rc.1.tgz"
           node scripts/smoke-packed-dashboard.mjs --tarball "$tarball"
       - uses: actions/upload-artifact@v4
         with:
           name: relayforge-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
-          path: .preview/
+          path: ${{ env.PREVIEW_DIR }}
           if-no-files-found: error
           retention-days: 7
+          include-hidden-files: true
