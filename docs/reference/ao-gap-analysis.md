@@ -28,7 +28,7 @@ implemented.”
 | Control plane | One-shot CLI plus a loopback dashboard HTTP server | Long-lived daemon, REST, SSE, terminal WebSocket | Introduce a loopback-only serve control plane before live features | **Landed:** `relayforge serve` (P1) |
 | Session interaction | Context is injected when dispatching an attempt; tmux is a viewport | Running sessions accept messages and distinguish input-needed from blocked | Add a parent-owned queue and safe steering semantics | **Landed:** future-boundary steering (P2) |
 | Source-control feedback | Git/worktree helpers and review/repair flow exist, but no PR observer loop | SCM observer polls PR, checks, and review facts and notifies lifecycle | Add a trusted-parent PR observer that creates normal repair work | **Landed and product-integrated** (P3) for explicit SCM/P6 publication config |
-| Harnesses | Provider branches are implemented in one module | Worker and reviewer adapters are registered behind contracts | Extract and test a registry before increasing provider coverage | **Landed registry** (P4); OpenCode/Pi/Grok production gates incomplete |
+| Harnesses | Provider branches are implemented in one module | Worker and reviewer adapters are registered behind contracts | Extract and test a registry before increasing provider coverage | **Landed registry** (P4); OpenCode/Pi/Grok contained production characterization implemented and fixture-backed; real same-runner release receipts still open |
 | Observability | Polling dashboard and terminal captures | CDC/SSE updates and multiplexed terminal streams | Upgrade transport while retaining loopback and redaction guarantees | **Landed:** control room (P5) |
 | Safety/accounting | Sandboxed, scoped execution and evidence-gated authoritative settlement | Isolated workspaces and runtime management | Keep Loop’s stricter safety model when designing parity features | **Strengthened:** cgroup delegation (P0.2) |
 
@@ -177,8 +177,11 @@ new one ([`docs/backend-code-structure.md`](https://github.com/Untrivial-ai/agen
 behavior behind a strict TypeScript registry without widening launch authority.
 Every adapter must still use the same sandbox, scope, transcript, and settlement
 path; a registry cannot become an escape hatch for arbitrary host commands.
-**Handoff:** registry is implemented; OpenCode/Pi/Grok production readiness is
-still incomplete — see [implementation-status.md](../implementation-status.md).
+**Handoff:** registry is implemented; contained production characterization for
+OpenCode, Pi, and Grok is implemented and fixture-backed (no longer
+typed-unavailable). Real same-runner release receipts are still not collected;
+ordinary execute refuses native adapters without evidence injection; publish
+stays fail-closed — see [implementation-status.md](../implementation-status.md).
 
 ## 7. Observability and dashboard
 

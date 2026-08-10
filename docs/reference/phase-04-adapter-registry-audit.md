@@ -1,6 +1,6 @@
 # Phase 04 reference audit: capability adapter registry
 
-- Status: research gate complete; registry implemented. OpenCode production collector adversarially green (21/21, focused 69/69) with explicit paid-probe authorization; real provider receipt requires designated-runner credentials; Pi/Grok production characterization unavailable; ordinary OpenCode runs fail-closed until same-job evidence is injected before mutation — see [implementation-status.md](../implementation-status.md)
+- Status: research gate complete; registry implemented. Contained production characterization for OpenCode, Pi, and Grok is implemented and fixture-backed (no longer typed-unavailable). Real same-runner release receipts are still not collected; ordinary execute refuses native adapters without evidence injection; publish stays fail-closed — see [implementation-status.md](../implementation-status.md)
 - Date: 2026-08-09
 - RelayForge baseline: `73051d510c6473fa763bc7cd81921f65bec00eea`
 - Decision: [ADR 005](../adr/005-capability-adapter-registry.md)

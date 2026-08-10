@@ -1,6 +1,6 @@
 # ADR 005: Capability adapter registry with a single execution authority
 
-- Status: Accepted; registry implemented. OpenCode production collector adversarially green (21/21, focused 69/69) with explicit paid-probe authorization; real provider receipt requires designated-runner credentials; Pi/Grok production characterization unavailable; ordinary OpenCode runs fail-closed until same-job evidence is injected before mutation — see [implementation-status.md](../implementation-status.md)
+- Status: Accepted; registry implemented. Contained production characterization for OpenCode, Pi, and Grok is implemented and fixture-backed (no longer typed-unavailable). Real same-runner release receipts are still not collected; ordinary execute refuses native adapters without evidence injection; publish stays fail-closed — see [implementation-status.md](../implementation-status.md)
 - Date: 2026-08-09
 - Decision owners: RelayForge maintainers
 - Research: [Phase 04 reference audit](../reference/phase-04-adapter-registry-audit.md)

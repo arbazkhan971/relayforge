@@ -29,10 +29,10 @@ the worktree/toolchain and safety foundations. **Current status (handoff):**
 | P1 | Persistent loopback daemon and derived control-plane views | **Implemented** — SQLite control plane, loopback HTTP/SSE, dashboard, cutover (focused **210/210**) |
 | P2 | Safe parent-owned session steering | **Implemented** — CLI live steering E2E **1/1** + adjacent **25/25**, exact cgroup/no-leak proof |
 | P3 | Trusted SCM feedback loop | **Product-integrated** (focused **155/155**) for explicit SCM/P6 publication config: recoverable publication, parent polling, durable observations, and reaction-to-P2 steering |
-| P4 | Harness adapter registry | **Implemented** (release receipts open) — registry product-integrated; OpenCode characterization exists with hardened fixture/required-host tests but real release receipt needs designated runner + exact binary + live credential; Pi/Grok still typed unavailable (no release receipt); ordinary OpenCode/Pi/Grok refuse before mutation; publish path fail-closed until distinct same-runner receipts |
+| P4 | Harness adapter registry | **Implemented** (release receipts open) — registry product-integrated; contained production characterization for OpenCode, Pi, and Grok is implemented and fixture-backed (no longer typed-unavailable); real same-runner release receipts are still not collected; ordinary execute refuses native adapters without evidence injection; publish stays fail-closed until distinct same-runner receipts |
 | P5 | Live observability through P1’s event transport | **Implemented** — control room / transcript path (focused **125/125**) |
 | P6 | Multi-repository execution + product docs/ADRs | **Product-integrated** — strict config/validation, CLI run route, ControlStore facts/views, authority, DAG/scheduler, worktree groups, contained transport/settlement, publication bridge, read isolation, crash recovery, real product E2Es (authority **21/21**, orchestration **12/12**, product/recovery/verifier **6/6**, publication/SCM/integration **13/13**) |
-| P7 | Identity / packaging / browser / release proof | Local committed gates **green** (aggregate **171** / **1,927**, contained source smoke, exact preview tarball, packed Chrome **150.0.7871.128**); publish remains fail-closed until real same-runner native receipts; **no** tag/publish/rename |
+| P7 | Identity / packaging / browser / release proof | Local committed gates **green** (aggregate **171** / **1,957**, contained source smoke, exact preview tarball, packed Chrome **150.0.7871.128**); publish remains fail-closed until real same-runner native receipts; **no** tag/publish/rename |
 
 Product integration landed at `5880b008d81c20f746f728ef83d736306d546d81`;
 the verified release-smoke baseline is `198aa44a192848fe6df1b6f4033e5f6bffc62d89`.
@@ -62,7 +62,7 @@ Historical checkpoint note (Wave 0 era): typecheck/build and an earlier full
 host suite (832/832 across 60 files) passed after the streaming-slab repair.
 That aggregate is not the current P0–P7 claim; see
 [implementation-status.md](docs/implementation-status.md) for the committed
-**171** files / **1,927** tests plus clean build result.
+**171** files / **1,957** tests plus clean build result.
 
 ## Wave 1 — finish P0(2) only after an ADR (4 tasks) — complete
 
@@ -154,15 +154,13 @@ At decision time the tasks were:
    registry with focused compatibility tests.
 5. Add `opencode` plus further real adapters through the same contract.
 
-**Current:** registry/codecs/routes are product-integrated. OpenCode production
-characterization exists and has hardened fixture/required-host tests; a real
-release receipt still needs the designated runner, exact installed binary, and
-live credential. Pi and Grok production characterizations remain **typed
-unavailable** and emit **no** release receipt. Ordinary OpenCode/Pi/Grok product
-execution currently **refuses before** run/control/worktree mutation because
-product evidence injection is intentionally not supported yet. The publishable
-release workflow requires distinct same-runner OpenCode, Pi, and Grok receipts
-and remains **fail-closed**.
+**Current:** registry/codecs/routes are product-integrated. Contained production
+characterization for OpenCode, Pi, and Grok is implemented and fixture-backed
+(no longer typed-unavailable). Real same-runner release receipts are still not
+collected (each still needs the designated runner, exact installed binary, and
+live credential). Ordinary execute refuses native adapters without evidence
+injection; the publishable release workflow requires distinct same-runner
+OpenCode, Pi, and Grok receipts and remains **fail-closed**.
 
 Guardrails: adapters cannot choose an uncontained launcher or mint settlement
 authority; all provider paths retain the existing evidence flow.
@@ -200,7 +198,7 @@ and P7. **Current:**
   **21/21**, orchestration **12/12**, product/recovery/verifier **6/6**,
   publication/SCM/integration **13/13**.
 - P7 local preview/browser/source gates are **green** on committed source:
-  required-cgroup aggregate **171** files / **1,927** tests + clean TypeScript
+  required-cgroup aggregate **171** files / **1,957** tests + clean TypeScript
   build; source smoke strong-path marker; deterministic exact preview
   `relayforge-1.0.0-rc.1.tgz` with its digest recorded by the repository-only
   campaign state rather than self-embedded in packed Markdown; packed

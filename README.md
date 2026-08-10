@@ -11,15 +11,16 @@ bounded settlement. The primary command and npm package are `relayforge`.
 
 This source tree targets release candidate **1.0.0-rc.1**. Product integration
 landed at `5880b008d81c20f746f728ef83d736306d546d81` and the committed local
-candidate passed the required-cgroup aggregate (**171** files / **1,927**
-tests), contained source smoke, exact preview tarball, and packed real-browser
-Chrome lifecycle. Preparing and pushing the source does **not** mean that an npm
-package, GitHub Release, repository rename, or tag has been published. Release
-publication remains fail-closed until real same-runner OpenCode, Pi, and Grok
-receipts exist; Pi and Grok production characterization is still typed
-unavailable, and OpenCode requires the designated runner, exact installed
-binary, and a live credential. Those publication steps are explicit operator
-actions described in [docs/publishing.md](docs/publishing.md).
+candidate on runtime proof `cf87abf` passed the required-cgroup aggregate
+(**171** files / **1,957** tests), contained source smoke, exact preview
+tarball, and packed real-browser Chrome lifecycle. Contained production
+characterization for OpenCode, Pi, and Grok is implemented and fixture-backed.
+Preparing and pushing the source does **not** mean that an npm package, GitHub
+Release, repository rename, or tag has been published. Release publication
+remains fail-closed until real same-runner OpenCode, Pi, and Grok receipts
+exist; those still require the designated cgroup runner, exact installed
+binaries, live credentials, and the release workflow. Those publication steps
+are explicit operator actions described in [docs/publishing.md](docs/publishing.md).
 
 ## Identity and compatibility
 
@@ -198,11 +199,10 @@ An installed executable or successful `--help`/`--version` probe is not enough.
 
 **Truthful native-adapter limitations (current product):**
 
-- OpenCode production characterization exists and has hardened
-  fixture/required-host tests, but a real release receipt needs the designated
-  runner, exact installed binary, and live credential.
-- Pi and Grok production characterizations are still **typed unavailable** and
-  emit **no** release receipt.
+- Contained production characterization for OpenCode, Pi, and Grok is
+  implemented and fixture-backed. Real same-runner release receipts are still
+  **not collected** and need the designated cgroup runner, exact installed
+  binaries, live credentials, and the release workflow.
 - Ordinary OpenCode/Pi/Grok product execution currently **refuses before**
   run/control/worktree mutation because product evidence injection is
   intentionally not supported yet.
@@ -350,8 +350,10 @@ The following distinctions are deliberate release claims:
   bounded CI/review polling, durable observations, and reaction-to-P2 steering.
   A run without that explicit plan performs no remote publication.
 - **Native OpenCode/Pi/Grok ordinary runs refuse before mutation** until real
-  product evidence is available; Pi/Grok characterizations remain typed
-  unavailable; publishable release requires distinct same-runner receipts.
+  product evidence injection is available. Contained production characterization
+  for OpenCode, Pi, and Grok is implemented and fixture-backed; real same-runner
+  release receipts are still not collected. Publishable release requires distinct
+  same-runner receipts.
 - **The loopback control service is local and read-only.** It is not a remote
   multi-user service, a terminal gateway, or a write API.
 - **Provisioning is offline copying, not dependency installation.**

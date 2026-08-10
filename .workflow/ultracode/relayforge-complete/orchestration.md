@@ -6,10 +6,16 @@ packets in a wave are read-only or have disjoint file ownership.
 **Live handoff:** [docs/implementation-status.md](../../../docs/implementation-status.md)
 (relative from this file). Branch `agent/loop-engineering-hardening`; product
 integration `5880b008d81c20f746f728ef83d736306d546d81`; verified release-smoke
-baseline `198aa44a192848fe6df1b6f4033e5f6bffc62d89`. The previous remote
-documentation checkpoint was `860688c55207be051431d470b44b038025a12e5c`.
+baseline `198aa44a192848fe6df1b6f4033e5f6bffc62d89`. Runtime proof commit
+`cf87abfee5426178e8883c176b66032631ada9ca` (`cf87abf`); current HEAD concept is
+docs-only final handover after that runtime proof (use `git rev-parse HEAD`).
+Characterization/fix commits: `ee93223`, `de23f74` (Pi), `82c6b32`,
+`a8433de` (Grok), `1d365fc`, `b940624`, `cf87abf`. Package
+`relayforge@1.0.0-rc.1`. Status: local-engineering-complete;
+native-release-receipts-open; characterization done for all three. The previous
+remote documentation checkpoint was `860688c55207be051431d470b44b038025a12e5c`.
 No tag, npm publish, GitHub Release, repository rename or real native receipt
-has been performed.
+has been performed (receipts **not collected**).
 
 ## Wave R0: repository discovery and Phase 0 research
 
@@ -43,18 +49,21 @@ No product implementation file is owned by a packet in Wave R0.
 | P1 | Durable control plane | done | focused 210/210 |
 | P2 | Session steering | done | CLI live E2E 1/1; adjacent 25/25; exact cgroup/no-leak |
 | P3 | SCM feedback machinery | done/product-integrated | focused 155/155; explicit SCM/P6 publication config drives publication, polling, and reaction-to-P2 |
-| P4 | Adapter registry + natives | done (release receipts open) | OpenCode characterization exists with hardened fixture/required-host tests; real receipt needs designated runner + exact binary + live credential; Pi/Grok typed unavailable (no release receipt); ordinary OpenCode/Pi/Grok refuse before mutation; publish path fail-closed until distinct same-runner receipts |
+| P4 | Adapter registry + natives | done (release receipts open) | OpenCode, Pi, and Grok contained production characterization **implemented and fixture-backed** (Pi/Grok no longer typed-unavailable); focused adapter/egress matrix 127/127; real same-runner release receipts **not collected**; ordinary OpenCode/Pi/Grok refuse before mutation; publish path fail-closed until distinct same-runner receipts |
 | P5 | Live observability / control room | done | focused 125/125 |
 | P6 | Multi-repository | **done (product-integrated)** | strict config/validation, CLI run route, ControlStore, authority, DAG/scheduler, worktree groups, contained transport/settlement, publication bridge, read isolation, crash recovery, real product E2Es; authority 21/21; orchestration 12/12; product/recovery/verifier 6/6; publication/SCM/integration 13/13 |
-| P7 | Identity / release proof | local committed gates green; native receipts open | aggregate 171 files / 1,927 tests + clean TS build; source smoke strong-path marker; exact preview tarball 1,627,595 bytes SHA-256 4f2af6ceafff94bad16b753debcd7b11103a30276c6082443207f3cbf2d937de; packed Chrome 150.0.7871.128 connected→degraded→recovered; no tag/publish/rename/native receipt |
+| P7 | Identity / release proof | local committed gates green on runtime proof `cf87abf`; native receipts open | aggregate **171** files / **1,957** tests + clean TS build; source smoke strong-path marker on `cf87abf`; exact preview tarball `relayforge-1.0.0-rc.1.tgz` **1,645,603** bytes SHA-256 `92020efe10080fe617151a1af093f41c0bd953d43d1aa3fbeeb51df7919147ff`; packed Chrome **150.0.7871.128** connected→degraded→recovered; final handover docs-only after `cf87abf`; no tag/publish/rename; native receipts not collected |
 
 ## Resume order (exact)
 
 1. Do not tag, publish, rename or invent native receipts.
-2. Push the verified `agent/loop-engineering-hardening` branch.
+2. Push the verified `agent/loop-engineering-hardening` branch; verify tip with
+   `git rev-parse HEAD` (final handover is docs-only after runtime proof
+   `cf87abf`).
 3. On the designated runner, complete and collect real Pi, Grok and OpenCode
    same-runner release receipts (exact installed binary and live credential
-   where required).
+   where required). Contained production characterization is already
+   implemented and fixture-backed for all three; real receipts remain open.
 4. Run the publishable workflow so those receipts are bound to the exact
    cgroup-backed artifact.
 5. Only with explicit operator authority after the above: tag, npm publish,

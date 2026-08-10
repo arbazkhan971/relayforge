@@ -14,7 +14,10 @@ branches remain evidence and are not deleted.
 
 **Handoff checkpoint:** branch `agent/loop-engineering-hardening`; product
 integration commit `5880b008d81c20f746f728ef83d736306d546d81` and verified
-release-smoke baseline `198aa44a192848fe6df1b6f4033e5f6bffc62d89`. The previous
+release-smoke baseline `198aa44a192848fe6df1b6f4033e5f6bffc62d89`. Runtime proof
+commit `cf87abfee5426178e8883c176b66032631ada9ca` (`cf87abf`) holds exact
+required-cgroup smoke, packed artifact, and real-browser proof; the final
+handover is docs-only after that and changes no runtime code. The previous
 remote documentation handoff was `860688c55207be051431d470b44b038025a12e5c`.
 Live tracker:
 [docs/implementation-status.md](../../../docs/implementation-status.md).
@@ -82,44 +85,51 @@ its unchanged bound.
 | P1 durable control plane | implemented | focused **210/210** |
 | P2 session steering | implemented | CLI live E2E **1/1**; adjacent **25/25**; exact cgroup/no-leak proof |
 | P3 SCM machinery | product-integrated | focused **155/155**; explicit SCM/P6 publication config drives recoverable publication, parent polling, and reaction-to-P2 |
-| P4 adapter registry | implemented (release receipts open) | OpenCode characterization exists with hardened fixture/required-host tests; real release receipt needs designated runner + exact binary + live credential; Pi/Grok **typed unavailable** (no release receipt); ordinary OpenCode/Pi/Grok **refuse before** run/control/worktree mutation; publish path **fail-closed** until distinct same-runner receipts |
+| P4 adapter registry | implemented (release receipts open) | OpenCode, Pi, and Grok contained production characterization paths are **implemented and fixture-backed** (Pi/Grok no longer typed-unavailable); focused adapter/egress matrix **127/127**; real same-runner release receipts **not collected** and still require designated runner + exact binary + live credential; ordinary OpenCode/Pi/Grok **refuse before** run/control/worktree mutation; publish path **fail-closed** until distinct same-runner receipts |
 | P5 control room | implemented | focused **125/125** |
 | P6 multi-repository | **product-integrated** | strict config/validation, actual CLI run route, canonical ControlStore facts/views, exact repository-set authority, DAG and scheduler, all-or-nothing worktree group, worker/verification through canonical contained transport and settlement, vector integration, publication bridge, exact read isolation, durable crash recovery, real product E2Es; authority **21/21**; orchestration **12/12**; product/recovery/verifier **6/6**; publication/SCM/integration **13/13** |
 
-## P7 / release checkpoint (local committed gates green)
+## P7 / release checkpoint (local committed gates green on runtime proof `cf87abf`)
 
 - Identity and package candidate `relayforge@1.0.0-rc.1` foundations are present.
-- **Required-cgroup aggregate: GREEN** — **171** test files, **1,927** tests
+- Characterization / fix chain: `ee93223`, `de23f74` (Pi), `82c6b32`,
+  `a8433de` (Grok), `1d365fc`, `b940624`, `cf87abf`; final handover is docs-only
+  after the runtime proof and changes no runtime code.
+- **Required-cgroup aggregate: GREEN** — **171** test files, **1,957** tests
   passed, then clean TypeScript build. Environment: Node
   **v20.20.2**, npm **10.8.2**, Linux **6.17.0-1021-gcp**, bwrap **0.9.0**.
-- **Required-cgroup source smoke: GREEN** — exact marker
-  `SMOKE PASS (contained host — verified delivery on the run branch)`; execute
-  completed; feature stayed on the run branch; original checkout unchanged.
-- **Exact preview artifact: GREEN** — deterministic `relayforge-1.0.0-rc.1.tgz`,
-  **1,627,595** bytes, SHA-256
-  `4f2af6ceafff94bad16b753debcd7b11103a30276c6082443207f3cbf2d937de`. Deep
+- **Required-cgroup source smoke: GREEN on runtime proof `cf87abf`** — exact
+  marker `SMOKE PASS (contained host — verified delivery on the run branch)`;
+  execute completed; feature stayed on the run branch; original checkout
+  unchanged.
+- **Exact preview artifact: GREEN on runtime proof `cf87abf`** — deterministic
+  `relayforge-1.0.0-rc.1.tgz`, **1,645,603** bytes, SHA-256
+  `92020efe10080fe617151a1af093f41c0bd953d43d1aa3fbeeb51df7919147ff`. Deep
   smoke: clean lifecycle-script install, better-sqlite3 native binding load,
   public ESM and external TypeScript consumer, forbidden authority exports,
   canonical init/dry run, legacy `loop.config` plus existing `.loop` adoption,
   control service start/status/stop, packed Markdown link closure, unchanged
   checkouts.
-- **Packed real-browser gate: GREEN** on Google Chrome **150.0.7871.128** —
-  schemaVersion 1, packageName relayforge, version 1.0.0-rc.1, fixtureRun
-  browserfixture, DOM rendered, lifecycle connected → degraded → recovered,
-  serviceReplaced true.
+- **Packed real-browser gate: GREEN on runtime proof `cf87abf`** on Google
+  Chrome **150.0.7871.128** — schemaVersion 1, packageName relayforge, version
+  1.0.0-rc.1, fixtureRun browserfixture, DOM rendered, lifecycle
+  **connected → degraded → recovered**, serviceReplaced true.
 - Preview defects fixed: implementation-only better-sqlite3 types no longer leak
   into public declarations; smoke harness asynchronously runs `serve stop` to
   reap the owned service child; legacy `.loop` fixture adopts the directory init
-  may already create.
-- Product integration and the committed local rerun are complete. The shared
-  handoff still requires the branch push.
+  may already create; close-membership drain race fixed on `b940624`
+  (focused **60/60**).
+- Product integration and the committed local rerun are complete. Status:
+  local-engineering-complete; native-release-receipts-open; characterization
+  done for all three.
 - **No** tag, npm publish, GitHub release, repository rename, or real native
-  receipt has been performed.
+  receipt has been performed (receipts **not collected**).
 
 ## Verification note
 
 Historical Wave-0 full-suite checkpoint (832/832 across 60 files) is not the
 current P0–P7 claim. The current local result is the committed required-cgroup
-aggregate **171** / **1,927** plus clean build, source smoke, exact tarball and
-Chrome lifecycle. Publication still requires real native receipts. Resume from
+aggregate **171** / **1,957** plus clean build, source smoke, exact tarball and
+Chrome lifecycle on runtime proof `cf87abf`. Publication still requires real
+native same-runner receipts (not collected). Resume from
 [docs/implementation-status.md](../../../docs/implementation-status.md).

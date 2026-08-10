@@ -1,6 +1,6 @@
 # RelayForge implementation status and release handoff
 
-Last updated: 2026-08-09 UTC
+Last updated: 2026-08-10 UTC
 
 This is the canonical resume surface for the RelayForge completion campaign.
 It separates locally verified release engineering from evidence that can only be
@@ -15,11 +15,14 @@ packed artifact and real-browser proof collected on runtime proof commit
 `cf87abf`. The final handover commit is docs-only and changes no runtime code
 after that fully tested proof. Contained production characterization paths
 for OpenCode, Pi, and Grok are implemented and fixture-backed; Pi and Grok are
-no longer typed-unavailable locally. The branch is not publishable yet because
-the fail-closed release workflow requires three real, same-runner native-adapter
-receipts; those receipts have not been collected and still require the
-designated cgroup runner, exact installed binaries, live credentials, and the
-publishable release workflow.
+no longer typed-unavailable locally. Stale secondary trackers (README, roadmap,
+P4 ADR/audit status lines, workflow campaign state) were realigned to this
+document on 2026-08-10. The branch is not publishable yet because the
+fail-closed release workflow requires three real, same-runner native-adapter
+receipts; those receipts have not been collected and still require live
+credentials plus the publishable release workflow (cgroup host readiness and
+exact pinned binaries are now satisfied on the characterization host — see
+[Host preparation (2026-08-10)](#host-preparation-2026-08-10)).
 
 No tag, npm publication, GitHub Release, or repository rename has been
 performed. Those remain explicit operator actions, not implied follow-ons from
@@ -111,18 +114,22 @@ or invent evidence.
 
 - **OpenCode:** the contained production characterization path is implemented
   and hardened by fixture-backed tests. A real release receipt still requires
-  the designated cgroup runner, the exact inspected executable, a live
-  credential, and the release workflow.
+  a live `OPENAI_API_KEY`, explicit `--authorize-paid-probe`, private
+  `RUNNER_TEMP`, and the same-job collect → consume → extract → bundle path
+  (or the tagged release workflow). Exact binary pin: **opencode 1.18.15**.
 - **Pi:** the contained production characterization path is implemented and
-  fixture-backed; Pi is no longer typed-unavailable locally. Real external
-  evidence remains pending and still requires the designated cgroup runner,
-  exact binary, live credential, and release workflow.
+  fixture-backed; Pi is no longer typed-unavailable locally. A real release
+  receipt still requires a live `ANTHROPIC_API_KEY`, paid authorization, and
+  the same-job path. Exact binary pin: **pi 0.84.1** (package
+  `@earendil-works/pi-coding-agent@0.84.1`; requires **Node ≥ 22.19** to
+  execute the CLI — host Node for RelayForge itself may remain 20.x).
 - **Grok:** the contained production characterization path is implemented and
-  fixture-backed; Grok is no longer typed-unavailable locally. Real external
-  evidence remains pending and still requires the designated cgroup runner,
-  exact binary, live credential, and release workflow. RelayForge does not
-  expose persistent auto-approval; worker permissions remain parent-mediated
-  and one-request only.
+  fixture-backed; Grok is no longer typed-unavailable locally. A real release
+  receipt still requires a live **`XAI_API_KEY` only** (ambient OAuth /
+  subscription auth is not accepted for production probes), paid
+  authorization, and the same-job path. Exact binary pin: **grok 1.0.0
+  (3cd0d0cbce) [stable]**. RelayForge does not expose persistent auto-approval;
+  worker permissions remain parent-mediated and one-request only.
 - The publishable workflow requires distinct same-runner OpenCode, Pi and Grok
   receipts bound to the exact checkout, runtime identities, containment,
   settlement and artifact. Missing evidence is a hard release refusal, never a
@@ -130,6 +137,27 @@ or invent evidence.
 
 This boundary means the local package is a verified preview candidate, not an
 authorized npm/GitHub release.
+
+## Host preparation (2026-08-10)
+
+Recheck on the characterization host (Linux **6.17.0-1021-gcp**, delegated
+user-slice cgroup v2 + `nsdelegate`, Bubblewrap **0.9.0**, Node **v20.20.2**
+for RelayForge, Google Chrome present):
+
+| Gate | Result |
+| --- | --- |
+| Typecheck / build | **GREEN** |
+| Focused adapter characterization matrix | **GREEN** — **112/112** across collector + OpenCode/Pi/Grok + evidence envelope (fixture-backed production paths) |
+| Required-cgroup Linux suite | **GREEN** — **22/22** with `RELAYFORGE_TEST_REQUIRE_CGROUP=1` (run alone; concurrent suites can leave empty `loop-*` dirs that confuse outer-scope leak assertions) |
+| Exact pinned native CLIs on PATH | **GREEN** — `opencode` **1.18.15**; `pi` **0.84.1** (wrapped onto Node **22.19.0**); `grok` **1.0.0 (3cd0d0cbce) [stable]** |
+| Live paid credentials | **MISSING** — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `XAI_API_KEY` unset in the operator environment; do not invent receipts |
+| Real same-runner receipts | **Not collected** |
+| Tag / npm / GitHub Release / rename | **Not performed** |
+
+Doctor on this host reports strong process scope under the user delegated
+cgroup and Bubblewrap sandbox OK. Grok may have ambient OAuth material under
+`~/.grok/`; production characterization still requires an explicit
+`XAI_API_KEY` and will not treat ambient login as release evidence.
 
 ## Completed architectural guarantees
 
@@ -164,10 +192,16 @@ authorized npm/GitHub release.
    characterization, fix, smoke, and docs-handoff commits (`ee93223`, `de23f74`,
    `82c6b32`, `a8433de`, `1d365fc`, `b940624`, `cf87abf`, then docs-only
    handoff).
-2. On the designated Linux runner, install/pin the exact OpenCode, Pi and Grok
-   runtimes and credentials without sharing one provider's secret with another.
-3. Run the same-job collector/consumer path for all three adapters. Preserve
-   only the digest-bound receipt bundle; never upload raw evidence or secrets.
+2. On the designated Linux runner, confirm the exact OpenCode, Pi and Grok
+   pins (`opencode` 1.18.15, `pi` 0.84.1 on Node ≥ 22.19, `grok` 1.0.0
+   `3cd0d0cbce` stable). Install only what is missing. Supply
+   `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `XAI_API_KEY` without sharing one
+   provider's secret with another (one secret per collector step).
+3. Run the same-job collector/consumer path for all three adapters
+   (`scripts/collect-contained-adapter-evidence.mjs --authorize-paid-probe`,
+   required-real adapter tests, `create-native-adapter-receipt-bundle.mjs`
+   extract + bundle). Preserve only the digest-bound receipt bundle; never
+   upload raw evidence or secrets.
 4. Run the publishable artifact workflow. It must repeat the cgroup/strong
    backend gates and bind the three real same-runner receipts to the exact
    tarball (local packed/browser preview is already green on runtime proof
