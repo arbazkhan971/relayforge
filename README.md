@@ -1,605 +1,399 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/arbazkhan971/loop-orchestrator/main/assets/logo.svg" alt="Loop Orchestrator logo" width="760">
-</p>
+# RelayForge
 
-<h1 align="center">Loop Orchestrator</h1>
+RelayForge coordinates a small team of AI coding agents through planning,
+isolated implementation, independent review, deterministic verification, and
+bounded settlement. The primary command and npm package are `relayforge`.
 
-<p align="center">
-  <strong>Open-source tmux AI agent teams for Claude Code, Codex, Gemini CLI, and custom terminal coding agents.</strong>
-</p>
+> **Release handoff tracker:** see
+> **[docs/implementation-status.md](docs/implementation-status.md)** for live
+> phase evidence, release blockers vs external actions, resume order, and what
+> is still incomplete. Prefer that document over any older “planned” prose.
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/loop-orchestrator"><img src="https://img.shields.io/npm/v/loop-orchestrator?color=0ea5e9&label=npm" alt="npm version"></a>
-  <a href="https://www.npmjs.com/package/loop-orchestrator"><img src="https://img.shields.io/npm/dm/loop-orchestrator?color=14b8a6" alt="npm downloads"></a>
-  <a href="https://github.com/arbazkhan971/loop-orchestrator/actions"><img src="https://img.shields.io/github/actions/workflow/status/arbazkhan971/loop-orchestrator/ci.yml?branch=main&label=ci" alt="CI status"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-facc15" alt="MIT license"></a>
-</p>
+This source tree targets release candidate **1.0.0-rc.1**. Product integration
+landed at `5880b008d81c20f746f728ef83d736306d546d81` and the committed local
+candidate on runtime proof `cf87abf` passed the required-cgroup aggregate
+(**171** files / **1,957** tests), contained source smoke, exact preview
+tarball, and packed real-browser Chrome lifecycle. Contained production
+characterization for OpenCode, Pi, and Grok is implemented and fixture-backed.
+Preparing and pushing the source does **not** mean that an npm package, GitHub
+Release, repository rename, or tag has been published. Release publication
+remains fail-closed until real same-runner OpenCode, Pi, and Grok receipts
+exist; those still require the designated cgroup runner, exact installed
+binaries, live credentials, and the release workflow. Those publication steps
+are explicit operator actions described in [docs/publishing.md](docs/publishing.md).
 
-Loop Orchestrator helps you run a persistent AI software engineering team inside tmux: CTO/planner, frontend engineer, backend engineer, full-stack engineer, QA reviewer, scout, and release lead. Each role gets a project brief, assigned repositories, model/provider settings, safety rules, and a repeatable operating loop.
+## Identity and compatibility
 
-Use it as a lightweight open-source alternative to hard-coded agent scripts when you want **multi-agent coding workflows**, **terminal AI teams**, **Claude Code orchestration**, **Codex automation**, **Gemini CLI scouting**, and **tmux-based background execution**.
+| Surface | Primary identity | Compatibility behavior |
+| --- | --- | --- |
+| Product and package | RelayForge / `relayforge` | “Loop Orchestrator” is a historical name only |
+| Executable | `relayforge` | `loop` and `loop-orchestrator` invoke the same entry point |
+| New config | `relayforge.config.yaml` | Existing `loop.config.yaml`, `.yml`, or `.json` remains valid |
+| New state | `.loop/` | The durable directory is intentionally unchanged |
+| Environment | `RELAYFORGE_*` | Documented `LOOP_*` aliases remain supported |
 
-## ⚡ Autonomous SME Team (3 commands)
+Config discovery accepts `.yaml`, `.yml`, and `.json` in both naming families.
+If more than one candidate exists in the same discovered directory, RelayForge
+fails with `CONFIG_AMBIGUOUS`; use `--config <exact-path>` or remove the
+ambiguity. `relayforge init` never overwrites any existing config, including
+with `--force`.
 
-Point it at a repo, give it a goal, and watch a project-trained team of subject-matter experts deliver it — a Product Manager decomposes the goal, an Architect shapes it, and Frontend / Backend / QA / CT / Security SMEs (each on its best-fit model) implement, test, and review, coordinating through a shared blackboard.
+## What is shipped
 
-```bash
-loop learn                         # train the team on your codebase → PROJECT-INTELLIGENCE.md
-loop run "add rate limiting to the /login endpoint"   # decompose → assign → drive the loop
-loop monitor                       # single-screen mission control: board + every agent, live
-```
+- A safe dry run by default; providers launch only with `--execute`.
+- One disposable Git worktree per implementation attempt and a separate
+  read-only reviewer boundary.
+- A Linux containment chain using Bubblewrap and delegated cgroup v2 process
+  scopes, with authenticated launch handshakes and fail-closed cleanup.
+- A durable run-scoped SQLite control plane with strict migration,
+  reconciliation, replay, read models, and a foreground loopback service.
+- Parent-owned steering for a future immutable attempt boundary. It cannot
+  inject input into a running agent.
+- Seven closed provider adapter types: Claude, Codex, Gemini, custom, OpenCode,
+  Pi, and Grok Build. OpenCode, Pi, and Grok require exact native-protocol
+  evidence; ordinary product runs currently refuse before mutation when product
+  evidence injection is not available (see [Current boundaries](#current-boundaries)).
+- Bounded normalized control-room observations. Public status never exposes raw
+  provider transcripts, terminal buffers, prompts, environment values, or
+  credentials.
+- Durable SCM components and **product-integrated multi-repository** execution
+  (strict config/validation, CLI run route, ControlStore facts/views, authority,
+  DAG/scheduler, worktree groups, contained transport/settlement, publication
+  bridge, read isolation, crash recovery). Explicit SCM/publication config drives
+  recoverable branch/PR publication, parent polling, and reaction-to-steering;
+  RelayForge never invents a remote publication plan.
 
-How it works:
+## Requirements
 
-- **Trained on your project.** `loop learn` scans the repo and writes `PROJECT-INTELLIGENCE.md` (stack, frameworks, layout, and the *real* test/build/lint commands). Every SME is grounded in it, so agents never invent commands.
-- **27 built-in SME roles.** Architect, Product Manager, Frontend, Backend, Full-stack, QA, CT/Test-Automation, DevOps, SRE, Security, DBA, Performance, Accessibility, Mobile, Data, ML, and more — each with a deep, discipline-specific system prompt and a best-fit provider (`loop roles` lists them). Set `sme: backend` on a role and it inherits the expert prompt.
-- **Real autonomy, not one-shot.** A planner agent decomposes the goal into assigned tasks on a shared JSONL blackboard (`.loop/board/`). The loop dispatches each task to the right SME, detects completion from the agent's exit code **and** structured output, then runs your project's test command as a verification gate before marking it done.
-- **tmux is the viewport; agents run headless.** Each SME gets a tiled pane so you can watch the whole team on one screen, but control flow spawns a fresh headless `claude -p` / `codex exec` / `gemini -p` child per task — reliable completion detection, no screen-scraping.
-- **Safe by default.** `loop run` is a dry-run that drives the board with no spend; add `--execute` to actually launch the agents.
+- Node.js 20.x or 22+
+- Git
+- A clean Git repository before an executing run
+- Linux for the strongest supported Bubblewrap + delegated-cgroup containment
+- At least one configured provider CLI for `--execute`
 
-**Verified, self-healing, parallel** — the part that separates a real team from a demo:
+The package has no post-install provisioning. Provider CLIs, Bubblewrap, cgroup
+delegation, credentials, and project dependencies remain operator-managed.
 
-- **Independent critic.** A reviewer SME (a *different* model than the implementer) reviews the actual `git diff` against the acceptance criteria and can **reject** — no rubber-stamping. Rejections go back with reasons.
-- **Self-healing.** Failed tasks are retried with the captured error injected into the next attempt, up to `maxRepairs`, then escalated to a human instead of stranded.
-- **Regression-gated.** HEAD is snapshotted before each task; a change that turns a green suite red is reverted. Test/CI files are hashed so an agent can't weaken its own grader to pass (reward-hacking guard).
-- **True parallelism.** Each role works in its own **git worktree** on its own branch, so SMEs run concurrently (`maxParallel`) without clobbering each other; accepted work merges back to main through the critic gate.
-- **Budgeted.** Per-task spend is tracked to `.loop/board/costs.jsonl`; the run stops at `budgetUsd`.
-
-**Proven end-to-end.** A real run of two engineer SMEs (Claude) implementing two functions *in parallel in isolated git worktrees*, reviewed by an independent QA critic:
-
-```
-$ loop run "Add subtract(a,b) and multiply(a,b) to math.js, each with a test" --execute
-🛰  Run … · sandbox — decomposed into 3 tasks across 4 SMEs
-  [done] t1 (be) Accepted by qa. Merged to main. math.js exports subtract(a, b) …
-  [done] t2 (be) Accepted by qa. Merged to main. math.js exports multiply(a, b) …
-# both worktree branches merged to main → node --test → 5/5 pass → $0.56 (budget $2.00)
-```
-
-See [docs/autonomous-team.md](docs/autonomous-team.md) for the full guide.
-
-### Live dashboard
-
-`loop dashboard` opens a local **mission control** that answers, at a glance, *is it working, where is it stuck, and what's it costing*:
-
-- **KPI bar** — progress %, agents active, in-progress/blocked counts, retries, estimated time left, and **spend vs budget** (turns amber/red as you approach the cap).
-- **Needs-attention strip** — every blocked / rejected / escalated task with the *reason* (e.g. "webhook signature check failing"), so you know what to fix.
-- **Agent swimlanes** — each SME's current task, live idle timer (goes amber/red when stuck), spend, and an expandable peek at its terminal output.
-- **Dependency-aware task board** — kanban by status with dependency chips and **critical-path** markers, so you see what's actually gating completion.
-- **Activity timeline** — the live event + inter-agent message feed (handoffs, rejections, merges).
-
-It polls JSON endpoints every 2.5s — zero build step, just `loop dashboard`. (`loop monitor` is the single-screen terminal version.)
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/arbazkhan971/loop-orchestrator/main/assets/dashboard.png" alt="Loop Orchestrator mission-control dashboard: KPIs, needs-attention, agent swimlanes, dependency-aware task board, and live activity timeline" width="900">
-</p>
-
-### Example: a todo app the team built
-
-[`examples/todo-app`](examples/todo-app) is a real, zero-dependency todo app (Node `node:http` API + vanilla-JS UI + `node:test` tests) **built by the SME team** via `loop run` — a Backend SME wrote the store and API in an isolated worktree, a Frontend SME built the UI, and a QA critic reviewed each diff before merging to `main`. The `loop.config.yaml` and `brief.md` that produced it are included so you can reproduce it.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/arbazkhan971/loop-orchestrator/main/assets/todo-app.png" alt="The todo app built by the autonomous SME team" width="540">
-</p>
-
-## Why This Exists
-
-Most agent workflows are either one-off prompts or hard-coded scripts. Loop Orchestrator gives you a portable repo-level control plane:
-
-- Role-based tmux sessions for long-running agents
-- Per-role provider and model selection
-- First-class unsafe-mode switches for tools that support them
-- Project briefs, repo scope, and guardrails
-- Prompt-only mode for safe setup, execute mode for launching agents
-- Local dashboard for session status and logs
-- Generic YAML config that works across teams and projects
-
-## Who It Is For
-
-- Solo developers running multiple coding agents in parallel
-- Engineering leads assigning planner, frontend, backend, QA, and release roles
-- Teams using Claude Code, Codex, Gemini CLI, or custom terminal agents
-- Developers who want tmux sessions that keep running on a VM after disconnecting
-- Open-source maintainers who want repeatable AI code review and release workflows
-
-## What You Can Build
-
-- AI software engineering team in tmux
-- Multi-agent coding workflow for frontend and backend repos
-- Automated PR planning, implementation, QA, and release review loops
-- Long-running background agent sessions on a devbox or VM
-- Configurable coding-agent dashboard for local teams
-
-## Keywords
-
-AI agents, agent orchestrator, tmux orchestrator, Claude Code, Codex, OpenAI Codex, Gemini CLI, multi-agent coding, agentic coding, autonomous coding agents, terminal agents, software engineering agents, AI devtools, developer tools, workflow automation, GitHub automation, code review agents, LLM agents.
-
-## Prerequisites
-
-Install the tools you want Loop Orchestrator to control:
+## Start from this source tree
 
 ```bash
-# Required
-brew install tmux
-
-# Optional providers. Install and log in to whichever ones you use.
-claude
-codex
-gemini
-```
-
-You can use subscription/OAuth CLI login or API keys. Loop Orchestrator detects local CLI state and API-key env vars, but it never stores secret values in config.
-
-## Install
-
-```bash
-npm install -g loop-orchestrator
-loop --version
-```
-
-For local development:
-
-```bash
-npm install
+npm ci
 npm run build
 npm link
+
+cd /path/to/your-git-project
+relayforge init
+relayforge validate
+relayforge doctor
+relayforge learn
+relayforge run "Ship the smallest verified change"
 ```
 
-## Step-by-Step Setup
-
-### 1. Open Your Project
-
-Run Loop Orchestrator from the repo or workspace where you want the team config to live.
+The last command is a dry run: it plans run state but launches no provider. To
+authorize execution:
 
 ```bash
-cd /path/to/your/repo
+relayforge run "Ship the smallest verified change" --execute
 ```
 
-For a full-stack setup, you can also create one orchestration folder and point it at multiple repos:
+After an authorized operator has verified and published this exact release to
+npm, a clean installation is:
 
 ```bash
-mkdir ai-team
-cd ai-team
+npm install --global relayforge@1.0.0-rc.1
+relayforge --version
 ```
 
-### 2. Initialize Config
+Do not assume the registry version exists merely because this source tree has
+that version.
 
-```bash
-loop init
-```
+## The execution path
 
-This creates:
+An executing run follows one authority path:
 
-- `loop.config.yaml`: providers, repositories, roles, and loops
-- `brief.md`: project brief sent to every role
-- `.loop/`: generated prompts and run metadata
+1. Validate strict configuration and cross-references before mutation.
+2. Require a clean repository and acquire the configuration and run leases.
+3. Create the integration worktree and durable control store.
+4. Select a compatible provider descriptor and prove its executable, version,
+   protocol, wire behavior, role capability, and containment readiness before
+   reserving a call.
+5. Plan tasks, then launch each worker through the parent-owned contained
+   transport. Descriptors and codecs cannot spawn processes.
+6. Review a content-bound candidate through an independent read-only role.
+7. Run deterministic verifier commands in the verifier sandbox, requiring the
+   configured stability count.
+8. Settle the exact reserved call scope once, record receipts, and accept or
+   reject the candidate.
 
-### 3. Detect Local Provider Auth
+RelayForge succeeds only when every task is accepted and the final verifier is
+green. Cancelled, blocked, budget-exhausted, unverified, and unreadable terminal
+states exit non-zero.
 
-```bash
-loop auth status
-loop auth configure --write
-```
+## Configuration
 
-This checks your machine for:
-
-- `claude`
-- `codex`
-- `gemini`
-- `agy`
-- API env vars such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`
-
-It writes auth metadata into `loop.config.yaml`, for example:
+`relayforge init` writes a strict starter config. A compact valid example is:
 
 ```yaml
-providers:
-  frontend:
-    type: claude
-    command: claude
-    auth:
-      mode: subscription
-      configured: true
+version: 1
+defaults:
+  namespace: relayforge
+  dashboardPort: 4318
+  promptDir: .loop/prompts
+  runDir: .loop/runs
+  viewport: true
+projects:
+  - name: demo
+    brief: brief.md
+    workingDir: .
+    intelligence: PROJECT-INTELLIGENCE.md
+    safetyMode: workspace-write
+    providers:
+      agent:
+        type: claude
+        model: opus
+        auth:
+          mode: auto
+    roles:
+      - name: pm
+        title: Planner
+        provider: agent
+      - name: engineer
+        title: Implementer
+        provider: agent
+      - name: qa
+        title: Reviewer
+        provider: agent
+    loops:
+      - name: delivery
+        orchestrator: pm
+        reviewer: qa
+        verify:
+          - npm test
+        maxIterations: 8
+        verifyStabilityRuns: 3
+        maxParallel: 1
+        budgetUsd: 0
 ```
 
-### 4. Edit Your Project Brief
+Unknown keys are rejected. Identifiers are bounded, paths must remain under the
+config root, role and provider references must resolve, and an ambiguous config
+name fails closed. See [docs/configuration.md](docs/configuration.md) for the
+full operator contract, budgets, provisioning, adapters, and compatibility
+environment variables.
 
-Open `brief.md` and describe the product, coding rules, test expectations, release rules, and any hard constraints.
+## Providers and adapters
 
-Example:
+| Type | Contract | Important readiness rule |
+| --- | --- | --- |
+| `claude` | Claude headless adapter, exact supported build | OS containment remains the outer boundary |
+| `codex` | Codex exec adapter, `>=0.144 <0.145` | Reviewer runs read-only; `yolo: true` is rejected |
+| `gemini` | Legacy Gemini adapter, supported versions below 1.0 | Uses the same contained transport and settlement |
+| `custom` | Operator-supplied non-interactive command | Command behavior and usage reporting remain operator responsibility |
+| `opencode` | OpenCode 1.18.15, ACP wire v1 | Exact executable/version/behavior evidence and role policy required |
+| `pi` | Pi 0.84.1, RPC JSONL | Exact evidence plus the content-bound bundled reviewer helper required |
+| `grok` | Grok Build stable 1.0.0 build `3cd0d0cbce`, ACP wire v1 | API-key-only private config plus exact behavior/network-tool/no-upload evidence required |
 
-```markdown
-# Project Brief
+OpenCode, Pi, and Grok configuration is deliberately closed: raw command, argument,
+environment, protocol, permission-bypass, and fallback overrides are rejected.
+An installed executable or successful `--help`/`--version` probe is not enough.
 
-Build changes in small PRs.
-Use worktrees for parallel tasks.
-Run tests before reporting completion.
-Do not run destructive database commands.
-```
+**Truthful native-adapter limitations (current product):**
 
-### 5. Configure Repositories
+- Contained production characterization for OpenCode, Pi, and Grok is
+  implemented and fixture-backed. Real same-runner release receipts are still
+  **not collected** and need the designated cgroup runner, exact installed
+  binaries, live credentials, and the release workflow.
+- Ordinary OpenCode/Pi/Grok product execution currently **refuses before**
+  run/control/worktree mutation because product evidence injection is
+  intentionally not supported yet.
+- The publishable release workflow requires distinct same-runner OpenCode, Pi,
+  and Grok receipts and remains **fail-closed**.
 
-Edit `loop.config.yaml` and point repositories to real local paths:
+Grok additionally refuses ambient subscription or managed configuration: the
+supported profile requires `XAI_API_KEY`, a private empty HOME/GROK_HOME, fixed
+telemetry/trace/update disables, no leader, plugins, endpoint overrides,
+always-approve/yolo, subagents, memory, or web tools, and a real contained
+no-upload observation.
 
-```yaml
-repositories:
-  - name: frontend-app
-    path: ~/work/frontend-app
-    role: frontend
-    defaultBranch: main
-    protectedBranches: [main, production]
+Every accepted call identity binds the adapter, contract, transport, wire
+version, codec, normalizer, executable evidence, and role policy. Framing,
+transcripts, correlation, cancellation, and settlement are bounded. Missing
+usage remains unknown; it is never converted into a fabricated zero.
 
-  - name: backend-api
-    path: ~/work/backend-api
-    role: backend
-    defaultBranch: main
-    protectedBranches: [main, production]
-```
+## Durable local control
 
-### 6. Configure Providers
-
-Use the provider best suited for each role:
-
-```yaml
-providers:
-  planner:
-    type: claude
-    model: claude-opus-4-8
-    command: claude
-    auth:
-      mode: subscription
-      configured: true
-
-  frontend:
-    type: claude
-    model: claude-sonnet-4-6
-    command: claude
-    dangerouslySkipPermissions: true
-    auth:
-      mode: subscription
-      configured: true
-
-  backend:
-    type: codex
-    model: gpt-5.4
-    effort: medium
-    command: codex
-    yolo: true
-    auth:
-      mode: subscription
-      configured: true
-
-  scout:
-    type: gemini
-    model: gemini-3.5-flash
-    command: gemini
-    auth:
-      mode: subscription
-      configured: true
-```
-
-Unsafe switches:
-
-- `dangerouslySkipPermissions: true` adds Claude `--dangerously-skip-permissions`
-- `yolo: true` adds Codex `--yolo`
-
-Use these only in trusted local/VM worktrees.
-
-### 7. Configure Roles
-
-Roles decide which tmux sessions start and what each agent is responsible for.
-
-```yaml
-roles:
-  - name: cto
-    title: Technical lead and architecture reviewer
-    provider: planner
-    repositories: [frontend-app, backend-api]
-    responsibilities:
-      - Convert issues into acceptance criteria and implementation plans.
-      - Review architecture, risk, rollback, and backward compatibility.
-
-  - name: fe1
-    title: Frontend engineer
-    provider: frontend
-    repositories: [frontend-app]
-    responsibilities:
-      - Implement responsive UI changes.
-      - Run browser smoke tests and capture screenshots.
-
-  - name: be1
-    title: Backend engineer
-    provider: backend
-    repositories: [backend-api]
-    responsibilities:
-      - Implement APIs, migrations, and tests.
-      - Avoid destructive database operations.
-
-  - name: qa1
-    title: QA and release reviewer
-    provider: backend
-    repositories: [frontend-app, backend-api]
-    responsibilities:
-      - Verify acceptance criteria.
-      - Produce final merge readiness notes.
-```
-
-### 8. Validate Config
+Start the foreground service in the repository containing the config:
 
 ```bash
-loop validate
+relayforge serve
+relayforge serve status --json
+relayforge serve stop
 ```
 
-Fix any config errors before starting sessions.
+`relayforge dashboard` is a compatibility alias for the foreground service.
+The service binds literal `127.0.0.1`, writes a bounded private discovery file,
+and exposes a read-only HTTP API:
 
-### 9. Start in Safe Mode First
+- `GET`/`HEAD /api/v1/health`
+- `GET`/`HEAD /api/v1/status`
+- `GET`/`HEAD /api/v1/runs`
+- `GET`/`HEAD /api/v1/runs/:run`
+- `GET`/`HEAD /api/v1/runs/:run/board`
+- `GET`/`HEAD /api/v1/runs/:run/activity`
+- `GET`/`HEAD /api/v1/runs/:run/steering`
+- `GET`/`HEAD /api/v1/runs/:run/observations`
+- `GET`/`HEAD /api/v1/runs/:run/diagnostics`
+- `GET /api/v1/runs/:run/events` for durable SSE invalidation
 
-Safe mode creates tmux sessions and prompt files, but does not launch provider CLIs.
+The server rejects request bodies, credentials, foreign Host/Origin values,
+unknown routes and query parameters, malformed IDs, oversized requests, and
+unsupported methods. HTTP is observational: there is no mutation API.
+Responses are schema-versioned, allowlisted, redacted, and byte-capped.
+
+SQLite is the canonical post-cutover run history and projection source.
+Legacy JSONL state can be migrated once through strict, receipted recovery; it
+does not remain a second authority. Event retention and canonical event
+deletion are not yet an operator feature.
+
+## Steering a live run
+
+Steering is not terminal injection. Generate an id, then admit or withdraw an
+exact command against an active run and epoch:
 
 ```bash
-loop start --run issue-123
-tmux ls
+relayforge --json steer new-id
+relayforge steer admit \
+  --project <project-name> \
+  --run <run-id> \
+  --run-epoch <run-epoch> \
+  --command-id <command-id> \
+  --task-id <task-id> \
+  --task-generation <task-generation> \
+  --session-id <session-id> \
+  --session-generation <session-generation> \
+  --not-before-attempt <attempt-generation> \
+  --body "Prioritize the regression before the next attempt"
+
+relayforge steer withdraw \
+  --project <project-name> \
+  --run <run-id> \
+  --run-epoch <run-epoch> \
+  --command-id <command-id>
 ```
 
-Open one session:
+Admission means only that the parent accepted a durable command for a future
+attempt prompt boundary. It does not prove inclusion, delivery, provider read,
+or compliance. A command can become pending, included, refused, withdrawn,
+superseded, or expired. Already running processes and immutable prompt files are
+never changed. The mutation channel is a private run-scoped Unix socket held by
+the active parent, not HTTP or tmux. See
+[docs/session-steering.md](docs/session-steering.md).
+
+## Monitor and control room
 
 ```bash
-tmux attach -t loop-demo-product-issue-123-cto
+relayforge monitor --run <run-id>
+relayforge attach --run <run-id>
+relayforge status
+relayforge logs <owned-tmux-session> --lines 160
 ```
 
-### 10. Launch Real Agents
+`monitor` is run-scoped. `logs` is only an optional tmux pane capture and takes
+the exact RelayForge-owned session name reported by `status`; it has no
+`--run` option. Tmux is not an execution or control authority. Disabling it
+does not disable the run, monitor, durable control store, or dashboard.
 
-After safe mode looks right, launch configured provider commands:
+Control-room observations use normalized, bounded records with source
+continuity and cursor semantics. Raw PTY bytes and raw provider transcripts are
+not part of the public DTO. Missing projections, stale cursors, identity
+mismatches, and over-size responses produce typed errors instead of partial or
+unsafe output.
 
-```bash
-loop start --run issue-123 --execute
-```
+## Budgets
 
-Start only specific roles:
+- `unlimited`: no USD ceiling.
+- `estimated-usd`: post-response accounting and reservation tripwire. The last
+  in-flight call can overshoot; this is not a hard cap.
+- `hard-usd`: accepted only when every route proves a preauthorizing gateway.
+  Direct provider CLIs do not satisfy this contract.
+- `subscription-quota`: provider quota/limit state machine without USD
+  metering.
 
-```bash
-loop start --run issue-123 --role fe1 qa1 --execute
-```
+A positive `budgetUsd` requires a positive `maxCostPerCallUsd` no greater than
+the budget. Unknown cost fails closed unless the bounded
+`allowUnknownCostCalls` policy explicitly permits it.
 
-### 11. Use the Dashboard
+## Offline provisioning
 
-```bash
-loop dashboard
-```
+A loop may list parent-side dependency trees under `provision`. RelayForge
+validates and copies existing local trees into every integration, attempt, and
+review worktree before an agent or verifier can observe them. Provisioning does
+not download packages, invoke installers, execute lifecycle scripts, or modify
+the original tree. It can consume substantial time and disk and must fit the
+configured bounds. See [docs/safety.md](docs/safety.md).
 
-Open:
+## Current boundaries
+
+The following distinctions are deliberate release claims:
+
+- **Single-repository execution is live.** Use `workingDir` for one repository.
+- **Multi-repository execution is product-integrated.** Strict config/validation,
+  actual CLI run route, canonical ControlStore facts/views, exact repository-set
+  authority, DAG and scheduler, all-or-nothing worktree groups, worker and
+  verification through the canonical contained transport and settlement path,
+  vector integration, publication bridge, exact read isolation, durable crash
+  recovery, and real product E2Es are landed. Focused counts: authority
+  **21/21**, orchestration **12/12**, product/recovery/verifier **6/6**,
+  publication/SCM/integration **13/13**.
+- **SCM behavior is explicit and config-driven.** With `project.scm` and a P6
+  task publication plan, the run parent owns recoverable branch/PR publication,
+  bounded CI/review polling, durable observations, and reaction-to-P2 steering.
+  A run without that explicit plan performs no remote publication.
+- **Native OpenCode/Pi/Grok ordinary runs refuse before mutation** until real
+  product evidence injection is available. Contained production characterization
+  for OpenCode, Pi, and Grok is implemented and fixture-backed; real same-runner
+  release receipts are still not collected. Publishable release requires distinct
+  same-runner receipts.
+- **The loopback control service is local and read-only.** It is not a remote
+  multi-user service, a terminal gateway, or a write API.
+- **Provisioning is offline copying, not dependency installation.**
+- **No tag, npm publish, GitHub Release, repository rename, or real native
+  receipt has been performed.**
+
+## Useful commands
 
 ```text
-http://localhost:4318
+relayforge init                         create canonical starter files
+relayforge validate                     validate strict config and semantics
+relayforge doctor                       inspect host/config/provider readiness
+relayforge learn                        write PROJECT-INTELLIGENCE.md
+relayforge run <goal>                   dry-run by default
+relayforge run <goal> --execute         authorize contained provider execution
+relayforge monitor --run <id>           terminal mission-control view
+relayforge serve                        foreground local control service
+relayforge serve status|stop            inspect/stop the exact service owner
+relayforge steer new-id|admit|withdraw  future-boundary steering
+relayforge stop <run>                   request parent-owned run cancellation
+relayforge tmux pre|new|show|kill|prune manage optional owned viewports
 ```
 
-The dashboard shows active sessions and lets you inspect recent tmux output.
+Run `relayforge --help` for the complete command surface.
 
-### 12. Check Logs and Stop Runs
+## Documentation
 
-```bash
-loop status
-loop logs loop-demo-product-issue-123-fe1
-loop stop issue-123
-```
+- **[Implementation status and release handoff](docs/implementation-status.md)** — current capabilities, evidence counts, blockers, resume order
+- [Configuration](docs/configuration.md)
+- [Architecture](docs/architecture.md)
+- [Safety model](docs/safety.md)
+- [Session steering](docs/session-steering.md)
+- [Autonomous team operations](docs/autonomous-team.md)
+- [Branding and compatibility](docs/branding.md)
+- [Release and publishing runbook](docs/publishing.md)
+- [Changelog](CHANGELOG.md)
 
-## Core Commands
-
-```bash
-loop init                 # create loop.config.yaml and brief.md (autonomous SME team)
-loop learn                # scan the repo → PROJECT-INTELLIGENCE.md (trains the team)
-loop roles                # list the 27 built-in SME disciplines
-loop run "<goal>"         # decompose a goal, launch the team, drive the autonomy loop
-loop run "<goal>" --execute  # ...and actually launch the agent CLIs (default is dry-run)
-loop monitor              # single-screen mission control: board + every agent pane, live
-loop auth status          # inspect local provider CLI/API-key readiness
-loop auth configure --write # write detected local auth mode into config
-loop validate             # validate config
-loop start --run bug-42   # start role sessions in tmux (manual, prompt-only)
-loop status               # list loop sessions
-loop logs <session>       # capture recent tmux pane output
-loop stop bug-42          # kill sessions for a run
-loop dashboard            # open local web dashboard (now includes the board)
-```
-
-## Common Workflows
-
-### One Repo
-
-```bash
-cd ~/work/backend-api
-loop init
-loop auth configure --write
-loop validate
-loop start --run fix-login-bug --execute
-```
-
-### Frontend + Backend
-
-```bash
-mkdir ~/work/product-team
-cd ~/work/product-team
-loop init
-```
-
-Then edit `loop.config.yaml`:
-
-```yaml
-repositories:
-  - name: frontend-app
-    path: ~/work/frontend-app
-    role: frontend
-  - name: backend-api
-    path: ~/work/backend-api
-    role: backend
-```
-
-Run:
-
-```bash
-loop auth configure --write
-loop validate
-loop start --run issue-456 --execute
-```
-
-### VM Setup
-
-Install once on the VM user that will run the agents:
-
-```bash
-npm install -g loop-orchestrator
-claude
-codex
-gemini
-```
-
-Then:
-
-```bash
-cd ~/work/product-team
-loop init
-loop auth configure --write
-loop start --run overnight-batch --execute
-```
-
-Because sessions run in tmux, they keep running if your laptop disconnects.
-
-### Update Package
-
-```bash
-npm install -g loop-orchestrator@latest
-loop --version
-```
-
-## Example Roles
-
-Provider flags can be configured without raw argument strings:
-
-```yaml
-providers:
-  frontend:
-    type: claude
-    model: claude-sonnet-4-6
-    auth:
-      mode: subscription
-      configured: true
-    dangerouslySkipPermissions: true
-  backend:
-    type: codex
-    model: gpt-5.4
-    effort: medium
-    auth:
-      mode: subscription
-      configured: true
-    yolo: true
-```
-
-## Local Auth Setup
-
-Loop Orchestrator can inspect your machine and write provider auth hints into config:
-
-```bash
-loop auth status
-loop auth configure --write
-```
-
-It detects:
-
-- Claude CLI from `claude`, or API env vars `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`
-- Codex CLI from `codex`, or API env var `OPENAI_API_KEY`
-- Gemini CLI from `gemini` or `agy`, or env vars `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`
-
-The command stores only metadata such as auth mode, command name, and env var name. It does not write secret values into `loop.config.yaml`.
-
-```yaml
-roles:
-  - name: cto
-    title: Technical lead and architecture reviewer
-    provider: planner
-    repositories: [frontend-app, backend-api]
-  - name: fe1
-    title: Frontend engineer
-    provider: frontend
-    repositories: [frontend-app]
-  - name: be1
-    title: Backend engineer
-    provider: backend
-    repositories: [backend-api]
-  - name: qa1
-    title: QA and release reviewer
-    provider: backend
-    repositories: [frontend-app, backend-api]
-```
-
-## Safety Model
-
-Loop Orchestrator never edits your repositories by itself. It creates tmux sessions and role prompts. The agents you configure do the work, so your safety posture depends on provider flags and local permissions.
-
-Recommended defaults:
-
-- Use prompt-only mode until the team config is correct.
-- Assign narrow repository scopes per role.
-- Enable `dangerouslySkipPermissions` or `yolo` only for disposable worktrees or trusted environments.
-- Keep production branches protected.
-- Require tests before release review.
-- Avoid destructive database commands in all prompts.
-
-## Dashboard
-
-```bash
-loop dashboard --port 4318
-```
-
-The dashboard shows active sessions and lets you inspect recent tmux output from the browser.
-
-## Troubleshooting
-
-### `No loop.config.yaml found`
-
-Run:
-
-```bash
-loop init
-loop auth status
-```
-
-### `tmux: command not found`
-
-Install tmux:
-
-```bash
-brew install tmux
-```
-
-On Ubuntu:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y tmux
-```
-
-### Provider Not Detected
-
-Install and log in to the provider CLI, then rerun:
-
-```bash
-loop auth status
-loop auth configure --write
-```
-
-### Start Fresh for a Run
-
-```bash
-loop stop issue-123
-loop start --run issue-123 --execute
-```
-
-### Inspect Generated Prompts
-
-Prompts are written under:
-
-```text
-.loop/runs/<run-id>/prompts/
-```
+The design evidence and ADRs under `docs/reference/` and `docs/adr/` are packed
+with the release candidate so an operator can audit the claims made here.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

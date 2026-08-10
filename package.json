@@ -1,7 +1,7 @@
 {
-  "name": "loop-orchestrator",
-  "version": "0.4.0",
-  "description": "Open-source tmux AI agent team orchestrator for Claude Code, Codex, Gemini CLI, and custom terminal coding agents.",
+  "name": "relayforge",
+  "version": "1.0.0-rc.1",
+  "description": "RelayForge is a safe, headless AI agent team orchestrator with isolated git worktrees, independent review, deterministic verification, structured adapters, and an optional tmux viewport.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/arbazkhan971/loop-orchestrator#readme",
@@ -15,13 +15,45 @@
   "publishConfig": {
     "access": "public"
   },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js",
+      "default": "./dist/cli.js"
+    },
+    "./observability": {
+      "types": "./dist/observability/index.d.ts",
+      "import": "./dist/observability/index.js",
+      "default": "./dist/observability/index.js"
+    },
+    "./observability/control-store-adapter": {
+      "types": "./dist/observability/control-store-adapter.d.ts",
+      "import": "./dist/observability/control-store-adapter.js",
+      "default": "./dist/observability/control-store-adapter.js"
+    },
+    "./control-room": {
+      "types": "./dist/control-room/index.d.ts",
+      "import": "./dist/control-room/index.js",
+      "default": "./dist/control-room/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
+    "relayforge": "./dist/cli.js",
     "loop": "./dist/cli.js",
     "loop-orchestrator": "./dist/cli.js"
   },
   "files": [
     "assets",
     "dist",
+    "CHANGELOG.md",
     "README.md",
     "LICENSE",
     "docs",
@@ -32,6 +64,8 @@
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke": "node scripts/smoke.mjs",
+    "prepack": "npm run build",
     "validate": "npm run typecheck && npm run test && npm run build"
   },
   "keywords": [
@@ -66,14 +100,16 @@
     "llm-agents"
   ],
   "engines": {
-    "node": ">=20"
+    "node": "20.x || >=22"
   },
   "dependencies": {
+    "better-sqlite3": "12.11.1",
     "commander": "^14.0.1",
     "yaml": "^2.8.1",
     "zod": "^4.1.13"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "^24.10.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",

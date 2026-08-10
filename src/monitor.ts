@@ -1,12 +1,12 @@
 import { boardSummary, TaskView } from "./board.js";
-import { capturePaneById, listSessions } from "./tmux.js";
-import { spawnSync } from "node:child_process";
+import { renderControlRoomTerminal } from "./control-room/terminal-view.js";
+import type { ControlRoomViewModelV1 } from "./control-room/view-model.js";
+import type { SteeringDashboardData } from "./dashboard/steering-data.js";
+import { isSafeTmuxName, tmuxAvailable, tmuxClient } from "./tmux.js";
 
 /**
- * Unified terminal "mission control" — render the whole AI team on ONE screen:
- * the board (every task + status) plus a live tail of each agent's tmux pane. This is
- * the single-screen monitor: it polls and redraws in place, so you never have to attach
- * to tmux or juggle windows to see what every SME is doing.
+ * Unified terminal "mission control" over parent-owned facts and the same normalized public
+ * control-room model used by the browser. Raw pane output is intentionally outside this renderer.
  */
 
 const RESET = "\x1b[0m";
@@ -39,9 +39,14 @@ const STATUS_GLYPH: Record<string, string> = {
 export type MonitorOptions = {
   boardDir: string;
   session: string;
-  /** role -> pane id, so we can tail each agent's viewport. */
+  /** @deprecated Retained for CLI compatibility; pane identifiers and bytes are never rendered. */
   panes: Record<string, string>;
+  /** Optional P5 public read model. No raw source or capture capability is accepted. */
+  controlRoom?: ControlRoomViewModelV1 | (() => ControlRoomViewModelV1);
+  /** Optional canonical P2 read projection. It is rendered only; the monitor owns no writer. */
+  steering?: SteeringDashboardData | (() => SteeringDashboardData);
   intervalMs?: number;
+  /** @deprecated Retained for CLI compatibility; normalized pages own their own closed bounds. */
   tailLines?: number;
 };
 
@@ -74,7 +79,7 @@ export function renderFrame(opts: MonitorOptions): string {
     .map(([status, n]) => color(status, `${STATUS_GLYPH[status] ?? "•"} ${status} ${n}`))
     .join("   ");
 
-  lines.push(`${BOLD}🛰  LOOP ORCHESTRATOR · MISSION CONTROL${RESET}   ${DIM}session ${opts.session}${RESET}`);
+  lines.push(`${BOLD}🛰  RELAYFORGE · MISSION CONTROL${RESET}`);
   lines.push(`${DIM}${summary.total} tasks${RESET}   ${counts}`);
   lines.push(hr(width));
 
@@ -88,31 +93,54 @@ export function renderFrame(opts: MonitorOptions): string {
   }
   lines.push(hr(width));
 
-  // Agent viewports: tail each pane.
-  lines.push(`${BOLD}AGENTS${RESET}`);
-  const roleNames = Object.keys(opts.panes);
-  const usedSoFar = lines.length + 2;
-  const remaining = Math.max(6, termHeight() - usedSoFar);
-  const perAgent = roleNames.length ? Math.max(3, Math.floor(remaining / roleNames.length)) : 3;
-  const tail = opts.tailLines ?? perAgent;
+  if (opts.steering !== undefined) {
+    lines.push(...renderSteeringMonitor(typeof opts.steering === "function" ? opts.steering() : opts.steering, width));
+    lines.push(hr(width));
+  }
 
-  for (const role of roleNames) {
-    const paneId = opts.panes[role];
-    lines.push(`${BOLD}▌ ${role}${RESET} ${DIM}(${paneId})${RESET}`);
-    const captured = capturePaneById(paneId, tail + 4)
-      .split("\n")
-      .map((l) => l.replace(/\s+$/, ""))
-      .filter((l) => l.length > 0)
-      .slice(-tail);
-    if (!captured.length) {
-      lines.push(`  ${DIM}…idle…${RESET}`);
-    }
-    for (const l of captured) {
-      lines.push(`  ${DIM}${truncate(l, width - 2)}${RESET}`);
-    }
+  lines.push(`${BOLD}CONTROL ROOM${RESET}`);
+  if (opts.controlRoom === undefined) {
+    lines.push(`${DIM}  No normalized observation snapshot is configured; activity is unknown.${RESET}`);
+  } else {
+    const model = typeof opts.controlRoom === "function" ? opts.controlRoom() : opts.controlRoom;
+    const room = renderControlRoomTerminal(model, {
+      width: Math.max(32, Math.min(240, width)),
+      height: Math.max(6, Math.min(200, termHeight() - lines.length))
+    });
+    lines.push(...room.split("\n"));
   }
 
   return lines.join("\n");
+}
+
+/** Render the bounded P2 lifecycle facts without exposing command bodies or accepting input. */
+export function renderSteeringMonitor(view: SteeringDashboardData, width = termWidth()): string[] {
+  const lines: string[] = [`${BOLD}NEXT-PROMPT STEERING${RESET}`];
+  const freshness = view.stale
+    ? `stale ${view.observedSeq}/${view.headSeq}`
+    : `current at ${view.headSeq}`;
+  const age = view.queue.oldestPendingAgeMs === null ? "none queued" : `oldest ${formatMonitorAge(view.queue.oldestPendingAgeMs)}`;
+  lines.push(`${DIM}  ${view.queue.pendingCount} pending · ${age} · ${freshness}${RESET}`);
+  for (const session of view.sessions) {
+    const task = session.taskId === null ? "no task" : `${session.taskId} gen ${session.taskGeneration}`;
+    const next = session.queue.nextEligibleAttemptGeneration === null ? "" : ` · next attempt ${session.queue.nextEligibleAttemptGeneration}`;
+    lines.push(truncate(`  ${session.activityLabel} · ${session.sessionId} gen ${session.sessionGeneration} · ${task}${next}`, width));
+  }
+  const visible = view.commands.slice(0, 12);
+  for (const command of visible) {
+    lines.push(truncate(`  ${command.statusLabel} · ${command.commandId} · ${command.statusDetail}`, width));
+  }
+  if (view.commands.length > visible.length || view.commandsTruncated) {
+    lines.push(`${DIM}  … ${view.commandCount - visible.length} additional lifecycle record(s)${RESET}`);
+  }
+  return lines;
+}
+
+function formatMonitorAge(ms: number): string {
+  if (ms < 60_000) return `${Math.floor(ms / 1_000)}s`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`;
+  return `${Math.floor(ms / 86_400_000)}d`;
 }
 
 function renderTaskRow(task: TaskView, width: number): string {
@@ -129,7 +157,7 @@ export function renderOnce(opts: MonitorOptions): string {
 }
 
 /** Live monitor: redraw the single screen on an interval until Ctrl-C. */
-export function startMonitor(opts: MonitorOptions): void {
+export function startMonitor(opts: MonitorOptions, onClose?: () => void): void {
   const interval = opts.intervalMs ?? 1500;
   process.stdout.write(HIDE_CURSOR);
   const draw = () => {
@@ -141,32 +169,22 @@ export function startMonitor(opts: MonitorOptions): void {
   const timer = setInterval(draw, interval);
   const cleanup = () => {
     clearInterval(timer);
+    try { onClose?.(); } catch { /* render cleanup is best-effort and owns no authority */ }
     process.stdout.write(SHOW_CURSOR + "\n");
     process.exit(0);
   };
-  process.on("SIGINT", cleanup);
-  process.on("SIGTERM", cleanup);
+  process.once("SIGINT", cleanup);
+  process.once("SIGTERM", cleanup);
 }
 
-/** Discover live panes for a session (role inferred from pane title) when not provided. */
+/**
+ * Discover live panes for a session (role inferred from pane title). Metadata-gated: a session that is
+ * not a Loop-OWNED viewport is never listed and never scraped, so `loop monitor` cannot be pointed at a
+ * human's own tmux session by a crafted name.
+ */
 export function discoverPanes(session: string): Record<string, string> {
-  if (!listSessions().some((s) => s === session) && !sessionExists(session)) return {};
-  const result = spawnSync(
-    "tmux",
-    ["list-panes", "-t", session, "-F", "#{pane_id}\t#{pane_title}"],
-    { encoding: "utf8" }
-  );
-  if (result.status !== 0) return {};
-  const map: Record<string, string> = {};
-  for (const line of result.stdout.split("\n")) {
-    const [paneId, title] = line.split("\t");
-    if (!paneId) continue;
-    const role = (title ?? "").split("·")[0].trim() || paneId;
-    map[role] = paneId;
-  }
-  return map;
-}
-
-function sessionExists(session: string): boolean {
-  return spawnSync("tmux", ["has-session", "-t", session], { stdio: "ignore" }).status === 0;
+  if (!isSafeTmuxName(session) || !tmuxAvailable()) return {};
+  const client = tmuxClient();
+  if (!client.identityOf(session)) return {};
+  return client.panesByRole(session);
 }

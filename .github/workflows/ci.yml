@@ -6,14 +6,108 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   validate:
+    name: Node ${{ matrix.node }} validation
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Bubblewrap for P6 sandbox release-gate tests
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          # GitHub-hosted runners need unprivileged user namespaces for bwrap.
+          if [ -w /proc/sys/kernel/unprivileged_userns_clone ]; then
+            echo 1 | sudo tee /proc/sys/kernel/unprivileged_userns_clone >/dev/null || true
+          fi
+          bwrap --version
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # Build before test: release-policy scripts import compiled dist modules.
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  product-smoke:
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Install Bubblewrap for contained product smoke when available
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          bwrap --version
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run validate
+      - run: npm run build
+      - run: npm run smoke
+      - run: npm pack --dry-run
+
+  preview-artifact:
+    name: packed pull-request preview artifact
+    if: github.event_name == 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install Bubblewrap and Chrome for packed preview
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          # Chrome for smoke-packed-dashboard; fail closed if unavailable after install attempt.
+          if ! command -v google-chrome >/dev/null 2>&1 && ! command -v google-chrome-stable >/dev/null 2>&1; then
+            wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+            sudo apt-get install -y /tmp/chrome.deb || sudo apt-get install -y --no-install-recommends chromium-browser || true
+          fi
+          bwrap --version
+          command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || command -v chromium
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Build preview tarball outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep the preview under RUNNER_TEMP so workspace hygiene and gitignore
+          # never hide the artifact from upload-artifact.
+          preview="$RUNNER_TEMP/relayforge-preview"
+          mkdir -p -- "$preview"
+          node scripts/release-artifact.mjs --preview --output "$preview"
+          test -f "$preview/release-manifest.json"
+          test -f "$preview/relayforge-1.0.0-rc.1.tgz"
+          echo "PREVIEW_DIR=$preview" >> "$GITHUB_ENV"
+      - name: Drive the exact preview tarball through the real browser dashboard smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$PREVIEW_DIR/relayforge-1.0.0-rc.1.tgz"
+          node scripts/smoke-packed-dashboard.mjs --tarball "$tarball"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relayforge-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+          path: ${{ env.PREVIEW_DIR }}
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: true

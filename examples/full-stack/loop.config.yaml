@@ -3,65 +3,55 @@ defaults:
   namespace: loop
   dashboardPort: 4318
 
+# A larger single-repository team. Multi-repository autonomous execution is NOT supported in
+# this release (it is rejected by `loop validate`), so point `workingDir` at one repo and run
+# the team there. Providers are mixed by strength; models are left unpinned so each CLI uses
+# its own default. Execution runs in isolated git worktrees (your checkout is never touched);
+# untrusted verifier commands run in a separate OS sandbox.
 projects:
   - name: full-stack-demo
     brief: brief.md
     workingDir: .
     safetyMode: workspace-write
     providers:
-      cto:
+      claude:
         type: claude
-        model: claude-opus-4-8
         auth:
           mode: auto
-        dangerouslySkipPermissions: false
-        args: []
-      frontend:
-        type: claude
-        model: claude-sonnet-4-6
-        auth:
-          mode: auto
-        dangerouslySkipPermissions: true
-        args: []
-      backend:
+      codex:
         type: codex
-        model: gpt-5.4
         effort: medium
         auth:
           mode: auto
-        yolo: true
-        args: []
-      scout:
+      gemini:
         type: gemini
-        model: gemini-3.5-flash
         auth:
           mode: auto
-        args: []
-    repositories:
-      - name: frontend-app
-        path: ~/work/frontend-app
-        role: frontend
-      - name: backend-api
-        path: ~/work/backend-api
-        role: backend
     roles:
-      - name: cto
+      - name: architect
         title: Architecture and release lead
-        provider: cto
-        repositories: [frontend-app, backend-api]
-      - name: fe1
+        provider: claude
+        sme: architect
+      - name: frontend
         title: Frontend engineer
-        provider: frontend
-        repositories: [frontend-app]
-      - name: be1
+        provider: claude
+        sme: frontend
+      - name: backend
         title: Backend engineer
-        provider: backend
-        repositories: [backend-api]
-      - name: qa1
+        provider: codex
+        sme: backend
+      - name: qa
         title: QA reviewer
-        provider: backend
-        repositories: [frontend-app, backend-api]
-      - name: scout1
-        title: Research and triage scout
-        provider: scout
-        repositories: [frontend-app, backend-api]
+        provider: gemini
+        sme: qa
+    loops:
+      - name: delivery-loop
+        maxIterations: 8
+        orchestrator: architect
+        reviewer: qa
+        maxRepairs: 2
+        maxParallel: 2
+        postMergeVerify: true
+        stopWhen:
+          - all tasks done
+          - tests pass

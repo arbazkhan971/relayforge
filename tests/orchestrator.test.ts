@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { agentReportedSuccess, extractJsonArray } from "../src/orchestrator.js";
+import { extractJsonArray } from "../src/orchestrator.js";
+import { normalizeTurn } from "../src/normalize.js";
 
 describe("extractJsonArray", () => {
   it("pulls a JSON array out of noisy CLI wrapper output", () => {
@@ -49,23 +50,22 @@ describe("extractJsonArray", () => {
   });
 });
 
-describe("agentReportedSuccess", () => {
-  it("treats exit-0 output with is_error:true as failure", () => {
-    // The real failure mode we hit: claude exits 0 but reports an unavailable model.
-    const out = '{"type":"result","is_error":true,"result":"model unavailable"}';
-    expect(agentReportedSuccess(out)).toBe(false);
+// Success is now decided by the single provider normalizer (src/normalize.ts) on the TERMINAL
+// record — never by a regex over arbitrary text. See tests/normalize.test.ts for the full matrix.
+describe("turn success via the normalizer (replaces the old regex agentReportedSuccess)", () => {
+  it("a claude terminal is_error:true is NOT a success even at exit 0", () => {
+    const stream = '{"type":"system","subtype":"init","tools":[]}\n{"type":"result","subtype":"error_during_execution","is_error":true,"result":"model unavailable"}';
+    expect(normalizeTurn("claude", stream).success).toBe(false);
   });
 
-  it("treats is_error:false as success", () => {
-    expect(agentReportedSuccess('{"is_error":false,"result":"done"}')).toBe(true);
+  it("a claude terminal success is a success", () => {
+    const stream =
+      '{"type":"system","subtype":"init","session_id":"s","tools":[]}\n{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s"}';
+    expect(normalizeTurn("claude", stream).success).toBe(true);
   });
 
-  it("treats a terminal error event as failure", () => {
-    expect(agentReportedSuccess('{"type":"error","message":"boom"}')).toBe(false);
-  });
-
-  it("accepts substantive output when no structured signal is present", () => {
-    expect(agentReportedSuccess("created the file successfully")).toBe(true);
-    expect(agentReportedSuccess("   ")).toBe(false);
+  it("a custom provider single-object is_error:true is not a success", () => {
+    expect(normalizeTurn("custom", '{"is_error":true,"result":"boom"}').success).toBe(false);
+    expect(normalizeTurn("custom", '{"is_error":false,"result":"ok"}').success).toBe(true);
   });
 });

@@ -7,18 +7,16 @@ projects:
     brief: brief.md
     workingDir: .
     intelligence: PROJECT-INTELLIGENCE.md
-    safetyMode: full-auto
+    safetyMode: workspace-write
     providers:
       planner:
         type: claude
         model: claude-sonnet-4-6
         promptMode: argument
-        dangerouslySkipPermissions: true
       impl:
         type: claude
         model: claude-sonnet-4-6
         promptMode: argument
-        dangerouslySkipPermissions: true
     roles:
       - name: pm
         title: Product Manager
@@ -43,7 +41,9 @@ projects:
         maxIterations: 5
         maxRepairs: 2
         maxParallel: 2
-        isolate: true
         pollSeconds: 1
+        # A positive budget REQUIRES an enforceable per-call cap: without one, every call would have
+        # to reserve the whole budget (a one-call run), so the loop fails closed before the planner.
         budgetUsd: 4.0
+        maxCostPerCallUsd: 0.75
         stopWhen: [all tasks done]
