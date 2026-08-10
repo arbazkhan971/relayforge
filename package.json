@@ -4,13 +4,13 @@
   "description": "RelayForge is a safe, headless AI agent team orchestrator with isolated git worktrees, independent review, deterministic verification, structured adapters, and an optional tmux viewport.",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://github.com/arbazkhan971/loop-orchestrator#readme",
+  "homepage": "https://github.com/arbazkhan971/relayforge#readme",
   "bugs": {
-    "url": "https://github.com/arbazkhan971/loop-orchestrator/issues"
+    "url": "https://github.com/arbazkhan971/relayforge/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/arbazkhan971/loop-orchestrator.git"
+    "url": "git+https://github.com/arbazkhan971/relayforge.git"
   },
   "publishConfig": {
     "access": "public"
@@ -97,7 +97,9 @@
     "software-engineering-agents",
     "ai-code-review",
     "ai-workflow",
-    "llm-agents"
+    "llm-agents",
+    "relayforge",
+    "contained-agents"
   ],
   "engines": {
     "node": "20.x || >=22"

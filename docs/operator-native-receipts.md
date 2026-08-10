@@ -10,7 +10,7 @@ Concise operator surface for when live credentials exist. Aligns with
 | --- | --- |
 | Package | `relayforge@1.0.0-rc.1` |
 | Changelog heading | `## [1.0.0-rc.1] - 2026-08-09` present |
-| GitHub repo | `arbazkhan971/loop-orchestrator` |
+| GitHub repo | `arbazkhan971/relayforge` |
 | Working branch | `agent/loop-engineering-hardening` |
 | Self-hosted runners (`relayforge-cgroup`, `relayforge-adapters`) | **None registered** (`actions/runners` total_count 0) |
 | Actions secrets present | `NPM_TOKEN` only |
@@ -36,30 +36,30 @@ prompted stdin so values stay out of shell history:
 
 ```bash
 # From a clean operator machine with gh auth (repo + workflow scopes).
-gh secret set OPENAI_API_KEY --repo arbazkhan971/loop-orchestrator
-gh secret set ANTHROPIC_API_KEY --repo arbazkhan971/loop-orchestrator
-gh secret set XAI_API_KEY --repo arbazkhan971/loop-orchestrator
+gh secret set OPENAI_API_KEY --repo arbazkhan971/relayforge
+gh secret set ANTHROPIC_API_KEY --repo arbazkhan971/relayforge
+gh secret set XAI_API_KEY --repo arbazkhan971/relayforge
 ```
 
 Pipe form (only if the value is already in a private file, mode 0600):
 
 ```bash
-gh secret set OPENAI_API_KEY --repo arbazkhan971/loop-orchestrator < /path/to/openai.key
-gh secret set ANTHROPIC_API_KEY --repo arbazkhan971/loop-orchestrator < /path/to/anthropic.key
-gh secret set XAI_API_KEY --repo arbazkhan971/loop-orchestrator < /path/to/xai.key
+gh secret set OPENAI_API_KEY --repo arbazkhan971/relayforge < /path/to/openai.key
+gh secret set ANTHROPIC_API_KEY --repo arbazkhan971/relayforge < /path/to/anthropic.key
+gh secret set XAI_API_KEY --repo arbazkhan971/relayforge < /path/to/xai.key
 ```
 
 Verify **names only** (values are never shown):
 
 ```bash
-gh secret list --repo arbazkhan971/loop-orchestrator
+gh secret list --repo arbazkhan971/relayforge
 # Expect: NPM_TOKEN, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY
 ```
 
 Also create the Actions environment the publish job references (once):
 
 ```bash
-gh api -X PUT repos/arbazkhan971/loop-orchestrator/environments/npm-release
+gh api -X PUT repos/arbazkhan971/relayforge/environments/npm-release
 ```
 
 Keep `NPM_TOKEN` for classic token publish, or configure OIDC trusted publishing
@@ -89,7 +89,7 @@ the artifact job**.
 ### Option A — register this host as the designated runner (GHA path)
 
 1. Install the GitHub Actions runner for Linux x64 on this machine.
-2. Configure it for `arbazkhan971/loop-orchestrator` with labels:
+2. Configure it for `arbazkhan971/relayforge` with labels:
    `self-hosted,linux,relayforge-cgroup,relayforge-adapters` (one runner may
    carry both release labels so `required-cgroup` and `artifact` can schedule).
 3. Ensure the runner service PATH includes the pinned `opencode`, `pi`, `grok`,
@@ -97,7 +97,7 @@ the artifact job**.
 4. Confirm:
 
 ```bash
-gh api repos/arbazkhan971/loop-orchestrator/actions/runners \
+gh api repos/arbazkhan971/relayforge/actions/runners \
   --jq '.runners[] | {name,status,labels:[.labels[].name]}'
 ```
 
