@@ -229,6 +229,25 @@ node scripts/smoke-packed-dashboard.mjs \
 Do not convert an unavailable runtime, missing credential or absent containment
 capability into a successful result.
 
+## Operator automation (2026-08-10)
+
+Same-job local receipt path is packaged for the moment credentials exist:
+
+| Script / doc | Role |
+| --- | --- |
+| `scripts/check-native-receipt-readiness.mjs` | Fail-closed readiness (git, pins, keys SET/unset, bwrap/cgroup, collector artifacts) |
+| `scripts/collect-all-native-receipts.mjs` | Paid collect → required-real vitest → extract → digest bundle; requires `--authorize-paid-probe` and all three keys; one key per child |
+| [operator-native-receipts.md](operator-native-receipts.md) | Secrets, runners vs local substitute, credentials → collect → tag order |
+
+As of HEAD after these helpers, readiness is green for every item **except** the three live API keys. No self-hosted Actions runners are registered; this host is the designated characterization machine until labels `relayforge-cgroup` + `relayforge-adapters` exist.
+
+```bash
+PATH=/usr/bin:$HOME/.local/bin:$PATH node scripts/check-native-receipt-readiness.mjs
+# When keys are set:
+OPENAI_API_KEY=… ANTHROPIC_API_KEY=… XAI_API_KEY=… \
+  node scripts/collect-all-native-receipts.mjs --authorize-paid-probe
+```
+
 ## Reference and design index
 
 - [Architecture](architecture.md)

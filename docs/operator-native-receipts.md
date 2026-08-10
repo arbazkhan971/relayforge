@@ -15,7 +15,7 @@ Concise operator surface for when live credentials exist. Aligns with
 | Self-hosted runners (`relayforge-cgroup`, `relayforge-adapters`) | **None registered** (`actions/runners` total_count 0) |
 | Actions secrets present | `NPM_TOKEN` only |
 | Actions secrets missing | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY` |
-| Environment `npm-release` | **Not created** (publish job requires it) |
+| Environment `npm-release` | **Created** (2026-08-10; no protection rules yet) |
 | npm CLI login on this host | **Not authenticated** (`npm whoami` → ENEEDAUTH) |
 | Registry | `relayforge` absent (E404 diagnostic); recheck at publish time |
 | Live paid keys in this shell | **Unset** |
