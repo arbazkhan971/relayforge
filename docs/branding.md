@@ -10,9 +10,11 @@ configuration prefix, and environment-variable prefix.
 | Product | RelayForge |
 | npm package | `relayforge` |
 | Command | `relayforge` |
+| GitHub repository | `arbazkhan971/relayforge` |
 | Configuration | `relayforge.config.yaml` |
 | Environment | `RELAYFORGE_*` |
 | Release tag | `v1.0.0-rc.1` |
+| Assets | `assets/logo.svg`, `assets/dashboard.png`, `assets/todo-app.png` |
 
 The recommended one-line description is:
 
@@ -74,9 +76,9 @@ operator behavior:
 
 ## Release-status language
 
-The source currently identifies as `relayforge@1.0.0-rc.1`. That is not evidence
-that the package is visible on npm or that a repository, remote, tag, GitHub
-release, website, or social handle has been changed.
+The source currently identifies as `relayforge@1.0.0-rc.1`. The GitHub
+repository is **`arbazkhan971/relayforge`**. That is not evidence that the
+package is visible on npm or that a tag or GitHub Release has been created.
 
 Until an authorized operator completes and verifies publication, use:
 

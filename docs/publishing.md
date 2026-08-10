@@ -9,12 +9,12 @@ may perform the external steps.
 The source manifest is `relayforge@1.0.0-rc.1`, and the required changelog
 heading is dated 2026-08-09. As of this source preparation:
 
+- the GitHub repository identity is **`arbazkhan971/relayforge`** (renamed from
+  the historical `loop-orchestrator` path; package URLs and docs match);
 - npm publication has **not** been performed;
-- the external repository has **not** been renamed;
 - no GitHub release has been created;
 - no remote release tag has been pushed by this work;
-- project URLs, organization settings, websites, and social names have not been
-  changed.
+- websites and social handles beyond the GitHub repo remain operator-owned.
 
 The source version is not proof of registry or remote state.
 

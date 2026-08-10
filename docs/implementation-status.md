@@ -24,9 +24,9 @@ credentials plus the publishable release workflow (cgroup host readiness and
 exact pinned binaries are now satisfied on the characterization host — see
 [Host preparation (2026-08-10)](#host-preparation-2026-08-10)).
 
-No tag, npm publication, GitHub Release, or repository rename has been
-performed. Those remain explicit operator actions, not implied follow-ons from
-this handoff.
+No tag, npm publication, or GitHub Release has been performed. Those remain
+explicit operator actions. The GitHub repository has been renamed to
+**`arbazkhan971/relayforge`** (historical path: `loop-orchestrator`).
 
 ## Repository state
 
@@ -41,7 +41,8 @@ this handoff.
 | Packed/browser smoke checkpoint | `cf87abfee5426178e8883c176b66032631ada9ca` (exact preview run on the runtime proof commit; final handover is docs-only and changes no runtime code) |
 | Previous remote handoff checkpoint | `860688c55207be051431d470b44b038025a12e5c` |
 | Package candidate | `relayforge@1.0.0-rc.1` |
-| Tag / npm publish / GitHub Release / repository rename | **Not performed** |
+| GitHub repository | **`arbazkhan971/relayforge`** (renamed from `loop-orchestrator`) |
+| Tag / npm publish / GitHub Release | **Not performed** |
 | Real native-adapter receipts | **Not collected** |
 
 The previous remote checkpoint contains the earlier documentation handoff. The

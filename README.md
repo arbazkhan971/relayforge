@@ -1,26 +1,37 @@
 # RelayForge
 
+<p align="center">
+  <img src="assets/logo.svg" alt="RelayForge" width="720">
+</p>
+
+<p align="center">
+  <strong>Contained AI agent teams</strong> — plan, implement, independently review, and deterministically verify.<br/>
+  Primary package and CLI: <code>relayforge</code> · Repository: <a href="https://github.com/arbazkhan971/relayforge">arbazkhan971/relayforge</a>
+</p>
+
 RelayForge coordinates a small team of AI coding agents through planning,
 isolated implementation, independent review, deterministic verification, and
-bounded settlement. The primary command and npm package are `relayforge`.
+bounded settlement.
 
 > **Release handoff tracker:** see
 > **[docs/implementation-status.md](docs/implementation-status.md)** for live
 > phase evidence, release blockers vs external actions, resume order, and what
 > is still incomplete. Prefer that document over any older “planned” prose.
 
-This source tree targets release candidate **1.0.0-rc.1**. Product integration
-landed at `5880b008d81c20f746f728ef83d736306d546d81` and the committed local
-candidate on runtime proof `cf87abf` passed the required-cgroup aggregate
-(**171** files / **1,957** tests), contained source smoke, exact preview
-tarball, and packed real-browser Chrome lifecycle. Contained production
+This source tree targets release candidate **1.0.0-rc.1**. Local required-cgroup
+gates, contained source smoke, preview packaging, and packed real-browser
+lifecycle are green on the characterization host. Contained production
 characterization for OpenCode, Pi, and Grok is implemented and fixture-backed.
-Preparing and pushing the source does **not** mean that an npm package, GitHub
-Release, repository rename, or tag has been published. Release publication
-remains fail-closed until real same-runner OpenCode, Pi, and Grok receipts
-exist; those still require the designated cgroup runner, exact installed
-binaries, live credentials, and the release workflow. Those publication steps
-are explicit operator actions described in [docs/publishing.md](docs/publishing.md).
+**npm publication, RC tag, and GitHub Release remain fail-closed** until real
+same-runner OpenCode, Pi, and Grok receipts exist (live credentials + release
+workflow). See [docs/publishing.md](docs/publishing.md) and
+[docs/operator-native-receipts.md](docs/operator-native-receipts.md).
+
+## Screenshots
+
+| Control dashboard | Example app (todo) |
+| --- | --- |
+| <img src="assets/dashboard.png" alt="RelayForge control dashboard" width="480"> | <img src="assets/todo-app.png" alt="Todo app example" width="480"> |
 
 ## Identity and compatibility
 
@@ -357,8 +368,8 @@ The following distinctions are deliberate release claims:
 - **The loopback control service is local and read-only.** It is not a remote
   multi-user service, a terminal gateway, or a write API.
 - **Provisioning is offline copying, not dependency installation.**
-- **No tag, npm publish, GitHub Release, repository rename, or real native
-  receipt has been performed.**
+- **No tag, npm publish, GitHub Release, or real native receipt has been
+  performed.** The GitHub repository identity is **`arbazkhan971/relayforge`**.
 
 ## Useful commands
 
