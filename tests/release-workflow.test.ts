@@ -144,7 +144,9 @@ describe("release workflow authority", () => {
     };
     expect(preview.if).toContain("pull_request");
     expect(preview.needs).toBe("validate");
-    expect(preview.steps?.some((step) => String(step.run).includes("release-artifact.mjs --preview --output .preview"))).toBe(true);
+    // Preview is built under RUNNER_TEMP (not the checkout) so upload-artifact always sees it.
+    expect(preview.steps?.some((step) => String(step.run).includes("release-artifact.mjs --preview --output"))).toBe(true);
+    expect(preview.steps?.some((step) => String(step.run).includes("RUNNER_TEMP") && String(step.run).includes("relayforge-preview"))).toBe(true);
     expect(preview.steps?.some((step) => String(step.run).includes("smoke-packed-dashboard.mjs --tarball"))).toBe(true);
     expect(preview.steps?.some((step) => String(step.uses).startsWith("actions/upload-artifact@"))).toBe(true);
   });
