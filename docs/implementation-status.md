@@ -33,8 +33,8 @@ this handoff.
 | Item | Value |
 | --- | --- |
 | Working branch | `agent/loop-engineering-hardening` |
-| Current HEAD | docs-only final handover (use `git rev-parse HEAD`); changes no runtime code after the runtime proof commit |
-| Runtime proof commit | `cf87abfee5426178e8883c176b66032631ada9ca` (`docs: record final cgroup smoke handoff`) — exact required-cgroup smoke, packed artifact, and real-browser proof were built from this parent commit |
+| Current HEAD | use `git rev-parse HEAD` (includes PATH isolation fix `ec3585d` and docs alignment; rechecked required-cgroup aggregate + smoke + preview + browser on 2026-08-10) |
+| Runtime proof commit (prior packed baseline) | `cf87abfee5426178e8883c176b66032631ada9ca` — original packed/browser proof parent; 2026-08-10 recheck also green on `ec3585d` with new tarball digest below |
 | Current commits | `ee93223889c39354f03af330782434b313155097` (harden contained native evidence binding), `de23f74b9da4497842b143922fab4354e64206fd` (contained Pi production characterization), `82c6b32c67c8247deada9cc60cd05a58ed7107cd` (serialized package export typecheck), `a8433debf27a54ce5979c95ff5eadec87ab0311c` (contained Grok production characterization), `1d365fc67f94ee231d010a495baf188ded3f1f8b` (release handover after native characterization), `b94062430c82bed2236c86ec79855e814fe724d4` (drain verifier cgroup close race), `cf87abfee5426178e8883c176b66032631ada9ca` (final cgroup smoke handoff / runtime proof), then docs-only handoff commits with no runtime code change |
 | Product integration commit | `5880b008d81c20f746f728ef83d736306d546d81` (`feat: complete RelayForge control plane integration`) |
 | Stabilization commits | `3b6f78f2b89f0b4430e9f24cd535d3efa29e6e26`, `a0a877fcf4d67445a56656a88b653e7141082313` |
