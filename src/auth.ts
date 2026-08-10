@@ -131,7 +131,13 @@ export function hasConfig(path: string): boolean {
 }
 
 function which(command: string): string | undefined {
-  const result = spawnSync("bash", ["-lc", `command -v ${shellQuote(command)}`], { encoding: "utf8" });
+  // Use a non-login shell so process.env.PATH is respected. `bash -lc` reloads
+  // profile PATH and can prefer ambient developer installs over an intentionally
+  // narrowed PATH (tests, release collectors, isolated worktrees).
+  const result = spawnSync("bash", ["-c", `command -v ${shellQuote(command)}`], {
+    encoding: "utf8",
+    env: process.env
+  });
   if (result.status !== 0) return undefined;
   return result.stdout.trim() || undefined;
 }

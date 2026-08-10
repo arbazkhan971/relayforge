@@ -36,7 +36,11 @@ export type ControlDoctorAdapters = {
 };
 
 function has(command: string): { ok: boolean; version?: string } {
-  const path = spawnSync("bash", ["-lc", `command -v '${command.replaceAll("'", "'\\''")}'`], { encoding: "utf8" });
+  // Non-login shell so process.env.PATH is authoritative (login shells reload profile PATH).
+  const path = spawnSync("bash", ["-c", `command -v '${command.replaceAll("'", "'\\''")}'`], {
+    encoding: "utf8",
+    env: process.env
+  });
   if (path.status !== 0) return { ok: false };
   // tmux reports its version with -V, not --version.
   const flag = command === "tmux" ? "-V" : "--version";

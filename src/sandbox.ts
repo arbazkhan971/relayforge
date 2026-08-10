@@ -347,7 +347,11 @@ function assertNoSysWritableRoots(roots: readonly string[]): void {
 }
 
 function which(cmd: string): boolean {
-  return spawnSync("bash", ["-lc", `command -v '${cmd.replaceAll("'", "'\\''")}'`], { stdio: "ignore" }).status === 0;
+  // Non-login shell so process.env.PATH is authoritative (login shells reload profile PATH).
+  return spawnSync("bash", ["-c", `command -v '${cmd.replaceAll("'", "'\\''")}'`], {
+    stdio: "ignore",
+    env: process.env
+  }).status === 0;
 }
 
 let cached: SandboxMechanism | undefined;

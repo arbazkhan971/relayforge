@@ -9,7 +9,11 @@ const PROVIDER_CLIS: Record<Exclude<StarterProvider, "custom">, string> = {
 };
 
 function cliInstalled(command: string): boolean {
-  return spawnSync("bash", ["-lc", `command -v '${command.replaceAll("'", "'\\''")}'`], { stdio: "ignore" }).status === 0;
+  // Non-login shell so process.env.PATH is authoritative (login shells reload profile PATH).
+  return spawnSync("bash", ["-c", `command -v '${command.replaceAll("'", "'\\''")}'`], {
+    stdio: "ignore",
+    env: process.env
+  }).status === 0;
 }
 
 /** Which provider CLIs are installed locally (used to auto-pick and to inform the user). */

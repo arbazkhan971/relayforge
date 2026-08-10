@@ -1297,7 +1297,11 @@ export function extractJsonArray(raw: string): string | undefined {
 }
 
 function commandExists(command: string): boolean {
-  return spawnSync("bash", ["-lc", `command -v ${shellQuoteLocal(command)}`], { stdio: "ignore" }).status === 0;
+  // Non-login shell so process.env.PATH is authoritative (login shells reload profile PATH).
+  return spawnSync("bash", ["-c", `command -v ${shellQuoteLocal(command)}`], {
+    stdio: "ignore",
+    env: process.env
+  }).status === 0;
 }
 
 function shellQuoteLocal(value: string): string {
