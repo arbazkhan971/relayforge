@@ -149,17 +149,27 @@ Compatibility: existing `loop.config.yaml` and `.loop/` still work. Binary alias
 
 ---
 
-## Screenshots
+## Screenshots (live product)
+
+Captured from a **running** `relayforge serve` after a real dry-run (connected control plane, task board, activity), and from the shipped example app.
+
+### Control dashboard — connected after dry-run
 
 <p align="center">
-  <img src="assets/dashboard.png" alt="Control dashboard" width="720"><br/>
-  <sub>Local control dashboard</sub>
+  <img src="assets/dashboard.png" alt="RelayForge control dashboard: connected, 100% progress, task board Done, live activity" width="900">
 </p>
 
+Shows: green **connected** state, KPI strip (progress 100%, run **succeeded**), task board with the planned task in **DONE**, and a live activity timeline.
+
+### Example app — `examples/todo-app`
+
 <p align="center">
-  <img src="assets/todo-app.png" alt="Todo example app" width="420"><br/>
-  <sub>Example app under <code>examples/todo-app</code></sub>
+  <img src="assets/todo-app.png" alt="RelayForge Todo example with seeded tasks" width="520">
 </p>
+
+```bash
+cd examples/todo-app && npm start   # http://localhost:3000
+```
 
 ---
 
