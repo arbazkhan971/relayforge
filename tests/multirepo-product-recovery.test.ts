@@ -348,7 +348,11 @@ function assertExactlyOnceOutcome(value: Fixture, runDir: string): void {
   expect(receiptLeaves(runDir)).toHaveLength(1);
 }
 
-describe("P6 product crash recovery under the real filesystem boundary", () => {
+const REQUIRE_STRONG_HOST = process.env.RELAYFORGE_TEST_REQUIRE_CGROUP === "1";
+const LAUNCHABLE_BWRAP = detectSandbox() === "bwrap";
+const skipRealBwrap = !LAUNCHABLE_BWRAP && !REQUIRE_STRONG_HOST;
+
+describe.skipIf(skipRealBwrap)("P6 product crash recovery under the real filesystem boundary", () => {
   it.each([
     "settlement-before-receipt",
     "receipt-before-canonical"

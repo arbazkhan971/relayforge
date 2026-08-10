@@ -180,6 +180,12 @@ class CanonicalJournal implements MultiRepositoryCanonicalJournalV1 {
   }
 }
 
+/** Node 24+ stabilized the flag as `--permission`; earlier majors use `--experimental-permission`. */
+function nodePermissionFlag(): string {
+  const major = Number(process.versions.node.split(".")[0] ?? 0);
+  return major >= 24 ? "--permission" : "--experimental-permission";
+}
+
 function containedWorker(onRequest?: (request: MultiRepositoryWorkerRequestV1) => void): ContainedMultiRepositoryWorker {
   return {
     async run(request, acknowledgeDispatch): Promise<MultiRepositoryWorkerSettlementV1> {
@@ -189,7 +195,7 @@ function containedWorker(onRequest?: (request: MultiRepositoryWorkerRequestV1) =
       const readable = [fixturePath, ...request.members.map((member) => member.path)];
       const writable = request.members.map((member) => member.path);
       const result = spawnSync(process.execPath, [
-        "--experimental-permission",
+        nodePermissionFlag(),
         ...readable.map((path) => `--allow-fs-read=${path}`),
         ...writable.map((path) => `--allow-fs-write=${path}`),
         fixturePath,

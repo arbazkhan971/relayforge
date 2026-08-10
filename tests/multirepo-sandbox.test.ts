@@ -17,6 +17,10 @@ import {
 
 const fixture = realpathSync(resolve(dirname(new URL(import.meta.url).pathname), "fixtures/multirepo-sandbox-child.mjs"));
 const createdRoots = new Set<string>();
+/** Ordinary CI hosts may install Bubblewrap but still cannot launch it (userns). Release-required hosts fail closed. */
+const REQUIRE_STRONG_HOST = process.env.RELAYFORGE_TEST_REQUIRE_CGROUP === "1";
+const LAUNCHABLE_BWRAP = detectSandbox() === "bwrap";
+const skipRealBwrap = !LAUNCHABLE_BWRAP && !REQUIRE_STRONG_HOST;
 
 afterEach(() => {
   setTrustedRunner(false);
@@ -88,7 +92,7 @@ describe("P6 Bubblewrap filesystem capability", () => {
     }
   });
 
-  it("runs a real child with two writable repositories while the third, host secret, and parent listing are unavailable", () => {
+  it.skipIf(skipRealBwrap)("runs a real child with two writable repositories while the third, host secret, and parent listing are unavailable", () => {
     expect(detectSandbox(), "the required release host must provide launchable Bubblewrap").toBe("bwrap");
     setTrustedRunner(false);
     const value = layout();
@@ -127,7 +131,7 @@ describe("P6 Bubblewrap filesystem capability", () => {
     expect(readFileSync(value.secret, "utf8")).toBe("host-secret\n");
   });
 
-  it("exposes only an exact nested Git metadata capability beneath an otherwise absent repository", () => {
+  it.skipIf(skipRealBwrap)("exposes only an exact nested Git metadata capability beneath an otherwise absent repository", () => {
     expect(detectSandbox(), "the required release host must provide launchable Bubblewrap").toBe("bwrap");
     const value = layout();
     const canonicalRepo = resolve(value.root, "canonical-alpha");
@@ -178,7 +182,7 @@ describe("P6 Bubblewrap filesystem capability", () => {
     expect(result.third?.code).toMatch(/ENOENT|EACCES/u);
   });
 
-  it("mounts only the selected provider's exact private state and never a broad cache", () => {
+  it.skipIf(skipRealBwrap)("mounts only the selected provider's exact private state and never a broad cache", () => {
     expect(detectSandbox(), "the required release host must provide launchable Bubblewrap").toBe("bwrap");
     const value = layout();
     const home = resolve(value.root, "operator-home");
@@ -239,7 +243,7 @@ describe("P6 Bubblewrap filesystem capability", () => {
     expect(result.broadCacheSecret?.code).toMatch(/ENOENT|EACCES/u);
   });
 
-  it("mounts only an identity-pinned 0600 AF_UNIX relay and refuses replacement", async () => {
+  it.skipIf(skipRealBwrap)("mounts only an identity-pinned 0600 AF_UNIX relay and refuses replacement", async () => {
     expect(detectSandbox(), "the required release host must provide launchable Bubblewrap").toBe("bwrap");
     const value = layout();
     const relayDir = resolve(value.root, "relay");
