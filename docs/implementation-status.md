@@ -138,19 +138,22 @@ or invent evidence.
 This boundary means the local package is a verified preview candidate, not an
 authorized npm/GitHub release.
 
-## Host preparation (2026-08-10)
+## Host preparation and recheck (2026-08-10)
 
 Recheck on the characterization host (Linux **6.17.0-1021-gcp**, delegated
 user-slice cgroup v2 + `nsdelegate`, Bubblewrap **0.9.0**, Node **v20.20.2**
-for RelayForge, Google Chrome present):
+for RelayForge, Google Chrome **150.0.7871.128**):
 
 | Gate | Result |
 | --- | --- |
 | Typecheck / build | **GREEN** |
-| Focused adapter characterization matrix | **GREEN** — **112/112** across collector + OpenCode/Pi/Grok + evidence envelope (fixture-backed production paths) |
-| Required-cgroup Linux suite | **GREEN** — **22/22** with `RELAYFORGE_TEST_REQUIRE_CGROUP=1` (run alone; concurrent suites can leave empty `loop-*` dirs that confuse outer-scope leak assertions) |
+| Required-cgroup aggregate | **GREEN** — **171** files / **1,957** tests with `RELAYFORGE_TEST_REQUIRE_CGROUP=1` on commit `ec3585d` |
+| Contained source smoke | **GREEN** — exact marker `SMOKE PASS (contained host — verified delivery on the run branch)`; execute `done`; feature only on run branch; original checkout unchanged |
+| Exact preview tarball (on `ec3585d`) | **GREEN** — `relayforge-1.0.0-rc.1.tgz`; **1,647,563** bytes; sha256 `dc44fd49c810177b4aae64f3b738bf7140b2cb29427620bf3ebd282bbe3f00a3`; `publishable:false`; `nativeAdapterEvidence.status:not-collected` |
+| Packed real-browser gate | **GREEN** — Chrome **150.0.7871.128**; DOM rendered; lifecycle **connected → degraded → recovered**; `serviceReplaced` **true** |
 | Exact pinned native CLIs on PATH | **GREEN** — `opencode` **1.18.15**; `pi` **0.84.1** (wrapped onto Node **22.19.0**); `grok` **1.0.0 (3cd0d0cbce) [stable]** |
-| Live paid credentials | **MISSING** — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `XAI_API_KEY` unset in the operator environment; do not invent receipts |
+| PATH isolation fix | **GREEN** — `bash -lc` login-shell PATH override fixed in auth/doctor/sandbox/starter/orchestrator (`ec3585d`); previously failed auth tests when real opencode/pi were installed |
+| Live paid credentials | **MISSING** — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `XAI_API_KEY` unset; GitHub Actions secrets only contain `NPM_TOKEN`; do not invent receipts |
 | Real same-runner receipts | **Not collected** |
 | Tag / npm / GitHub Release / rename | **Not performed** |
 
