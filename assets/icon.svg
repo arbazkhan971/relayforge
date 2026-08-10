@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="t d">
+  <title id="t">RelayForge</title>
+  <desc id="d">RelayForge mark: linked relay nodes on a dark forge plate.</desc>
+  <defs>
+    <linearGradient id="g" x1="64" y1="64" x2="448" y2="448" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="120" y1="120" x2="392" y2="392" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2DD4BF"/>
+      <stop offset="1" stop-color="#A78BFA"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#g)"/>
+  <rect x="36" y="36" width="440" height="440" rx="92" fill="none" stroke="#1E293B" stroke-width="2"/>
+  <!-- outer relay path -->
+  <path d="M168 256c0-48.6 39.4-88 88-88h36c34.2 0 62 27.8 62 62s-27.8 62-62 62H232"
+        fill="none" stroke="url(#ring)" stroke-width="36" stroke-linecap="round"/>
+  <path d="M344 256c0 48.6-39.4 88-88 88h-36c-34.2 0-62-27.8-62-62s27.8-62 62-62H280"
+        fill="none" stroke="url(#ring)" stroke-width="36" stroke-linecap="round" opacity="0.85"/>
+  <!-- node accents -->
+  <circle cx="176" cy="214" r="18" fill="#FBBF24"/>
+  <circle cx="336" cy="298" r="18" fill="#FBBF24"/>
+  <!-- spark -->
+  <circle cx="256" cy="256" r="10" fill="#F8FAFC"/>
+</svg>

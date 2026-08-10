@@ -1,410 +1,196 @@
 # RelayForge
 
 <p align="center">
-  <img src="assets/logo.svg" alt="RelayForge" width="720">
+  <img src="assets/logo.svg" alt="RelayForge" width="420">
 </p>
 
 <p align="center">
-  <strong>Contained AI agent teams</strong> — plan, implement, independently review, and deterministically verify.<br/>
-  Primary package and CLI: <code>relayforge</code> · Repository: <a href="https://github.com/arbazkhan971/relayforge">arbazkhan971/relayforge</a>
+  <b>Safe multi-agent coding loops</b> — plan → implement → review → verify,<br/>
+  each step in an isolated git worktree with real OS containment.
 </p>
 
-RelayForge coordinates a small team of AI coding agents through planning,
-isolated implementation, independent review, deterministic verification, and
-bounded settlement.
-
-> **Release handoff tracker:** see
-> **[docs/implementation-status.md](docs/implementation-status.md)** for live
-> phase evidence, release blockers vs external actions, resume order, and what
-> is still incomplete. Prefer that document over any older “planned” prose.
-
-This source tree targets release candidate **1.0.0-rc.1**. Local required-cgroup
-gates, contained source smoke, preview packaging, and packed real-browser
-lifecycle are green on the characterization host. Contained production
-characterization for OpenCode, Pi, and Grok is implemented and fixture-backed.
-**npm publication, RC tag, and GitHub Release remain fail-closed** until real
-same-runner OpenCode, Pi, and Grok receipts exist (live credentials + release
-workflow). See [docs/publishing.md](docs/publishing.md) and
-[docs/operator-native-receipts.md](docs/operator-native-receipts.md).
-
-## Screenshots
-
-| Control dashboard | Example app (todo) |
-| --- | --- |
-| <img src="assets/dashboard.png" alt="RelayForge control dashboard" width="480"> | <img src="assets/todo-app.png" alt="Todo app example" width="480"> |
-
-## Identity and compatibility
-
-| Surface | Primary identity | Compatibility behavior |
-| --- | --- | --- |
-| Product and package | RelayForge / `relayforge` | “Loop Orchestrator” is a historical name only |
-| Executable | `relayforge` | `loop` and `loop-orchestrator` invoke the same entry point |
-| New config | `relayforge.config.yaml` | Existing `loop.config.yaml`, `.yml`, or `.json` remains valid |
-| New state | `.loop/` | The durable directory is intentionally unchanged |
-| Environment | `RELAYFORGE_*` | Documented `LOOP_*` aliases remain supported |
-
-Config discovery accepts `.yaml`, `.yml`, and `.json` in both naming families.
-If more than one candidate exists in the same discovered directory, RelayForge
-fails with `CONFIG_AMBIGUOUS`; use `--config <exact-path>` or remove the
-ambiguity. `relayforge init` never overwrites any existing config, including
-with `--force`.
-
-## What is shipped
-
-- A safe dry run by default; providers launch only with `--execute`.
-- One disposable Git worktree per implementation attempt and a separate
-  read-only reviewer boundary.
-- A Linux containment chain using Bubblewrap and delegated cgroup v2 process
-  scopes, with authenticated launch handshakes and fail-closed cleanup.
-- A durable run-scoped SQLite control plane with strict migration,
-  reconciliation, replay, read models, and a foreground loopback service.
-- Parent-owned steering for a future immutable attempt boundary. It cannot
-  inject input into a running agent.
-- Seven closed provider adapter types: Claude, Codex, Gemini, custom, OpenCode,
-  Pi, and Grok Build. OpenCode, Pi, and Grok require exact native-protocol
-  evidence; ordinary product runs currently refuse before mutation when product
-  evidence injection is not available (see [Current boundaries](#current-boundaries)).
-- Bounded normalized control-room observations. Public status never exposes raw
-  provider transcripts, terminal buffers, prompts, environment values, or
-  credentials.
-- Durable SCM components and **product-integrated multi-repository** execution
-  (strict config/validation, CLI run route, ControlStore facts/views, authority,
-  DAG/scheduler, worktree groups, contained transport/settlement, publication
-  bridge, read isolation, crash recovery). Explicit SCM/publication config drives
-  recoverable branch/PR publication, parent polling, and reaction-to-steering;
-  RelayForge never invents a remote publication plan.
-
-## Requirements
-
-- Node.js 20.x or 22+
-- Git
-- A clean Git repository before an executing run
-- Linux for the strongest supported Bubblewrap + delegated-cgroup containment
-- At least one configured provider CLI for `--execute`
-
-The package has no post-install provisioning. Provider CLIs, Bubblewrap, cgroup
-delegation, credentials, and project dependencies remain operator-managed.
-
-## Start from this source tree
+<p align="center">
+  <a href="https://github.com/arbazkhan971/relayforge/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/arbazkhan971/relayforge/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Node" src="https://img.shields.io/badge/node-20.x%20%7C%20%E2%89%A522-339933">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="Status" src="https://img.shields.io/badge/status-1.0.0--rc.1-orange">
+</p>
 
 ```bash
+# from this repo (npm package is not published yet)
+npm ci && npm run build && npm link
+
+cd /path/to/your-git-project   # must be a clean git repo for --execute
+relayforge init --provider claude   # or: codex | gemini
+relayforge doctor
+relayforge run "Ship a small verified change"            # dry-run (default)
+relayforge run "Ship a small verified change" --execute  # actually launch agents
+```
+
+---
+
+## Why RelayForge
+
+Most “agent team” tools are shell scripts around chat CLIs. RelayForge is a **parent-owned control plane**:
+
+| Guarantee | What it means |
+| --- | --- |
+| Dry-run by default | Nothing spends tokens until you pass `--execute` |
+| Isolated worktrees | Each attempt gets its own git worktree; review is a separate boundary |
+| Containment | Linux Bubblewrap + cgroup scopes; fail closed if the host can’t prove them |
+| Durable state | Run facts live in SQLite under `.loop/` — restartable, auditable |
+| Independent review | Reviewer role is not the same process as the implementer |
+| Deterministic verify | Your `verify:` commands (e.g. `npm test`) gate acceptance |
+
+---
+
+## Setup (from source)
+
+npm is **not** on the registry yet. Install from GitHub:
+
+### 1. Prerequisites
+
+- **Node.js** 20.x or ≥22  
+- **Git**  
+- At least one agent CLI you use day-to-day: **`claude`**, **`codex`**, or **`gemini`**  
+- **Linux** recommended for full safety (Bubblewrap + user cgroup). macOS works with weaker containment.
+
+```bash
+node -v && git --version
+command -v claude || command -v codex || command -v gemini
+```
+
+### 2. Install RelayForge on your PATH
+
+```bash
+git clone https://github.com/arbazkhan971/relayforge.git
+cd relayforge
 npm ci
 npm run build
-npm link
-
-cd /path/to/your-git-project
-relayforge init
-relayforge validate
-relayforge doctor
-relayforge learn
-relayforge run "Ship the smallest verified change"
-```
-
-The last command is a dry run: it plans run state but launches no provider. To
-authorize execution:
-
-```bash
-relayforge run "Ship the smallest verified change" --execute
-```
-
-After an authorized operator has verified and published this exact release to
-npm, a clean installation is:
-
-```bash
-npm install --global relayforge@1.0.0-rc.1
+npm link          # exposes: relayforge, loop, loop-orchestrator
 relayforge --version
 ```
 
-Do not assume the registry version exists merely because this source tree has
-that version.
-
-## The execution path
-
-An executing run follows one authority path:
-
-1. Validate strict configuration and cross-references before mutation.
-2. Require a clean repository and acquire the configuration and run leases.
-3. Create the integration worktree and durable control store.
-4. Select a compatible provider descriptor and prove its executable, version,
-   protocol, wire behavior, role capability, and containment readiness before
-   reserving a call.
-5. Plan tasks, then launch each worker through the parent-owned contained
-   transport. Descriptors and codecs cannot spawn processes.
-6. Review a content-bound candidate through an independent read-only role.
-7. Run deterministic verifier commands in the verifier sandbox, requiring the
-   configured stability count.
-8. Settle the exact reserved call scope once, record receipts, and accept or
-   reject the candidate.
-
-RelayForge succeeds only when every task is accepted and the final verifier is
-green. Cancelled, blocked, budget-exhausted, unverified, and unreadable terminal
-states exit non-zero.
-
-## Configuration
-
-`relayforge init` writes a strict starter config. A compact valid example is:
-
-```yaml
-version: 1
-defaults:
-  namespace: relayforge
-  dashboardPort: 4318
-  promptDir: .loop/prompts
-  runDir: .loop/runs
-  viewport: true
-projects:
-  - name: demo
-    brief: brief.md
-    workingDir: .
-    intelligence: PROJECT-INTELLIGENCE.md
-    safetyMode: workspace-write
-    providers:
-      agent:
-        type: claude
-        model: opus
-        auth:
-          mode: auto
-    roles:
-      - name: pm
-        title: Planner
-        provider: agent
-      - name: engineer
-        title: Implementer
-        provider: agent
-      - name: qa
-        title: Reviewer
-        provider: agent
-    loops:
-      - name: delivery
-        orchestrator: pm
-        reviewer: qa
-        verify:
-          - npm test
-        maxIterations: 8
-        verifyStabilityRuns: 3
-        maxParallel: 1
-        budgetUsd: 0
-```
-
-Unknown keys are rejected. Identifiers are bounded, paths must remain under the
-config root, role and provider references must resolve, and an ambiguous config
-name fails closed. See [docs/configuration.md](docs/configuration.md) for the
-full operator contract, budgets, provisioning, adapters, and compatibility
-environment variables.
-
-## Providers and adapters
-
-| Type | Contract | Important readiness rule |
-| --- | --- | --- |
-| `claude` | Claude headless adapter, exact supported build | OS containment remains the outer boundary |
-| `codex` | Codex exec adapter, `>=0.144 <0.145` | Reviewer runs read-only; `yolo: true` is rejected |
-| `gemini` | Legacy Gemini adapter, supported versions below 1.0 | Uses the same contained transport and settlement |
-| `custom` | Operator-supplied non-interactive command | Command behavior and usage reporting remain operator responsibility |
-| `opencode` | OpenCode 1.18.15, ACP wire v1 | Exact executable/version/behavior evidence and role policy required |
-| `pi` | Pi 0.84.1, RPC JSONL | Exact evidence plus the content-bound bundled reviewer helper required |
-| `grok` | Grok Build stable 1.0.0 build `3cd0d0cbce`, ACP wire v1 | API-key-only private config plus exact behavior/network-tool/no-upload evidence required |
-
-OpenCode, Pi, and Grok configuration is deliberately closed: raw command, argument,
-environment, protocol, permission-bypass, and fallback overrides are rejected.
-An installed executable or successful `--help`/`--version` probe is not enough.
-
-**Truthful native-adapter limitations (current product):**
-
-- Contained production characterization for OpenCode, Pi, and Grok is
-  implemented and fixture-backed. Real same-runner release receipts are still
-  **not collected** and need the designated cgroup runner, exact installed
-  binaries, live credentials, and the release workflow.
-- Ordinary OpenCode/Pi/Grok product execution currently **refuses before**
-  run/control/worktree mutation because product evidence injection is
-  intentionally not supported yet.
-- The publishable release workflow requires distinct same-runner OpenCode, Pi,
-  and Grok receipts and remains **fail-closed**.
-
-Grok additionally refuses ambient subscription or managed configuration: the
-supported profile requires `XAI_API_KEY`, a private empty HOME/GROK_HOME, fixed
-telemetry/trace/update disables, no leader, plugins, endpoint overrides,
-always-approve/yolo, subagents, memory, or web tools, and a real contained
-no-upload observation.
-
-Every accepted call identity binds the adapter, contract, transport, wire
-version, codec, normalizer, executable evidence, and role policy. Framing,
-transcripts, correlation, cancellation, and settlement are bounded. Missing
-usage remains unknown; it is never converted into a fabricated zero.
-
-## Durable local control
-
-Start the foreground service in the repository containing the config:
+### 3. Init a project
 
 ```bash
+cd /path/to/your-app
+git status         # should be clean before --execute
+
+relayforge init --provider claude   # writes relayforge.config.yaml + starters
+relayforge validate
+relayforge doctor                   # host, sandbox, providers — fix anything red
+```
+
+`doctor` should report Node/Git OK, a valid config, and at least one ready provider. On Linux you also want `sandbox: bwrap` and a strong process-scope when available.
+
+### 4. First run
+
+```bash
+# Optional: project memory for agents
+relayforge learn
+
+# Plan only — no agents launched
+relayforge run "Add a /health endpoint and a unit test"
+
+# When the plan looks right, spend tokens
+relayforge run "Add a /health endpoint and a unit test" --execute
+```
+
+### 5. Watch the run (optional)
+
+```bash
+# Local dashboard + read-only API (loopback only)
 relayforge serve
-relayforge serve status --json
-relayforge serve stop
+
+# Optional tmux panes for agent sessions
+relayforge tmux new
+relayforge monitor
 ```
 
-`relayforge dashboard` is a compatibility alias for the foreground service.
-The service binds literal `127.0.0.1`, writes a bounded private discovery file,
-and exposes a read-only HTTP API:
+---
 
-- `GET`/`HEAD /api/v1/health`
-- `GET`/`HEAD /api/v1/status`
-- `GET`/`HEAD /api/v1/runs`
-- `GET`/`HEAD /api/v1/runs/:run`
-- `GET`/`HEAD /api/v1/runs/:run/board`
-- `GET`/`HEAD /api/v1/runs/:run/activity`
-- `GET`/`HEAD /api/v1/runs/:run/steering`
-- `GET`/`HEAD /api/v1/runs/:run/observations`
-- `GET`/`HEAD /api/v1/runs/:run/diagnostics`
-- `GET /api/v1/runs/:run/events` for durable SSE invalidation
-
-The server rejects request bodies, credentials, foreign Host/Origin values,
-unknown routes and query parameters, malformed IDs, oversized requests, and
-unsupported methods. HTTP is observational: there is no mutation API.
-Responses are schema-versioned, allowlisted, redacted, and byte-capped.
-
-SQLite is the canonical post-cutover run history and projection source.
-Legacy JSONL state can be migrated once through strict, receipted recovery; it
-does not remain a second authority. Event retention and canonical event
-deletion are not yet an operator feature.
-
-## Steering a live run
-
-Steering is not terminal injection. Generate an id, then admit or withdraw an
-exact command against an active run and epoch:
-
-```bash
-relayforge --json steer new-id
-relayforge steer admit \
-  --project <project-name> \
-  --run <run-id> \
-  --run-epoch <run-epoch> \
-  --command-id <command-id> \
-  --task-id <task-id> \
-  --task-generation <task-generation> \
-  --session-id <session-id> \
-  --session-generation <session-generation> \
-  --not-before-attempt <attempt-generation> \
-  --body "Prioritize the regression before the next attempt"
-
-relayforge steer withdraw \
-  --project <project-name> \
-  --run <run-id> \
-  --run-epoch <run-epoch> \
-  --command-id <command-id>
-```
-
-Admission means only that the parent accepted a durable command for a future
-attempt prompt boundary. It does not prove inclusion, delivery, provider read,
-or compliance. A command can become pending, included, refused, withdrawn,
-superseded, or expired. Already running processes and immutable prompt files are
-never changed. The mutation channel is a private run-scoped Unix socket held by
-the active parent, not HTTP or tmux. See
-[docs/session-steering.md](docs/session-steering.md).
-
-## Monitor and control room
-
-```bash
-relayforge monitor --run <run-id>
-relayforge attach --run <run-id>
-relayforge status
-relayforge logs <owned-tmux-session> --lines 160
-```
-
-`monitor` is run-scoped. `logs` is only an optional tmux pane capture and takes
-the exact RelayForge-owned session name reported by `status`; it has no
-`--run` option. Tmux is not an execution or control authority. Disabling it
-does not disable the run, monitor, durable control store, or dashboard.
-
-Control-room observations use normalized, bounded records with source
-continuity and cursor semantics. Raw PTY bytes and raw provider transcripts are
-not part of the public DTO. Missing projections, stale cursors, identity
-mismatches, and over-size responses produce typed errors instead of partial or
-unsafe output.
-
-## Budgets
-
-- `unlimited`: no USD ceiling.
-- `estimated-usd`: post-response accounting and reservation tripwire. The last
-  in-flight call can overshoot; this is not a hard cap.
-- `hard-usd`: accepted only when every route proves a preauthorizing gateway.
-  Direct provider CLIs do not satisfy this contract.
-- `subscription-quota`: provider quota/limit state machine without USD
-  metering.
-
-A positive `budgetUsd` requires a positive `maxCostPerCallUsd` no greater than
-the budget. Unknown cost fails closed unless the bounded
-`allowUnknownCostCalls` policy explicitly permits it.
-
-## Offline provisioning
-
-A loop may list parent-side dependency trees under `provision`. RelayForge
-validates and copies existing local trees into every integration, attempt, and
-review worktree before an agent or verifier can observe them. Provisioning does
-not download packages, invoke installers, execute lifecycle scripts, or modify
-the original tree. It can consume substantial time and disk and must fit the
-configured bounds. See [docs/safety.md](docs/safety.md).
-
-## Current boundaries
-
-The following distinctions are deliberate release claims:
-
-- **Single-repository execution is live.** Use `workingDir` for one repository.
-- **Multi-repository execution is product-integrated.** Strict config/validation,
-  actual CLI run route, canonical ControlStore facts/views, exact repository-set
-  authority, DAG and scheduler, all-or-nothing worktree groups, worker and
-  verification through the canonical contained transport and settlement path,
-  vector integration, publication bridge, exact read isolation, durable crash
-  recovery, and real product E2Es are landed. Focused counts: authority
-  **21/21**, orchestration **12/12**, product/recovery/verifier **6/6**,
-  publication/SCM/integration **13/13**.
-- **SCM behavior is explicit and config-driven.** With `project.scm` and a P6
-  task publication plan, the run parent owns recoverable branch/PR publication,
-  bounded CI/review polling, durable observations, and reaction-to-P2 steering.
-  A run without that explicit plan performs no remote publication.
-- **Native OpenCode/Pi/Grok ordinary runs refuse before mutation** until real
-  product evidence injection is available. Contained production characterization
-  for OpenCode, Pi, and Grok is implemented and fixture-backed; real same-runner
-  release receipts are still not collected. Publishable release requires distinct
-  same-runner receipts.
-- **The loopback control service is local and read-only.** It is not a remote
-  multi-user service, a terminal gateway, or a write API.
-- **Provisioning is offline copying, not dependency installation.**
-- **No tag, npm publish, GitHub Release, or real native receipt has been
-  performed.** The GitHub repository identity is **`arbazkhan971/relayforge`**.
-
-## Useful commands
+## Daily commands
 
 ```text
-relayforge init                         create canonical starter files
-relayforge validate                     validate strict config and semantics
-relayforge doctor                       inspect host/config/provider readiness
-relayforge learn                        write PROJECT-INTELLIGENCE.md
-relayforge run <goal>                   dry-run by default
-relayforge run <goal> --execute         authorize contained provider execution
-relayforge monitor --run <id>           terminal mission-control view
-relayforge serve                        foreground local control service
-relayforge serve status|stop            inspect/stop the exact service owner
-relayforge steer new-id|admit|withdraw  future-boundary steering
-relayforge stop <run>                   request parent-owned run cancellation
-relayforge tmux pre|new|show|kill|prune manage optional owned viewports
+relayforge doctor              # is this machine / project ready?
+relayforge validate            # config schema + semantics
+relayforge run "<goal>"        # dry-run plan
+relayforge run "<goal>" --execute
+relayforge serve               # dashboard on 127.0.0.1
+relayforge status              # owned sessions
+relayforge stop <run-id>       # cancel a run
+relayforge --help
 ```
 
-Run `relayforge --help` for the complete command surface.
+---
 
-## Documentation
+## Providers that work today
 
-- **[Implementation status and release handoff](docs/implementation-status.md)** — current capabilities, evidence counts, blockers, resume order
-- [Configuration](docs/configuration.md)
-- [Architecture](docs/architecture.md)
-- [Safety model](docs/safety.md)
-- [Session steering](docs/session-steering.md)
-- [Autonomous team operations](docs/autonomous-team.md)
-- [Branding and compatibility](docs/branding.md)
-- [Release and publishing runbook](docs/publishing.md)
-- [Changelog](CHANGELOG.md)
+| Type | CLI on PATH | Notes |
+| --- | --- | --- |
+| `claude` | `claude` | Best default for most people |
+| `codex` | `codex` | ChatGPT / Codex login |
+| `gemini` | `gemini` | Gemini CLI auth |
+| `custom` | your binary | You own the contract |
+| `opencode` / `pi` / `grok` | exact pins | **Ordinary `run --execute` refuses** until product evidence injection exists |
 
-The design evidence and ADRs under `docs/reference/` and `docs/adr/` are packed
-with the release candidate so an operator can audit the claims made here.
+Day one: use **Claude, Codex, or Gemini**. Ignore OpenCode/Pi/Grok until release receipts land.
+
+---
+
+## What you get after `init`
+
+- `relayforge.config.yaml` — strict team / loop / verify config  
+- `brief.md` — project brief for agents  
+- `.loop/` — durable runs, prompts, locks (do not rename)  
+
+Compatibility: existing `loop.config.yaml` and `.loop/` still work. Binary aliases `loop` and `loop-orchestrator` call the same program as `relayforge`.
+
+---
+
+## Screenshots
+
+<p align="center">
+  <img src="assets/dashboard.png" alt="Control dashboard" width="720"><br/>
+  <sub>Local control dashboard</sub>
+</p>
+
+<p align="center">
+  <img src="assets/todo-app.png" alt="Todo example app" width="420"><br/>
+  <sub>Example app under <code>examples/todo-app</code></sub>
+</p>
+
+---
+
+## Docs
+
+| Doc | For |
+| --- | --- |
+| [Configuration](docs/configuration.md) | Full config reference |
+| [Safety](docs/safety.md) | Containment and fail-closed rules |
+| [Session steering](docs/session-steering.md) | Future-boundary steering (not terminal injection) |
+| [Architecture](docs/architecture.md) | How the control plane works |
+| [Implementation status](docs/implementation-status.md) | What’s green vs release-blocked |
+| [Publishing](docs/publishing.md) | RC / npm gates (operators) |
+
+---
+
+## Current boundaries (honest)
+
+- **Single-repo loops** with Claude/Codex/Gemini are the supported product path.  
+- **Multi-repo** is integrated but needs explicit config.  
+- **OpenCode / Pi / Grok** characterization exists; ordinary execute still fails closed.  
+- **Not on npm yet** — install from this GitHub repo until `1.0.0-rc.1` is published.  
+- No auto-merge to `main`, no invented remote PRs without explicit SCM config.
+
+---
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
+
+<p align="center">
+  <img src="assets/icon.svg" alt="" width="48"><br/>
+  <sub>github.com/arbazkhan971/relayforge</sub>
+</p>
