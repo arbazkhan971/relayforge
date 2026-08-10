@@ -88,6 +88,21 @@ npm pack --dry-run
 Do not hand-edit the manifest or rebuild the tarball after its gates. Publication
 must consume the exact uploaded artifact.
 
+## Operator readiness (secrets, runners, local substitute)
+
+Before any tag, confirm external readiness on the checklist in
+[operator-native-receipts.md](operator-native-receipts.md):
+
+- repository secrets `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `XAI_API_KEY`
+  (in addition to `NPM_TOKEN`);
+- Actions environment `npm-release` for the publish job;
+- a live self-hosted runner labeled `relayforge-cgroup` and
+  `relayforge-adapters`, **or** the documented local same-job collect path on
+  the designated characterization host while runners are unregistered.
+
+That checklist records exact `gh secret set` commands and does not claim
+receipts have been collected.
+
 ## Authorized tag workflow
 
 The committed release workflow is triggered by a tag matching `v*`:

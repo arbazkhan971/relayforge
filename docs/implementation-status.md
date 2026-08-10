@@ -236,6 +236,7 @@ capability into a successful result.
 - [Configuration](configuration.md)
 - [Session steering](session-steering.md)
 - [Publishing and release gates](publishing.md)
+- [Operator native receipts checklist](operator-native-receipts.md) — credentials, secret-set commands, runner gap, local same-job substitute, tag order
 - [Upstream source and legal ledger](upstream-sources.md)
 - [Ecosystem watch](ecosystem-watch.md)
 - [P0 provisioning audit](reference/phase-00-worktree-provisioning-audit.md)
