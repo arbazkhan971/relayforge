@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+- Replaced the blanket execute refusal for structured native adapters
+  (opencode/pi/grok) with a credential gate: ordinary `run --execute` now works
+  when the operator linked a personal subscription (installed CLI login) or the
+  matching API key, and stays fail-closed (zero-mutation) when nothing is
+  linked. Grok gains personal-subscription support (bounded `~/.grok` seeding
+  into its private home); OpenCode gains canonical `OPENAI_API_KEY` linking;
+  auth detection, schema sets, safety/configuration docs and tests updated.
+  npm release receipts still gate publication and are unchanged.
+- Added `src/viewport-registry.ts` (Phases 0-1 of docs/herdr-runtime-parity.md):
+  a durable, injectable registry of daemon-owned viewport sessions with
+  in-memory and atomic-JSON storages, semantic state transitions, attach-target
+  resolution and age pruning — the fact layer for "the daemon owns the agent
+  terminals". Covered by tests/viewport-registry.test.ts (13/13 green).
+- Added docs/herdr-runtime-parity.md (Herdr-class runtime roadmap, Phases 0-3)
+  and docs/linux-runner-runbook.md + scripts/check-relayforge-runner.mjs
+  (runner-host readiness for the self-hosted release runner).
+
 ## [1.0.0-rc.1] - 2026-08-09
 
 RelayForge's first release candidate establishes the new public identity while
