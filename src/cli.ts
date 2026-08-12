@@ -39,6 +39,14 @@ import { chooseStarterProvider, starterBrief, starterConfig, StarterProvider } f
 import { attachSession, capturePane, isSafeTmuxName, listSessions, paneTitle, sessionName, startProjectSessions, stopRun, tmuxClient } from "./tmux.js";
 import { detectHost, killViewport, openViewport, planViewport, pruneViewport, showViewport, TmuxExit } from "./tmux-workflow.js";
 import {
+  markRunViewportsExited,
+  openViewportRegistry,
+  pruneRegistryViewports,
+  recordOpenedViewport,
+  resolveAttach,
+  viewportStateDir
+} from "./viewport-wiring.js";
+import {
   assertMultiRepositoryExecutionPreflight,
   createMultiRepositoryRunAuthority
 } from "./multirepo/runtime.js";
@@ -730,9 +738,9 @@ program
   .action((sessionArg, options) => {
     const opts = program.opts();
     let session = sessionArg as string | undefined;
-    if (!session) {
-      const loaded = safeLoadConfig(opts.config, opts.json);
-      if (!loaded) return;
+    let roleHint: string | undefined;
+    const loaded = safeLoadConfig(opts.config, opts.json);
+    if (loaded) {
       try {
         assertConfigSemantics(loaded);
         if (options.run !== undefined) assertId("run", options.run);
@@ -743,13 +751,39 @@ program
       const project = getProject(loaded, options.project);
       const runsDir = resolve(loaded.rootDir, loaded.config.defaults.runDir, project.name);
       const runId = options.run ?? latestRunId(runsDir);
-      if (!runId) {
+      if (!runId && !session) {
         console.error("No runs found to attach to. Start one with `relayforge run`.");
         process.exitCode = 1;
         return;
       }
-      session = sessionName(loaded.config.defaults.namespace, project.name, runId, "team");
+      if (runId) {
+        const defaultSession = sessionName(loaded.config.defaults.namespace, project.name, runId, "team");
+        try {
+          // Phase 2: durable viewport facts resolve attach targets (role or exact name);
+          // a registry failure degrades to the legacy default team session.
+          const resolution = resolveAttach(openViewportRegistry(runsDir, runId), {
+            runId,
+            arg: session,
+            defaultSession
+          });
+          session = resolution.session;
+          if (resolution.kind === "role") roleHint = resolution.role;
+        } catch {
+          session = session ?? defaultSession;
+        }
+      }
+    } else if (!session) {
+      console.error("No RelayForge config found to resolve a session.");
+      process.exitCode = 1;
+      return;
     }
+    if (!session) {
+      console.error("No run session found to attach to.");
+      process.exitCode = 1;
+      return;
+    }
+    if (roleHint) console.log(`Attaching to role ${roleHint} (${session})`);
+    else if (sessionArg) console.log(`Attaching to session ${session}`);
     try {
       process.exitCode = attachSession(session);
     } catch (error) {
@@ -905,6 +939,17 @@ viewportOptions(tmuxCmd.command("new").aliases(["open"]))
     // When we attached, tmux already owned the terminal — anything printed here lands after detach.
     console.log(`${result.created ? "Created" : "Reusing"} tmux session ${result.session} (${Object.keys(result.panes).length} pane(s)).`);
     if (!result.attached && result.manualCommand) console.log(`Attach with: ${result.manualCommand}`);
+    // Phase 2: record the opened session as a durable daemon-owned fact (best-effort bookkeeping).
+    try {
+      recordOpenedViewport(openViewportRegistry(ctx.runsDir, ctx.runId!), {
+        runId: ctx.runId!,
+        roles: ctx.roles.map((pane) => pane.name),
+        session: result.session,
+        ownerPid: process.pid
+      });
+    } catch (error) {
+      console.error(`(viewport registry note: ${error instanceof Error ? error.message : String(error)})`);
+    }
   });
 
 viewportOptions(tmuxCmd.command("show").aliases(["ls"]))
@@ -970,6 +1015,21 @@ viewportOptions(tmuxCmd.command("kill"))
     }
     if (!report.killed.length) console.log(report.reason ?? "No RelayForge-owned sessions matched — nothing killed.");
     else for (const name of report.killed) console.log(`killed ${name}`);
+    // Phase 2: mark the killed run's durable viewport facts exited (best-effort bookkeeping).
+    try {
+      if (ctx.runId) {
+        markRunViewportsExited(openViewportRegistry(ctx.runsDir, ctx.runId), ctx.runId);
+      } else if (options.all) {
+        if (existsSync(ctx.runsDir)) {
+          for (const run of readdirSync(ctx.runsDir)) {
+            if (!existsSync(viewportStateDir(ctx.runsDir, run))) continue;
+            try {
+              markRunViewportsExited(openViewportRegistry(ctx.runsDir, run), run);
+            } catch { /* best-effort */ }
+          }
+        }
+      }
+    } catch { /* best-effort: bookkeeping never changes kill semantics */ }
   });
 
 tmuxCmd
@@ -1004,6 +1064,21 @@ tmuxCmd
       console.log(`${report.dryRun ? "would prune" : "pruned"} ${p.session} — ${why}`);
     }
     if (report.dryRun) console.log("\nRe-run without --dry-run to reap them.");
+    // Phase 2: also reap stale durable viewport facts (exited past the age bound).
+    try {
+      const pruneFacts = (runId: string): void => {
+        if (!existsSync(viewportStateDir(ctx.runsDir, runId))) return;
+        pruneRegistryViewports(openViewportRegistry(ctx.runsDir, runId));
+      };
+      if (ctx.runId) pruneFacts(ctx.runId);
+      else if (existsSync(ctx.runsDir)) {
+        for (const run of readdirSync(ctx.runsDir)) {
+          try {
+            pruneFacts(run);
+          } catch { /* best-effort */ }
+        }
+      }
+    } catch { /* best-effort: bookkeeping never changes prune semantics */ }
   });
 
 program

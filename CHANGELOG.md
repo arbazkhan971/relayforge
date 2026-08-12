@@ -15,6 +15,12 @@
   in-memory and atomic-JSON storages, semantic state transitions, attach-target
   resolution and age pruning — the fact layer for "the daemon owns the agent
   terminals". Covered by tests/viewport-registry.test.ts (13/13 green).
+- Added Phase 2 CLI-as-client wiring (`src/viewport-wiring.ts` + cli.ts):
+  `attach` resolves role/session targets through durable viewport facts
+  (legacy exact-name attach preserved), `tmux new` records opened sessions,
+  `tmux kill` marks them exited, and `tmux prune` reaps stale facts — all
+  best-effort bookkeeping that never changes tmux exit semantics. Covered by
+  tests/viewport-wiring.test.ts (6/6 green).
 - Added docs/herdr-runtime-parity.md (Herdr-class runtime roadmap, Phases 0-3)
   and docs/linux-runner-runbook.md + scripts/check-relayforge-runner.mjs
   (runner-host readiness for the self-hosted release runner).

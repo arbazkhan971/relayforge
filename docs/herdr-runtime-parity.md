@@ -1,6 +1,10 @@
 # RelayForge runtime parity: daemon-owned agent terminals (Herdr-class runtime)
 
-Status: **planned — Phase 1 core lands with 1.0.0-rc.1+1** (docs + `src/viewport-registry.ts` + tests).
+Status: **Phases 0, 1 and 2 land with 1.0.0-rc.1+1** — roadmap, durable
+viewport-session registry, and CLI-as-client wiring are implemented and green
+(`src/viewport-registry.ts`, `src/viewport-wiring.ts`, CLI attach/tmux wiring,
+and their test suites). Phase 3 (remote/SSH + macOS dev-mode) is the next slice
+and is gated on the Linux runner and a dedicated safety ADR.
 
 This document is the ordered plan to give RelayForge Herdr-class runtime capability:
 a parent daemon that OWNS agent terminal sessions, so work survives client death,
@@ -76,9 +80,14 @@ bounded and validated.
 DoD: `npx vitest run tests/viewport-registry.test.ts` green; typecheck/build
 green; ADR accepted.
 
-### Phase 2 — daemon-owned wiring (attach/monitor/tmux)
+### Phase 2 — daemon-owned wiring (attach/monitor/tmux) — implemented
 
 Goal: make the CLI a CLIENT of the registry.
+
+Status: **implemented** — `src/viewport-wiring.ts` + wiring in `src/cli.ts`
+(`attach` resolves role/session through durable facts with legacy fallback;
+`tmux new` records; `tmux kill` marks exited; `tmux prune` prunes stale facts;
+all bookkeeping is best-effort and never changes tmux exit semantics).
 
 Deliverables:
 - `relayforge attach [session]` resolves attach targets through the registry
