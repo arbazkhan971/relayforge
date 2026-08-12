@@ -59,9 +59,13 @@ replays the durable transcript during settlement.
   modes; outer containment remains authoritative.
 - Gemini and custom make no stronger provider-native safety claim.
 - OpenCode and Pi require exact executable/version/protocol/behavior evidence;
-  Pi reviewers also bind the shipped read-only helper.
-- Grok requires `XAI_API_KEY`; RelayForge does not reuse ambient subscription
-  or managed configuration. It forces a private empty HOME/GROK_HOME, disables
+  Pi reviewers also bind the shipped read-only helper. Product execution is
+  credential-gated: a linked personal subscription (installed CLI login) or an
+  API key must exist, and refusal for a missing link stays zero-mutation.
+- Grok accepts a linked `XAI_API_KEY` or a personal xAI subscription login,
+  which is seeded as a bounded copy into the private per-run Grok home (1 MiB
+  cap, symlinks never followed) so the isolation evidence is untouched. It
+  forces a private HOME/GROK_HOME, disables
   update, telemetry, trace/feedback upload, memory, subagents and web tools,
   forbids leader/serve/headless/plugin/endpoint/always-approve/yolo surfaces,
   and still requires distinct behavioral configuration, network/tool and

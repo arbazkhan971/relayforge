@@ -108,7 +108,21 @@ projects:
     expect(provider.auth).toMatchObject({ mode: "api-key", env: "OPENAI_API_KEY" });
   });
 
-  it("requires XAI_API_KEY for Grok and never treats ambient CLI state as supported auth", () => {
+  it("detects opencode api key env as its canonical link", () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    const project = RootConfigSchema.parse({
+      version: 1,
+      projects: [{
+        name: "demo",
+        providers: { native: { type: "opencode" } },
+        roles: [{ name: "dev", title: "Developer", provider: "native" }]
+      }]
+    }).projects[0];
+    const status = getAuthStatus(project)[0];
+    expect(status).toMatchObject({ apiKeyEnv: "OPENAI_API_KEY", apiKeySet: true, recommendedMode: "api-key" });
+  });
+
+  it("recommends a Grok personal subscription when the CLI login exists, and api-key when XAI_API_KEY is set", () => {
     const root = mkdtempSync(join(tmpdir(), "relayforge-auth-grok-"));
     const bin = join(root, "bin");
     mkdirSync(bin);
@@ -125,9 +139,10 @@ projects:
       }]
     }).projects[0];
 
-    const missing = getAuthStatus(project)[0];
-    expect(missing).toMatchObject({ cliAvailable: true, apiKeySet: false, recommendedMode: "env" });
-    expect(missing.notes.join(" ")).toMatch(/requires XAI_API_KEY/i);
+    const subscription = getAuthStatus(project)[0];
+    expect(subscription).toMatchObject({ cliAvailable: true, apiKeySet: false, recommendedMode: "subscription" });
+    expect(subscription.notes.join(" ")).toMatch(/personal subscription/i);
+    expect(subscription.notes.join(" ")).toMatch(/XAI_API_KEY/i);
 
     process.env.XAI_API_KEY = "test-xai-key";
     const keyed = getAuthStatus(project)[0];

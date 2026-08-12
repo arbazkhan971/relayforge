@@ -1,4 +1,7 @@
+import { cpSync, existsSync, lstatSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { ProviderConfig } from "./config/schema.js";
+import { canonicalContainedOpenCodeConfigContent } from "./adapters/contained-evidence.js";
 import { claudeAdapterDescriptor } from "./adapters/builtins/claude.js";
 import { codexAdapterDescriptor } from "./adapters/builtins/codex.js";
 import { customAdapterDescriptor } from "./adapters/builtins/custom.js";
@@ -233,7 +236,9 @@ export function buildProviderEnv(provider: ProviderConfig, req: AgentRequest, so
       : [new RegExp(`^${provider.auth.env.replace(/[^A-Za-z0-9_]/g, "")}$`)]
     : PROVIDER_ENV_ALLOW[provider.type] ?? [];
   const allow = [...BASE_ENV_ALLOW.map((n) => new RegExp(`^${n}$`)), ...providerAllow];
-  if (provider.type !== "pi" && provider.auth?.env) {
+  // OpenCode's child contract allows exactly OPENCODE_CONFIG_CONTENT; a selected API key is
+  // synthesized INTO that overlay below and never exposed raw to the child.
+  if (provider.type !== "pi" && provider.type !== "opencode" && provider.auth?.env) {
     allow.push(new RegExp(`^${provider.auth.env.replace(/[^A-Za-z0-9_]/g, "")}$`));
   }
   for (const [k, v] of Object.entries(source)) {
@@ -242,6 +247,16 @@ export function buildProviderEnv(provider: ProviderConfig, req: AgentRequest, so
   }
   // Config-provided provider env wins over anything inherited.
   for (const [k, v] of Object.entries(provider.env ?? {})) env[k] = v;
+  // OpenCode: synthesize the parent-controlled overlay from a linked OpenAI key so the child
+  // only ever sees OPENCODE_CONFIG_CONTENT (its descriptor allows no other environment name)
+  // while the operator still links a single API key.
+  if (provider.type === "opencode" && env[OPENCODE_CONFIG_CONTENT_ENV] === undefined) {
+    const keyName = provider.auth?.env ?? "OPENAI_API_KEY";
+    const raw = source[keyName];
+    if (typeof raw === "string" && raw.length > 0 && !raw.includes("\0") && Buffer.byteLength(raw, "utf8") <= 64 * 1024) {
+      env[OPENCODE_CONFIG_CONTENT_ENV] = canonicalContainedOpenCodeConfigContent(raw);
+    }
+  }
   // Preserve the established marker contract for legacy one-shot adapters. Structured native
   // adapters receive their role/system data on their typed protocol/config channels instead and
   // therefore receive no unrelated RelayForge metadata in their environment.
@@ -397,18 +412,69 @@ export function buildHeadlessCommand(
 
   if (descriptor.id === "grok") {
     const stateDirectory = req.adapterStateDirectory ?? "";
+    const grokEnv = buildGrokPrivateEnvironment(stateDirectory);
+    // Personal xAI subscription: seed the private per-run Grok home from the operator's real
+    // login so the still-isolated child can authenticate without an API key (bounded copy; the
+    // isolation evidence is untouched). Key-based routes do not seed anything.
+    if (stateDirectory !== "" && grokSubscriptionSeedWanted(provider)) {
+      seedGrokSubscriptionHome(stateDirectory);
+    }
     return {
       command: "grok",
       args: [...buildGrokInvocationArguments({
         role: req.readOnly ? "reviewer" : "worker",
         ...(provider.model === undefined ? {} : { model: provider.model })
       })],
-      env: { ...env, ...buildGrokPrivateEnvironment(stateDirectory) }
+      env: { ...env, ...grokEnv }
     };
   }
 
   if (!provider.command) throw new Error("Custom provider requires a command.");
   return { command: provider.command, args: [...provider.args, combinedPrompt(req)], env };
+}
+
+const GROK_SUBSCRIPTION_MAX_TOTAL_BYTES = 1 * 1024 * 1024;
+const GROK_SUBSCRIPTION_MAX_FILE_BYTES = 256 * 1024;
+
+/** True when the provider route should run on the operator's xAI subscription login. */
+export function grokSubscriptionSeedWanted(provider: ProviderConfig): boolean {
+  if (provider.auth?.mode === "subscription") return true;
+  if (provider.auth?.mode === "api-key" || provider.auth?.env !== undefined) return false;
+  return process.env.XAI_API_KEY === undefined;
+}
+
+/**
+ * Bounded copy of the operator's `~/.grok` login directory into the private per-run Grok home.
+ * Symlinks are never followed, files are size-capped, and the total budget is 1 MiB — this is
+ * credential plumbing, never a rubber-stamp for ambient configuration (managed config still
+ * requires key-based billing and the isolation evidence contract unchanged).
+ */
+export function seedGrokSubscriptionHome(stateDirectory: string): void {
+  const realHome = process.env.HOME;
+  if (!realHome || realHome.length === 0) return;
+  const grokSource = join(realHome, ".grok");
+  if (!existsSync(grokSource)) return;
+  const grokHome = join(stateDirectory, "grok-home");
+  mkdirSync(grokHome, { recursive: true });
+  let budget = GROK_SUBSCRIPTION_MAX_TOTAL_BYTES;
+  cpSync(grokSource, grokHome, {
+    recursive: true,
+    dereference: false,
+    errorOnExist: false,
+    filter: (src: string): boolean => {
+      let stats;
+      try {
+        stats = lstatSync(src);
+      } catch {
+        return false;
+      }
+      if (stats.isDirectory()) return true;
+      if (!stats.isFile()) return false;
+      if (stats.size > GROK_SUBSCRIPTION_MAX_FILE_BYTES) return false;
+      budget -= stats.size;
+      return budget >= 0;
+    }
+  });
 }
 
 export function shellQuote(value: string): string {

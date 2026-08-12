@@ -38,7 +38,7 @@ const providerDefaults: Record<ProviderConfig["type"], { commands: string[]; env
   },
   opencode: {
     commands: ["opencode"],
-    envs: []
+    envs: ["OPENAI_API_KEY", "OPENCODE_CONFIG_CONTENT"]
   },
   pi: {
     commands: ["pi"],
@@ -59,19 +59,23 @@ export function getAuthStatus(project: ProjectConfig): ProviderAuthStatus[] {
     const configuredEnv = provider.auth.env;
     const apiKeyEnv = configuredEnv ?? defaults.envs.find((env) => Boolean(process.env[env]));
     const apiKeySet = Boolean(apiKeyEnv && process.env[apiKeyEnv]);
-    const apiKeyOnly = provider.type === "grok";
-    const recommendedMode = apiKeySet ? "api-key" : commandPath && !apiKeyOnly ? "subscription" : "env";
+    // Every provider type supports a personal subscription through its installed CLI login
+    // state; api-key mode is an alternative for operators who prefer key-based billing.
+    const recommendedMode = apiKeySet ? "api-key" : commandPath ? "subscription" : "env";
     const notes: string[] = [];
 
     if (apiKeySet) {
       notes.push(`Using ${apiKeyEnv} from environment.`);
-    } else if (commandPath && apiKeyOnly) {
-      notes.push(`Local ${provider.type} CLI found, but RelayForge requires XAI_API_KEY and does not reuse ambient subscription or managed configuration.`);
     } else if (commandPath) {
-      notes.push(`Using local ${provider.type} CLI authentication state.`);
+      notes.push(`Using local ${provider.type} CLI authentication state (personal subscription).`);
+      if (provider.type === "grok") {
+        notes.push("xAI subscription login is used through the adapter's isolated Grok home; set XAI_API_KEY instead for key-based billing.");
+      } else if (provider.type === "opencode") {
+        notes.push("Set OPENAI_API_KEY for canonical key-based billing, or OPENCODE_CONFIG_CONTENT for a provider-specific overlay.");
+      }
     } else if (provider.type !== "custom") {
       notes.push(defaults.envs.length > 0
-        ? `Install ${defaults.commands.join(" or ")} or set one of: ${defaults.envs.join(", ")}.`
+        ? `Install ${defaults.commands.join(" or ")} (to link a personal subscription) or set one of: ${defaults.envs.join(", ")}.`
         : `Install ${defaults.commands.join(" or ")}.`);
     }
 

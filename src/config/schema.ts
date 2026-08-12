@@ -75,6 +75,8 @@ export const ProviderSchema = z
       ? new Set(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"])
       : provider.type === "grok"
         ? new Set(["XAI_API_KEY"])
+      : provider.type === "opencode"
+        ? new Set(["OPENAI_API_KEY", "OPENCODE_CONFIG_CONTENT"])
       : new Set<string>();
     // Native structured adapters have a compile-time launch recipe. Raw command/argv/env overrides
     // could replace ACP/RPC mode, relax read-only policy, smuggle a shell, or change the protocol

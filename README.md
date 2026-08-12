@@ -133,9 +133,11 @@ relayforge --help
 | `codex` | `codex` | ChatGPT / Codex login |
 | `gemini` | `gemini` | Gemini CLI auth |
 | `custom` | your binary | You own the contract |
-| `opencode` / `pi` / `grok` | exact pins | **Ordinary `run --execute` refuses** until product evidence injection exists |
+| `opencode` / `pi` / `grok` | exact pins | **Personal subscription (CLI login) or linked API key required**; execute refuses only when nothing is linked |
 
-Day one: use **Claude, Codex, or Gemini**. Ignore OpenCode/Pi/Grok until release receipts land.
+OpenCode / Pi / Grok run on their own contained routes once you link a credential:
+install + log into the CLI (personal subscription) or set the matching API key.
+Release receipts for npm publication are a separate operator gate.
 
 ---
 
@@ -190,7 +192,7 @@ cd examples/todo-app && npm start   # http://localhost:3000
 
 - **Single-repo loops** with Claude/Codex/Gemini are the supported product path.  
 - **Multi-repo** is integrated but needs explicit config.  
-- **OpenCode / Pi / Grok** characterization exists; ordinary execute still fails closed.  
+- **OpenCode / Pi / Grok** characterization exists; ordinary execute is credential-gated (linked subscription or API key), and release receipts still gate npm publish.  
 - **Not on npm yet** — install from this GitHub repo until `1.0.0-rc.1` is published.  
 - No auto-merge to `main`, no invented remote PRs without explicit SCM config.
 

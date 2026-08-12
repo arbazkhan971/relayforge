@@ -1,19 +1,27 @@
 /**
  * Zero-mutation ordinary-CLI product preflight for structured native adapters.
  *
- * Ordinary `relayforge run --execute` has no consumer that loads contained compatibility evidence
- * into RunContext before prepareRun. Without that evidence path, opencode/pi/grok would create
- * run/control/worktree state and only then refuse at reservation time. This preflight refuses those
- * routes while the command is still read-only.
+ * Native adapters (opencode/pi/grok) run under an ordinary
+ * `relayforge run --execute` only when the operator has LINKED a credential for
+ * them — an API key in the parent environment (selected by `auth.env` when
+ * present, else the adapter's canonical key name) or a personal subscription
+ * login on the installed CLI (the same LOCAL trust model claude/codex/gemini
+ * already use for their subscription mode). With neither, the command is
+ * refused while it is still read-only: before run directory, control plane, or
+ * worktree creation, so the refusal remains zero-mutation.
  *
- * Dry-run is intentionally inert. Custom/claude/codex/gemini are unchanged. This does not probe
- * paid endpoints, accept unauthenticated env booleans, or weaken the standalone characterization
- * collector.
+ * Dry-run is intentionally inert. Custom/claude/codex/gemini are unchanged.
+ * This does not probe paid endpoints, accept unauthenticated env booleans, copy
+ * or expand credentials, or weaken the standalone paid characterization
+ * collector — release receipts that gate the publishable npm workflow are
+ * unchanged and still require the explicit same-runner collector.
  */
 
+import { accessSync, constants } from "node:fs";
+import { resolve } from "node:path";
 import type { LoopConfig, ProjectConfig } from "../config/schema.js";
 import { buildProviderChain } from "../routing.js";
-import { containedNativeAdapterIds, isContainedNativeAdapterId } from "./contained-evidence.js";
+import { containedNativeAdapterIds, isContainedNativeAdapterId, type ContainedNativeAdapterId } from "./contained-evidence.js";
 
 export const NATIVE_ADAPTER_PRODUCT_PREFLIGHT_CODE = "NATIVE_ADAPTER_EVIDENCE_UNAVAILABLE" as const;
 
@@ -24,6 +32,33 @@ export class NativeAdapterProductPreflightError extends Error {
     super(`${NATIVE_ADAPTER_PRODUCT_PREFLIGHT_CODE}: ${message}`);
     this.name = "NativeAdapterProductPreflightError";
   }
+}
+
+/** Canonical API-key environment names per native adapter (product credential gate). */
+export const ADAPTER_KEY_ENVS: Readonly<Record<ContainedNativeAdapterId, readonly string[]>> = Object.freeze({
+  opencode: Object.freeze(["OPENAI_API_KEY"]),
+  pi: Object.freeze(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"]),
+  grok: Object.freeze(["XAI_API_KEY"])
+});
+
+export type NativeAdapterCredentialResult =
+  | { ok: true; mode: "subscription" | "api-key"; env?: string }
+  | { ok: false; reasons: readonly string[] };
+
+function defaultCliAvailable(adapterId: ContainedNativeAdapterId): boolean {
+  // No shell: bash on macOS sources ~/.bashrc even for `bash -c` and can prepend developer
+  // directories (fnm, ~/.local/bin) to PATH — exactly the login-shell pollution this project
+  // fixed elsewhere. Pure PATH scanning is deterministic, race-free, and fast.
+  for (const dir of (process.env.PATH ?? "").split(":")) {
+    if (!dir) continue;
+    try {
+      accessSync(resolve(dir, adapterId), constants.X_OK);
+      return true;
+    } catch {
+      // keep scanning
+    }
+  }
+  return false;
 }
 
 /** Provider keys that can actually be billed/launched for one selected loop (roles + fallback + P6). */
@@ -51,32 +86,77 @@ export function reachableProviderKeysForLoop(project: ProjectConfig, loop: LoopC
 }
 
 /**
- * Read-only execute preflight. Call before prepareRun. When `execute` is false (dry-run), this is a
- * no-op so planning remains accepted without provider evidence.
+ * Decide whether a native adapter has a linked credential on this host.
+ * `source` and `cliAvailable` are seams for tests; production uses process.env
+ * and a pure PATH scan (never a login shell).
+ */
+export function nativeAdapterCredentialGate(
+  adapterId: ContainedNativeAdapterId,
+  provider: ProjectConfig["providers"][string],
+  source?: Readonly<Record<string, string | undefined>>,
+  cliAvailable?: (adapterId: ContainedNativeAdapterId) => boolean
+): NativeAdapterCredentialResult {
+  const env = source ?? process.env;
+  const hasCli = cliAvailable ? cliAvailable(adapterId) : defaultCliAvailable(adapterId);
+  const selected = provider.auth?.env;
+  const bounded = (name: string): boolean => {
+    const value = env[name];
+    return typeof value === "string" && value.length > 0 && !value.includes("\0");
+  };
+
+  const requireKey = selected !== undefined || provider.auth?.mode === "api-key";
+  if (requireKey) {
+    const candidates = selected === undefined ? ADAPTER_KEY_ENVS[adapterId] : [selected];
+    const present = candidates.find(bounded);
+    if (present !== undefined) return { ok: true, mode: "api-key", env: present };
+    return { ok: false, reasons: [`mode is api-key but none of ${candidates.join(" / ")} is set in the parent environment`] };
+  }
+
+  // subscription or auto: personal CLI login is the same local trust model as
+  // claude/codex/gemini subscription mode. Nothing is probed or uploaded.
+  if (hasCli) return { ok: true, mode: "subscription" };
+
+  const keyNames = ADAPTER_KEY_ENVS[adapterId];
+  if (keyNames.some(bounded)) return { ok: true, mode: "api-key", env: keyNames.find(bounded) };
+
+  return {
+    ok: false,
+    reasons: [`${adapterId} CLI is not on PATH (no personal subscription login) and none of ${keyNames.join(" / ")} is set (no linked API key)`]
+  };
+}
+
+/**
+ * Read-only execute preflight. Call before prepareRun. When `execute` is false
+ * (dry-run), this is a no-op so planning remains accepted without credentials.
  */
 export function assertOrdinaryExecuteNativeAdapterPreflight(
   project: ProjectConfig,
   loop: LoopConfig,
-  execute: boolean
+  execute: boolean,
+  opts?: {
+    source?: Readonly<Record<string, string | undefined>>;
+    cliAvailable?: (adapterId: ContainedNativeAdapterId) => boolean;
+  }
 ): void {
   if (!execute) return;
 
-  const refused: string[] = [];
+  const refused: Array<{ key: string; type: ContainedNativeAdapterId; reasons: readonly string[] }> = [];
   for (const providerKey of reachableProviderKeysForLoop(project, loop)) {
     const provider = project.providers[providerKey];
     if (!provider || !isContainedNativeAdapterId(provider.type)) continue;
-    refused.push(`${providerKey} (type ${provider.type})`);
+    const gate = nativeAdapterCredentialGate(provider.type, provider, opts?.source, opts?.cliAvailable);
+    if (!gate.ok) refused.push({ key: providerKey, type: provider.type, reasons: gate.reasons });
   }
   if (refused.length === 0) return;
 
-  const adapters = containedNativeAdapterIds.join("/");
+  const details = refused
+    .map(({ key, type, reasons }) => `${key} (type ${type}): ${reasons.join("; ")}`)
+    .join("; ");
   throw new NativeAdapterProductPreflightError(
-    `ordinary relayforge run --execute has no parent-contained compatibility evidence injection path for structured native adapter(s): ${refused.join(", ")}. ` +
+    `ordinary relayforge run --execute requires a linked credential for structured native adapter(s): ${details}. ` +
       `Refusing before run directory, control plane, or worktree creation. ` +
-      `${adapters} require verified contained evidence produced by the explicit paid characterization collector on a designated runner; ` +
-      `they are not launched from unauthenticated env flags or hidden probes. ` +
-      `Product injection of contained compatibility evidence is not yet supported for ordinary execute; ` +
-      `the explicit paid collector is release characterization only. ` +
-      `Use a supported route (claude/codex/gemini/custom) for ordinary execute.`
+      `Link a personal subscription by installing and logging into the adapter CLI, or set the matching API key in ` +
+      `the parent environment (see \`relayforge doctor\` and \`relayforge auth status\`). ` +
+      `Nothing is probed, uploaded, or copied by this check.`
   );
 }

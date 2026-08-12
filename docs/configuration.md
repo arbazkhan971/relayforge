@@ -172,6 +172,24 @@ Common provider fields are:
 does not place secrets in the durable control plane or public observations.
 Use `relayforge auth status` and `relayforge doctor` to inspect readiness.
 
+Bring-your-own-subscription works for every provider type:
+
+- `subscription` (default when the CLI is installed): RelayForge uses the
+  operator's personal login state under the caller's home directory — the same
+  local trust model for claude/codex/gemini and for opencode/pi/grok, whose
+  contained routes additionally keep their private per-run state (Grok seeds a
+  bounded copy of `~/.grok` into its isolated home).
+- `api-key`: set the selected environment variable (`auth.env`), e.g.
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `XAI_API_KEY`. OpenCode always
+  synthesizes the parent-controlled `OPENCODE_CONFIG_CONTENT` overlay from a
+  linked key; the raw key never reaches the child.
+- `env`: a named environment variable the provider reads directly.
+
+On ordinary `run --execute`, a structured native adapter (opencode/pi/grok)
+is refused **before any mutation** when neither a subscription login nor a
+linked API key exists — zero-mutation, fail-closed. Linking one of them is what
+enables the route; nothing is probed or uploaded by the check.
+
 ### Claude, Codex, Gemini, and custom
 
 These adapters preserve their established non-interactive builders and output

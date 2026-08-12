@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import {
   assertOrdinaryExecuteNativeAdapterPreflight,
   NATIVE_ADAPTER_PRODUCT_PREFLIGHT_CODE,
   NativeAdapterProductPreflightError,
+  nativeAdapterCredentialGate,
   reachableProviderKeysForLoop
 } from "../src/adapters/native-product-preflight.js";
 import type { LoopConfig, ProjectConfig } from "../src/config/schema.js";
@@ -75,6 +76,12 @@ function loopOf(project: ProjectConfig): LoopConfig {
   return project.loops[0]!;
 }
 
+/** No native CLI is resolvable (no personal subscription) and no key is set. */
+const NO_CREDENTIAL: { source: Record<string, string | undefined>; cliAvailable: () => boolean } = {
+  source: {},
+  cliAvailable: () => false
+};
+
 function singleRepoConfig(root: string, providerType: string): string {
   const path = join(root, "loop.config.yaml");
   writeFileSync(path, `version: 1
@@ -126,7 +133,7 @@ projects:
   return path;
 }
 
-function runCli(root: string, configPath: string, extra: string[] = []): ReturnType<typeof spawnSync> {
+function runCli(root: string, configPath: string, extra: string[] = [], env: Record<string, string> = {}): ReturnType<typeof spawnSync> {
   return spawnSync(
     process.execPath,
     [TSX, CLI, "--config", configPath, "run", "goal", ...extra, "--run", "must-not-exist"],
@@ -134,19 +141,32 @@ function runCli(root: string, configPath: string, extra: string[] = []): ReturnT
       cwd: root,
       encoding: "utf8",
       env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
-        // No fake "provider available" flags — preflight must not honor unauthenticated booleans.
+        PATH: env.PATH ?? "/usr/bin:/bin",
+        // No fake "provider available" flags — the gate honors only real CLI/credential state.
         RELAYFORGE_ALLOW_NATIVE: "1",
         OPENCODE_AVAILABLE: "1",
         PI_AVAILABLE: "1",
-        GROK_AVAILABLE: "1"
+        GROK_AVAILABLE: "1",
+        ...env
       },
       timeout: 30_000
     }
   );
 }
 
-describe("ordinary execute native adapter product preflight", () => {
+/** A PATH with NO native adapter CLI resolveable — deterministic regardless of the dev machine. */
+function emptyBinPath(root: string): string {
+  const dir = join(root, "empty-bin");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** Canonical temp root: macOS /var is a symlink to /private/var which defeats repo identity probes. */
+function tempRoot(label: string): string {
+  return mkdtempSync(join(realpathSync(tmpdir()), label));
+}
+
+describe("ordinary execute native adapter product preflight (credential gate)", () => {
   it("is inert for dry-run and for non-native providers on execute", () => {
     const native = baseProject({
       worker: provider("opencode"),
@@ -161,21 +181,74 @@ describe("ordinary execute native adapter product preflight", () => {
     expect(() => assertOrdinaryExecuteNativeAdapterPreflight(supported, loopOf(supported), true)).not.toThrow();
   });
 
-  it("refuses opencode/pi/grok routes with a stable code before any mutation", () => {
+  it("allows opencode/pi/grok execute when a linked API key is present", () => {
+    for (const [type, key] of [
+      ["opencode", "OPENAI_API_KEY"],
+      ["pi", "ANTHROPIC_API_KEY"],
+      ["grok", "XAI_API_KEY"]
+    ] as const) {
+      const project = baseProject({ worker: provider(type), review: provider("claude") });
+      const result = nativeAdapterCredentialGate(type, project.providers.worker!, { [key]: "test-key" }, () => false);
+      expect(result).toEqual({ ok: true, mode: "api-key", env: key });
+      expect(() =>
+        assertOrdinaryExecuteNativeAdapterPreflight(project, loopOf(project), true, {
+          source: { [key]: "test-key" },
+          cliAvailable: () => false
+        })
+      ).not.toThrow();
+    }
+  });
+
+  it("allows execute when the operator linked a personal subscription (CLI login), with no key", () => {
+    for (const type of ["opencode", "pi", "grok"] as const) {
+      const project = baseProject({ worker: provider(type), review: provider("claude") });
+      const gate = nativeAdapterCredentialGate(type, project.providers.worker!, {}, () => true);
+      expect(gate).toEqual({ ok: true, mode: "subscription" });
+      expect(() =>
+        assertOrdinaryExecuteNativeAdapterPreflight(project, loopOf(project), true, {
+          source: {},
+          cliAvailable: () => true
+        })
+      ).not.toThrow();
+    }
+  });
+
+  it("honors an explicit api-key mode even when a CLI login exists (fail closed on absent key)", () => {
+    const project = baseProject({
+      worker: { ...provider("grok"), auth: { mode: "api-key", configured: true } },
+      review: provider("claude")
+    });
+    expect(() =>
+      assertOrdinaryExecuteNativeAdapterPreflight(project, loopOf(project), true, {
+        source: {},
+        cliAvailable: () => true
+      })
+    ).toThrow(NativeAdapterProductPreflightError);
+  });
+
+  it("refuses opencode/pi/grok routes with a stable code before any mutation when nothing is linked", () => {
     for (const type of ["opencode", "pi", "grok"] as const) {
       const project = baseProject({
         worker: provider(type),
         review: provider("claude")
       });
-      expect(() => assertOrdinaryExecuteNativeAdapterPreflight(project, loopOf(project), true)).toThrow(NativeAdapterProductPreflightError);
+      expect(() =>
+        assertOrdinaryExecuteNativeAdapterPreflight(project, loopOf(project), true, {
+          source: NO_CREDENTIAL.source,
+          cliAvailable: NO_CREDENTIAL.cliAvailable
+        })
+      ).toThrow(NativeAdapterProductPreflightError);
       try {
-        assertOrdinaryExecuteNativeAdapterPreflight(project, loopOf(project), true);
+        assertOrdinaryExecuteNativeAdapterPreflight(project, loopOf(project), true, {
+          source: NO_CREDENTIAL.source,
+          cliAvailable: NO_CREDENTIAL.cliAvailable
+        });
       } catch (error) {
         expect(error).toBeInstanceOf(NativeAdapterProductPreflightError);
         expect((error as NativeAdapterProductPreflightError).code).toBe(NATIVE_ADAPTER_PRODUCT_PREFLIGHT_CODE);
         expect((error as Error).message).toMatch(new RegExp(`${NATIVE_ADAPTER_PRODUCT_PREFLIGHT_CODE}:.*${type}`, "u"));
         expect((error as Error).message).toMatch(/before run directory, control plane, or worktree creation/u);
-        expect((error as Error).message).toMatch(/explicit paid characterization collector/u);
+        expect((error as Error).message).toMatch(/link a personal subscription|matching API key/iu);
       }
     }
   });
@@ -203,26 +276,31 @@ describe("ordinary execute native adapter product preflight", () => {
       } as ProjectConfig["multiRepository"]
     );
     expect(reachableProviderKeysForLoop(project, loopOf(project))).toEqual(expect.arrayContaining(["p6", "worker", "review"]));
-    expect(() => assertOrdinaryExecuteNativeAdapterPreflight(project, loopOf(project), true)).toThrow(/p6 \(type pi\)/u);
+    expect(() =>
+      assertOrdinaryExecuteNativeAdapterPreflight(project, loopOf(project), true, {
+        source: NO_CREDENTIAL.source,
+        cliAvailable: NO_CREDENTIAL.cliAvailable
+      })
+    ).toThrow(/p6 \(type pi\)/u);
   });
 });
 
-describe("CLI subprocess: zero-mutation native execute refusal", () => {
+describe("CLI subprocess: credential-gated native execute", () => {
   it.each(["opencode", "pi", "grok"] as const)(
-    "refuses single-repo %s before creating .loop and without starting a provider",
+    "refuses single-repo %s without a linked credential, before creating .loop and without starting a provider",
     (type) => {
       const root = mkdtempSync(join(tmpdir(), `relayforge-native-preflight-${type}-`));
       registerOwnedTemp(root);
       writeFileSync(join(root, "README.md"), "fixture\n");
       const configPath = singleRepoConfig(root, type);
       const marker = join(root, "provider-must-not-start");
-      // If any provider binary were spawned with this PATH entry, the marker would appear.
+      // Trap binaries exist but are NOT on PATH — the gate must not invent a CLI login.
       const trap = join(root, "bin");
       mkdirSync(trap, { mode: 0o700 });
       for (const name of ["opencode", "pi", "grok", type]) {
         writeFileSync(join(trap, name), `#!/bin/sh\necho started > ${marker}\nexit 0\n`, { mode: 0o700 });
       }
-      const result = runCli(root, configPath, ["--execute"]);
+      const result = runCli(root, configPath, ["--execute"], { PATH: emptyBinPath(root) });
       expect(result.status).toBe(1);
       expect(result.stderr).toMatch(new RegExp(NATIVE_ADAPTER_PRODUCT_PREFLIGHT_CODE, "u"));
       expect(result.stderr).toMatch(new RegExp(type, "u"));
@@ -232,7 +310,36 @@ describe("CLI subprocess: zero-mutation native execute refusal", () => {
     }
   );
 
-  it("accepts dry-run for a structured native provider without the evidence refusal", () => {
+  it("passes the preflight when an API key is linked and fails later for unrelated reasons", () => {
+    const root = mkdtempSync(join(tmpdir(), "relayforge-native-preflight-key-"));
+    registerOwnedTemp(root);
+    writeFileSync(join(root, "README.md"), "fixture\n");
+    const configPath = singleRepoConfig(root, "opencode");
+    const result = runCli(root, configPath, ["--execute"], {
+      PATH: emptyBinPath(root),
+      OPENAI_API_KEY: "test-key"
+    });
+    // The credential gate is satisfied; any failure now must NOT be the preflight refusal.
+    expect(result.stderr ?? "").not.toMatch(new RegExp(NATIVE_ADAPTER_PRODUCT_PREFLIGHT_CODE, "u"));
+    expect(result.stderr ?? "").not.toMatch(/Refusing before run directory/u);
+  });
+
+  it("passes the preflight for a personal subscription (CLI on PATH) route and never uses the refusal", () => {
+    const root = mkdtempSync(join(tmpdir(), "relayforge-native-preflight-sub-"));
+    registerOwnedTemp(root);
+    writeFileSync(join(root, "README.md"), "fixture\n");
+    const configPath = singleRepoConfig(root, "grok");
+    const trap = join(root, "bin");
+    mkdirSync(trap, { mode: 0o700 });
+    writeFileSync(join(trap, "grok"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    writeFileSync(join(trap, "opencode"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    writeFileSync(join(trap, "pi"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const result = runCli(root, configPath, ["--execute"], { PATH: `${trap}:${emptyBinPath(root)}:/usr/bin:/bin` });
+    expect(result.stderr ?? "").not.toMatch(new RegExp(NATIVE_ADAPTER_PRODUCT_PREFLIGHT_CODE, "u"));
+    expect(result.stderr ?? "").not.toMatch(/Refusing before run directory/u);
+  });
+
+  it("accepts dry-run for a structured native provider without the credential refusal", () => {
     const root = mkdtempSync(join(tmpdir(), "relayforge-native-preflight-dry-"));
     registerOwnedTemp(root);
     writeFileSync(join(root, "README.md"), "fixture\n");
@@ -244,13 +351,14 @@ describe("CLI subprocess: zero-mutation native execute refusal", () => {
     execFileSync("git", ["commit", "-qm", "baseline"], { cwd: root });
     const configPath = singleRepoConfig(root, "opencode");
     const result = runCli(root, configPath, []);
-    // Dry-run must not hit the native evidence refusal. It may still fail later for unrelated
-    // reasons (missing sandbox, etc.); the critical invariant is the preflight is inert.
+    // Dry-run must not hit the credential refusal. It may still fail later for unrelated
+    // reasons (missing sandbox, host ledger anchors, etc.); the critical invariant is that
+    // the preflight is inert.
     expect(result.stderr ?? "").not.toMatch(new RegExp(NATIVE_ADAPTER_PRODUCT_PREFLIGHT_CODE, "u"));
   });
 
-  it("refuses a P6 multi-repository pi route before .loop exists", () => {
-    const root = mkdtempSync(join(tmpdir(), "relayforge-native-preflight-p6-"));
+  it("refuses a P6 multi-repository pi route before .loop exists when nothing is linked", () => {
+    const root = tempRoot("relayforge-native-preflight-p6-");
     registerOwnedTemp(root);
     const alpha = join(root, "alpha");
     execFileSync("git", ["init", "-q", "-b", "main", alpha]);
@@ -265,7 +373,8 @@ describe("CLI subprocess: zero-mutation native execute refusal", () => {
     const trap = join(root, "bin");
     mkdirSync(trap, { mode: 0o700 });
     writeFileSync(join(trap, "pi"), `#!/bin/sh\necho started > ${marker}\nexit 0\n`, { mode: 0o700 });
-    const result = runCli(root, configPath, ["--execute"]);
+    // PATH keeps git for the repository identity probe but exposes NO native CLI to scan.
+    const result = runCli(root, configPath, ["--execute"], { PATH: `${emptyBinPath(root)}:/usr/bin:/bin` });
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(new RegExp(NATIVE_ADAPTER_PRODUCT_PREFLIGHT_CODE, "u"));
     expect(result.stderr).toMatch(/pi/u);

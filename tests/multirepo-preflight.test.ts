@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,10 +25,10 @@ function repository(root: string, name: string): string {
   return path;
 }
 
-function configuration(root: string, providerType: string, repositoryPath = "alpha", publication = false): string {
+function configuration(root: string, providerType: string, repositoryPath = "alpha", publication = false, authSnippet = ""): string {
   const provider = providerType === "custom"
     ? `{ type: custom, command: ${JSON.stringify(process.execPath)} }`
-    : `{ type: ${providerType} }`;
+    : `{ type: ${providerType}${authSnippet} }`;
   const publicationBlock = publication ? `
           publication:
             policyApproved: true
@@ -85,11 +85,14 @@ function refused(root: string, configPath: string): ReturnType<typeof spawnSync>
 
 describe("P6 zero-mutation product preflight", () => {
   it("rejects a native structured multi-root provider before prepareRun creates .loop", () => {
-    const root = mkdtempSync(join(tmpdir(), "relayforge-p6-native-preflight-"));
+    // Canonical temp root: macOS /var is a symlink to /private/var which can defeat repo identity probes.
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "relayforge-p6-native-preflight-"));
     registerOwnedTemp(root);
     repository(root, "alpha");
     git(join(root, "alpha"), "branch", "integration");
-    const result = refused(root, configuration(root, "opencode"));
+    // Pin api-key mode so the refusal is deterministic even on machines with opencode installed:
+    // the credential gate fails closed on the missing OPENAI_API_KEY before any CLI-login fallback.
+    const result = refused(root, configuration(root, "opencode", "alpha", false, ", auth: { mode: 'api-key' }"));
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/NATIVE_ADAPTER_EVIDENCE_UNAVAILABLE/u);
     expect(result.stderr).toMatch(/opencode/u);

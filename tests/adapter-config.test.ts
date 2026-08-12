@@ -52,11 +52,15 @@ describe("native adapter configuration", () => {
     expect(issue?.message).not.toContain("Codex");
   });
 
-  it("allows only descriptor-closed Pi authentication environment names", () => {
+  it("allows only descriptor-closed Pi and OpenCode authentication environment names", () => {
     expect(ProviderSchema.safeParse({ type: "pi", auth: { env: "OPENAI_API_KEY" } }).success).toBe(true);
     expect(ProviderSchema.safeParse({ type: "pi", auth: { env: "OPENAI_BASE_URL" } }).success).toBe(false);
     expect(ProviderSchema.safeParse({ type: "pi", auth: { env: "LD_PRELOAD" } }).success).toBe(false);
-    expect(ProviderSchema.safeParse({ type: "opencode", auth: { env: "OPENAI_API_KEY" } }).success).toBe(false);
+    // Personal-subscription linking: OpenCode accepts its canonical key or a pre-expanded overlay.
+    expect(ProviderSchema.safeParse({ type: "opencode", auth: { env: "OPENAI_API_KEY" } }).success).toBe(true);
+    expect(ProviderSchema.safeParse({ type: "opencode", auth: { env: "OPENCODE_CONFIG_CONTENT" } }).success).toBe(true);
+    expect(ProviderSchema.safeParse({ type: "opencode", auth: { env: "ANTHROPIC_API_KEY" } }).success).toBe(false);
+    expect(ProviderSchema.safeParse({ type: "opencode", auth: { env: "LD_PRELOAD" } }).success).toBe(false);
   });
 
   it("enforces command, argv, model and environment bounds", () => {
