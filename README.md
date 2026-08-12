@@ -53,7 +53,12 @@ npm is **not** on the registry yet. Install from GitHub:
 - **Node.js** 20.x or ≥22  
 - **Git**  
 - At least one agent CLI you use day-to-day: **`claude`**, **`codex`**, or **`gemini`**  
-- **Linux** recommended for full safety (Bubblewrap + user cgroup). macOS works with weaker containment.
+- **Linux** recommended for full safety (Bubblewrap + user cgroup). macOS works
+  with weaker containment: **dry-run plans, `doctor`, `serve` (dashboard) and
+  the CLI all work on macOS** — only `--execute` still fails closed there,
+  because the money ledger needs `/proc/self/fd` and agent processes need a
+  cgroup-v2 strong scope (Linux provides both). Plan on macOS, execute on a
+  Linux box (see `docs/linux-runner-runbook.md`).
 
 ```bash
 node -v && git --version

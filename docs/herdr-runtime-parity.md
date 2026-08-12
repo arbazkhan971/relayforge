@@ -117,12 +117,13 @@ Deliverables:
   `relayforge attach` reaches it over ssh with a bounded tunnel (contributor
   runbook `docs/linux-runner-runbook.md` + `scripts/check-relayforge-runner.mjs`
   land in this phase).
-- Platform walls: the product currently fails closed on macOS for **every**
-  `run` (ledger anchor needs `/proc/self/fd`; process scope needs cgroup v2) —
-  documented in `docs/implementation-status.md`. A loudly-flagged
-  `relayforge dev` host mode (weakened ledger anchoring + no process-scope
-  claim, ineligible for release receipts) is the prerequisite for Herdr-style
-  macOS work; it must stay explicitly non-publishable.
+- Platform walls: `--execute` fails closed on macOS (money ledger needs
+  `/proc/self/fd`; agent scope needs cgroup v2). **Dry-run plans now work on
+  any host, macOS included** — a plan launches nothing and moves no money, so it
+  no longer requires the ledger (and Linux hosts still write it). A
+  loudly-flagged `relayforge dev` host mode that would additionally weaken
+  anchoring for EXECUTE remains gated on a dedicated safety ADR and is
+  ineligible for release receipts.
 
 Guardrails: remote attach never forwards provider credentials outside the
 parent-owned boundary; remote host must satisfy the release-runner checkset for

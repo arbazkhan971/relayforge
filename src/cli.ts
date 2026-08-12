@@ -490,7 +490,9 @@ program
 
     let ctx;
     try {
-      ctx = prepareRun(loaded, project, options.run, goal, options.loop);
+      // Plan-only dry-runs skip the money ledger when the host cannot pin one (macOS), so a first
+      // `relayforge run "<goal>"` works on any machine. --execute keeps every strong-host gate.
+      ctx = prepareRun(loaded, project, options.run, goal, options.loop, Boolean(options.execute));
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;

@@ -23,7 +23,7 @@ import {
 import { LoadedConfig } from "./config/load.js";
 import { LoopConfig, ProjectConfig, ProviderConfig, RoleConfig } from "./config/schema.js";
 import { assertBudgetContract, initCostLedger, perCallReservation, recordCost, totalSpend } from "./cost.js";
-import { CallBinding, LedgerHandle, openLedger } from "./ledger.js";
+import { CallBinding, LedgerHandle, LedgerRecoveryRequired, openLedger } from "./ledger.js";
 import type { SettlementOutcome } from "./settlement-kernel.js";
 import { createStreamingNormalizer, NormalizedTurn, ProviderKind } from "./normalize.js";
 import {
@@ -261,8 +261,9 @@ export type RunContext = {
   runNonce: string;
   /** The run-scoped money authority. Established ONCE, after the run identity exists; addresses its
    *  leaf only through pinned descriptors. A replaced ledger is `recovery_required`, never a new
-   *  empty budget (wave-8d audit B1/B2). */
-  ledger: LedgerHandle;
+   *  empty budget (wave-8d audit B1/B2). Undefined only on a plan-only dry-run whose host cannot
+   *  pin one (macOS) — nothing launches, so no money moves. */
+  ledger: LedgerHandle | undefined;
 };
 
 export type LoopRunState = {
@@ -821,7 +822,9 @@ export function prepareRun(
   project: ProjectConfig,
   runId: string,
   goal: string,
-  loopName?: string
+  loopName?: string,
+  /** False for a plan-only dry-run: no provider launches, so no money ledger is REQUIRED. */
+  execute = true
 ): RunContext {
   const loop = selectLoop(project, loopName);
   assertId("run", runId);
@@ -879,7 +882,19 @@ export function prepareRun(
     // `transcriptRoot` is the confinement boundary for EVIDENCE: the ledger will only accept a transcript
     // that lives strictly inside the run's private (0700) tree, reached through no symlinked component. A
     // crafted path elsewhere on the filesystem is not evidence and can never be attested.
-    ledger = openLedger({ dir: boardDir, runNonce, transcriptRoot: runDir });
+    if (execute) {
+      ledger = openLedger({ dir: boardDir, runNonce, transcriptRoot: runDir });
+    } else {
+      try {
+        // Plan-only dry-run: nothing launches and no money moves, so a host that cannot pin a money
+        // ledger (macOS: no /proc/self/fd directory anchor) still gets a durable, auditable plan.
+        // Hosts that CAN anchor one (Linux) write it as before, keeping dry-run plans attested.
+        ledger = openLedger({ dir: boardDir, runNonce, transcriptRoot: runDir });
+      } catch (error) {
+        if (!(error instanceof LedgerRecoveryRequired) || !/pinned-directory anchor/u.test(error.message)) throw error;
+        ledger = undefined;
+      }
+    }
 
     return {
       loaded,
@@ -930,11 +945,11 @@ export function disposePreparedRun(ctx: RunContext): void {
     } catch (error) {
       // A possibly writable canonical handle outranks cleanup convenience. Keep both lifetime
       // leases and the handle reachable so no successor can enter an uncertain close boundary.
-      try { ctx.ledger.close(); } catch { /* LedgerHandle close is local descriptor cleanup only. */ }
+      try { ctx.ledger?.close(); } catch { /* LedgerHandle close is local descriptor cleanup only. */ }
       throw error;
     }
   }
-  try { ctx.ledger.close(); } catch { /* LedgerHandle close is local descriptor cleanup only. */ }
+  try { ctx.ledger?.close(); } catch { /* LedgerHandle close is local descriptor cleanup only. */ }
   const runLease = ctx.runLease;
   ctx.runLease = undefined;
   ctx.activeLeaseId = undefined;
@@ -2698,17 +2713,20 @@ function recordTurnCost(ctx: RunContext, state: LoopRunState, role: string, task
  * can no longer prove we are under budget. A zero/unset budget is unlimited (never blocks).
  */
 function budgetReached(ctx: RunContext, state?: LoopRunState): boolean {
+  // A plan-only dry-run has no money ledger (host could not pin one) — with nothing launched,
+  // no budget can have been reached or violated.
+  if (ctx.ledger === undefined) return false;
   // A PROVEN actual that exceeded its fsynced worst-case reservation is a TERMINAL violation: the
   // reservation failed to bound real spend, so we can no longer trust the ledger — stop immediately,
   // regardless of the nominal budget (this also fires under a zero/unlimited budget as a tripwire).
-  if (ctx.ledger.budgetViolation() !== undefined) return true;
+  if (ctx.ledger !== undefined && ctx.ledger.budgetViolation() !== undefined) return true;
   const budget = ctx.loop.budgetUsd ?? 0;
   if (budget <= 0) return false;
   // Effective spend counts PROVEN actuals plus every outstanding/unproven reservation at worst case,
   // compared in EXACT fixed point — so neither an in-flight call nor float dust can leave us believing
   // we are still under budget (wave-8d audit B6: ten $0.01 settlements under $0.10 summed to
   // 0.09999999999999999 and let an eleventh call through).
-  if (ctx.ledger.budgetReached(budget)) return true;
+  if (ctx.ledger !== undefined && ctx.ledger.budgetReached(budget)) return true;
   if (totalSpend(ctx.boardDir) >= budget) return true; // advisory log, a conservative early tripwire
   if (state && state.unknownCostCalls > (ctx.loop.allowUnknownCostCalls ?? 0)) return true;
   return false;
@@ -3344,6 +3362,7 @@ async function runRoutedTurnCore(
     };
     // Atomically reserve the worst case BEFORE launching. Refused → fail closed (do not launch), so a
     // budget can never be exceeded by an in-flight or parallel call.
+    if (ctx.ledger === undefined) throw new Error("internal: provider settlement requires the run ledger (execute-only)");
     //
     // `reserve` and `settleUncertain` remain the ONLY things this code can do to the ledger DIRECTLY. The
     // mint that used to hang off the reservation (`beginCall` → an attesting capability) is still gone:
@@ -3363,7 +3382,7 @@ async function runRoutedTurnCore(
     let settled = false;
     const settleUncertain = (): void => {
       if (settled) return;
-      ctx.ledger.settleUncertain(bind, grokEgressEvidence);
+      ctx.ledger!.settleUncertain(bind, grokEgressEvidence);
       settled = true;
     };
     const label = `${role.name}-${taskId}-a${attemptN}-${key}`;
@@ -3550,7 +3569,7 @@ async function runRoutedTurnCore(
   // It exists only if the settlement kernel re-derived a canonical `rate_limit_event` rejection by
   // replaying the durable transcript (see `LedgerHandle.settleCompleted` → `#attestFallback`). If it did
   // not, the turn stalls — we never bill a second provider on the word of an unproven frame.
-  const settledReceipt = result.settlementCallId !== undefined && ctx.ledger.settlementOf(result.settlementCallId).fallbackAuthorized;
+  const settledReceipt = result.settlementCallId !== undefined && ctx.ledger!.settlementOf(result.settlementCallId).fallbackAuthorized;
   if (outcome === "limit" && activeKey === chain.primary && chain.fallback && primaryIsClaude && settledReceipt) {
     const cooldown = ctx.project.providers[chain.primary]?.cooldownSeconds ?? 900;
     // Mark the cooldown at the OBSERVED rejection time (now, AFTER the primary returned), not at the

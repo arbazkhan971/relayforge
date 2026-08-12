@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Usability: dry-run plans (`relayforge run "<goal>"`) now work on ANY host,
+  macOS included. A plan launches no provider and moves no money, so it no
+  longer requires the money ledger; hosts that can pin one (Linux) still write
+  it, and `--execute` keeps every strong-host fail-closed gate untouched
+  (`prepareRun(..., execute)`; ledger usage sites guarded; focused suite in
+  tests/prepare-run-dryrun.test.ts).
+
 - Replaced the blanket execute refusal for structured native adapters
   (opencode/pi/grok) with a credential gate: ordinary `run --execute` now works
   when the operator linked a personal subscription (installed CLI login) or the

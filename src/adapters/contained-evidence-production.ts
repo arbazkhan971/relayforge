@@ -772,7 +772,7 @@ function exactTerminal(
   ) {
     throw new ContainedAdapterCharacterizationUnavailable(adapterId, `${label} did not complete through the strong contained transcript path`);
   }
-  const terminal = ctx.ledger.terminalSettlementEvidenceOf(result.settlementCallId);
+  const terminal = ctx.ledger!.terminalSettlementEvidenceOf(result.settlementCallId);
   if (!terminal || terminal.fallbackAuthorized || !terminal.bind.adapter) {
     throw new ContainedAdapterCharacterizationUnavailable(adapterId, `${label} has no exact durable terminal settlement`);
   }
@@ -817,7 +817,7 @@ function exactCancelledTerminal(
       uncertainReason: result.uncertainReason
     })})`);
   }
-  const terminal = ctx.ledger.terminalSettlementEvidenceOf(result.settlementCallId);
+  const terminal = ctx.ledger!.terminalSettlementEvidenceOf(result.settlementCallId);
   if (!terminal || terminal.fallbackAuthorized || terminal.bind.adapter?.replay.adapterId !== adapterId) {
     throw new ContainedAdapterCharacterizationUnavailable(adapterId, "cancelled call has no exact terminal ledger record");
   }

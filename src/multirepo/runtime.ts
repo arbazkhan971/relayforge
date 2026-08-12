@@ -162,6 +162,10 @@ function createContainedWorker(
   runtimeDir: string,
   registry: RepositoryRegistryV1
 ): ContainedMultiRepositoryWorker {
+  // Multi-repository execution is an execute-only path; the run ledger is mandatory.
+  if (ctx.ledger === undefined) {
+    throw new Error("internal: multi-repository worker recovery requires the run ledger (execute-only)");
+  }
   const recovery = createMultiRepositoryWorkerRecoveryStore({
     runtimeDirectory: runtimeDir,
     transcriptDirectory: resolve(context.runDir, "transcripts"),
