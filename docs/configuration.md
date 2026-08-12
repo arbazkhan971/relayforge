@@ -190,6 +190,37 @@ is refused **before any mutation** when neither a subscription login nor a
 linked API key exists — zero-mutation, fail-closed. Linking one of them is what
 enables the route; nothing is probed or uploaded by the check.
 
+### Combining models (multi-model teams)
+
+RelayForge runs **several models together** in one loop — each role binds its
+own provider route, and strategies combine freely:
+
+1. **Per-role models**: every `projects[].roles[]` selects one `provider`, so a
+   planner can run on Claude/Opus while implementers run on Codex and QA on
+   Gemini — all in the same run, each in its own isolated worktree.
+2. **Independent reviewer**: the loop `reviewer` role is a separate route (and
+   process) from the implementer, so review can use a different model than the
+   worker that wrote the change.
+3. **Fallback chains**: a provider with `fallbackFor: <primary>` is tried ONLY
+   when the primary reports a classified usage/rate/quota limit (start with
+   `cooldownSeconds` for a rate-limited route). `src/routing.ts` builds the
+   exact primary → fallback chain.
+4. **Multi-repository**: P6 `multiRepository.tasks[]` bind their own `provider`
+   per task.
+
+A complete, working starter is shipped at
+[examples/multi-model-team.config.yaml](../examples/multi-model-team.config.yaml)
+(Claude planner+reviewer, Codex implementer with a Codex-mini fallback, Gemini
+QA).
+
+### Viewport (tmux)
+
+The tmux viewport is **on by default** (`defaults.viewport: true`): every
+`relayforge run --execute` opens its own detached tmux viewport so
+`relayforge attach` and `relayforge monitor` work immediately. Disable it with
+`defaults.viewport: false` or `RELAYFORGE_TMUX=off` (or by not installing
+tmux) — the loop always runs headless regardless; the viewport is a view.
+
 ### Claude, Codex, Gemini, and custom
 
 These adapters preserve their established non-interactive builders and output

@@ -512,6 +512,38 @@ program
       console.log(`Team: ${project.roles.length} role(s). Monitor: relayforge monitor --run ${ctx.runId}\n`);
     }
 
+    // The tmux viewport is ON by default: a real (--execute) run opens its own DETACHED tmux
+    // viewport so `relayforge attach` and `relayforge monitor` work the moment the run starts.
+    // Best-effort: missing tmux, an explicit `viewport: false` / RELAYFORGE_TMUX=off, or any
+    // failure degrades to plain headless mode with a single warning — never a run failure.
+    if (options.execute) {
+      try {
+        const host = detectHost({
+          configEnabled: loaded.config.defaults.viewport !== false,
+          env: process.env,
+          tty: false
+        });
+        if (host.enabled && host.installed) {
+          openViewport(tmuxClient(), host, {
+            identity: {
+              namespace: loaded.config.defaults.namespace,
+              project: project.name,
+              run: ctx.runId,
+              role: "team",
+              topology: "team"
+            },
+            cwd: ctx.cwd,
+            roles: project.roles.map((role) => ({ name: role.name, title: role.title })),
+            attach: false
+          });
+        } else if (!opts.json && !host.enabled) {
+          console.warn(`(viewport disabled — set defaults.viewport: true or clear RELAYFORGE_TMUX=off to enable)`);
+        }
+      } catch (error) {
+        if (!opts.json) console.warn(`(viewport note: ${error instanceof Error ? error.message : String(error)} — continuing headless)`);
+      }
+    }
+
     let reports;
     let runScmAuthority: ParentScmProductAuthority | undefined;
     try {

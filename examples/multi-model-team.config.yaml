@@ -1,0 +1,67 @@
+# Multi-model team config — run several models together.
+#
+# Copy this as `relayforge.config.yaml` (or cherry-pick the relevant parts) for a
+# team where DIFFERENT MODELS play different roles, plus a Codex fallback chain
+# when the primary hits a classified usage/rate limit.
+#
+# Providers here:
+#   - claude   planner + reviewer (Opus) — your personal Claude subscription
+#   - codex    implementer (GPT-5.4) — ChatGPT/Codex login, with a Codex-mini
+#              automatic fallback route (`fallbackFor`)
+#   - gemini   QA role — Gemini subscription
+#
+# See docs/configuration.md -> "Combining models (multi-model teams)".
+
+version: 1
+defaults:
+  runDir: .loop/runs
+  # The tmux viewport is ON by default (this is the default value; shown for
+  # clarity). Set `false` to go fully headless.
+  viewport: true
+projects:
+  - name: multi-model-demo
+    workingDir: .
+    # Every role binds its own provider route — one loop runs them all together,
+    # each provider in its own isolated worktree.
+    providers:
+      claude:
+        type: claude
+        model: opus
+      codex:
+        type: codex
+        model: gpt-5.4
+      codex-backup:
+        type: codex
+        model: gpt-5.2-mini
+        # Use this route ONLY when `codex` reports a classified usage/rate/quota
+        # limit (see src/routing.ts provider chains).
+        fallbackFor: codex
+        cooldownSeconds: 300
+      gemini:
+        type: gemini
+        model: gemini-2.5-pro
+    roles:
+      - name: planner
+        title: Planner
+        provider: claude
+        responsibilities: ["Decompose the goal into ordered tasks"]
+      - name: implementer
+        title: Implementer
+        provider: codex          # primary; falls back to codex-backup on limits
+        responsibilities: ["Implement the planned tasks in the worktree"]
+      - name: reviewer
+        title: Reviewer
+        provider: claude         # independent reviewer on a different route
+        responsibilities: ["Review diffs before verification"]
+      - name: qa
+        title: QA engineer
+        provider: gemini
+        responsibilities: ["Re-check edge cases in the verified change"]
+    loops:
+      - name: delivery
+        orchestrator: planner
+        reviewer: reviewer
+        maxIterations: 3
+        budgetUsd: 0
+        maxCostPerCallUsd: 0
+        maxParallel: 2

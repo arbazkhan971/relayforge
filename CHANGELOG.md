@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- Usability: the tmux viewport is **on by default** — every `relayforge run
+  --execute` opens its own detached tmux viewport automatically, so
+  `relayforge attach` / `relayforge monitor` work immediately; best-effort and
+  non-fatal, with `defaults.viewport: false` or `RELAYFORGE_TMUX=off` to stay
+  headless.
+- Multi-model teams documented end-to-end
+  (examples/multi-model-team.config.yaml + docs/configuration.md "Combining
+  models"): per-role providers, loop-level independent reviewer route, Codex
+  `fallbackFor` chains, and P6 per-task providers.
+
 - Usability: dry-run plans (`relayforge run "<goal>"`) now work on ANY host,
   macOS included. A plan launches no provider and moves no money, so it no
   longer requires the money ledger; hosts that can pin one (Linux) still write

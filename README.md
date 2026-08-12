@@ -102,15 +102,20 @@ relayforge run "Add a /health endpoint and a unit test"
 relayforge run "Add a /health endpoint and a unit test" --execute
 ```
 
-### 5. Watch the run (optional)
+### 5. Watch the run
+
+Every `--execute` run opens its own detached tmux viewport by default (disable
+with `defaults.viewport: false` or `RELAYFORGE_TMUX=off`); the commands below
+just attach to or show it.
 
 ```bash
 # Local dashboard + read-only API (loopback only)
 relayforge serve
 
-# Optional tmux panes for agent sessions
-relayforge tmux new
-relayforge monitor
+# tmux panes for agent sessions (on by default for execute runs)
+relayforge monitor            # single-screen mission control (latest run)
+relayforge attach             # attach to the latest run's viewport
+relayforge tmux new           # open the viewport explicitly
 ```
 
 ---
