@@ -59,6 +59,46 @@ jobs:
       - run: npm run smoke
       - run: npm pack --dry-run
 
+  portable-linux:
+    name: rootless portable Linux x64 clean-host journey
+    needs: validate
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: .portable-cache
+          key: relayforge-portable-node-v22.23.2-linux-x64
+      - run: npm ci
+      - name: Build deterministic portable bundle and checksum-bound installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          portable="$RUNNER_TEMP/relayforge-portable"
+          node scripts/portable-linux.mjs --output "$portable"
+          test -f "$portable/portable-release.json"
+          test -f "$portable/SHA256SUMS"
+          echo "PORTABLE_DIR=$portable" >> "$GITHUB_ENV"
+      - name: Prove the under-two-minute journey on clean Ubuntu without Node, npm, Python, or compilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh scripts/smoke-portable-linux.sh "$PORTABLE_DIR"
+          (cd "$PORTABLE_DIR" && sha256sum --check SHA256SUMS)
+          node -e 'const m=require(process.argv[1]); if(!m.releaseReady || m.source.dirty || m.publicationRequiresOperatorApproval!==true || m.smoke.cleanHost.status!=="passed") process.exit(1)' "$PORTABLE_DIR/portable-release.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relayforge-portable-linux-x64-${{ github.sha }}
+          path: ${{ env.PORTABLE_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
   preview-artifact:
     name: packed pull-request preview artifact
     if: github.event_name == 'pull_request'

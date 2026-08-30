@@ -13,20 +13,35 @@ RelayForge plan or an executed, reviewed, verified coding run.
   `--execute` from a Linux VM containing the same Git repository. RelayForge
   deliberately has no uncontained override.
 
-## 1. Install the host prerequisites
+## 1. Install RelayForge and the coding prerequisites
 
-Install Node.js 20.x or 22+, Git, and the coding-agent CLI you already use.
-Ubuntu/Debian hosts also need:
+The recommended Linux x64 path is the [portable bundle](portable-linux.md).
+It includes Node and the native SQLite binding, so the laptop or VM does not
+need npm, Python, `build-essential`, or any other compiler toolchain. Download
+the portable artifact from a successful CI run (or an explicitly approved
+GitHub Release), then:
+
+```bash
+cd /path/to/relayforge-portable-linux-x64
+sha256sum --check SHA256SUMS
+sh install-relayforge-1.0.0-rc.1-linux-x64.sh \
+  --archive relayforge-1.0.0-rc.1-linux-x64.tar.gz
+export PATH="$HOME/.local/bin:$PATH"
+relayforge --version
+```
+
+Git and the coding-agent CLI you already use remain host tools. Ubuntu/Debian
+hosts need these additional packages for the full contained `--execute` path:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y git tmux bubblewrap build-essential python3
-node --version
+sudo apt-get install -y git tmux bubblewrap
 git --version
 bwrap --version
 ```
 
-Install RelayForge directly from its current GitHub `main` branch:
+If you are developing RelayForge itself instead of using the portable bundle,
+install Node 20.x or 22+ and use the source path:
 
 ```bash
 npm install -g github:arbazkhan971/relayforge
@@ -101,4 +116,3 @@ ssh -L 4318:127.0.0.1:4318 user@your-vm
 ```
 
 Then open `http://127.0.0.1:4318` on the laptop.
-

@@ -71,8 +71,24 @@ preview mode:
 node scripts/release-artifact.mjs --preview --output .preview
 ```
 
-The command performs real deterministic packing and the deep clean-install
-smoke, but writes `publishable:false` and
+Build the separate rootless Linux x64 distribution and prove it on a clean
+Ubuntu host:
+
+```bash
+npm run portable:linux -- --output .portable
+sh scripts/smoke-portable-linux.sh .portable
+(cd .portable && sha256sum --check SHA256SUMS)
+```
+
+`portable-release.json` is `releaseReady: false` until the source is committed
+and clean and the clean-host smoke has passed. The smoke records the measured
+under-two-minute journey and rewrites `SHA256SUMS`. CI uploads these
+release-ready files as a workflow artifact; it does not create a Git tag or
+GitHub Release. Attaching the files to a public Release remains an explicit
+operator action.
+
+The npm preview command performs real deterministic packing and the deep
+clean-install smoke, but writes `publishable:false` and
 `nativeAdapterEvidence.status:not-collected`. Release policy rejects that
 manifest. A publishable build has no manual "adapter passed" switch: it accepts
 only a private same-runner receipt bundle produced by the checked-in contained

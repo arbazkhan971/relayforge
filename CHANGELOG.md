@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Distribution: added a deterministic, rootless Linux x64 bundle with pinned
+  Node 22.23.2, lockfile-exact production dependencies, a verified native
+  SQLite binding, GLIBC auditing, SHA-256/provenance manifests, atomic
+  install/upgrade/rollback, and CI proof on clean Ubuntu 22.04 without Node,
+  npm, Python, or compilers. Public tags and GitHub Releases remain manual.
 - Onboarding: added idempotent `relayforge setup`, which initializes a project
   when needed, derives a safe project id from the real repository/package name,
   generates project intelligence automatically, validates the selected config,
