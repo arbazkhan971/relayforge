@@ -549,7 +549,7 @@ export async function runPackedDashboardSmoke({ tarball }) {
   const root = mkdtempSync(join(tempBase, "relayforge-packed-browser-"));
   chmodSync(root, 0o700);
   const prefix = join(root, "install");
-  const project = join(root, "project");
+  const project = join(root, PROJECT);
   const profile = join(root, "chrome-profile");
   for (const directory of [prefix, project, profile]) mkdirSync(directory, { mode: 0o700 });
   let firstService;
