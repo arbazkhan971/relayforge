@@ -134,6 +134,7 @@ relayforge run "<goal>"        # dry-run plan
 relayforge run "<goal>" --execute
 relayforge serve               # dashboard on 127.0.0.1
 relayforge status              # owned sessions
+relayforge logs <owned-tmux-session> --lines 160
 relayforge stop <run-id>       # cancel a run
 relayforge --help
 ```
