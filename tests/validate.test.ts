@@ -5,7 +5,7 @@ import YAML from "yaml";
 import { RootConfigSchema } from "../src/config/schema.js";
 import { validateConfigSemantics, validateProjectSemantics } from "../src/config/validate.js";
 import { assertBudgetContract } from "../src/cost.js";
-import { starterConfig, type StarterProvider } from "../src/starter.js";
+import { normalizeStarterProjectName, starterConfig, type StarterProvider } from "../src/starter.js";
 
 function parseProject(yaml: string) {
   const parsed = RootConfigSchema.parse(YAML.parse(yaml));
@@ -32,6 +32,13 @@ describe("starter config", () => {
       expect(validateProjectSemantics(project)).toEqual([]);
     });
   }
+
+  it("normalizes discovered package/repository names into safe, recognizable project ids", () => {
+    expect(normalizeStarterProjectName("@acme/coding app")).toBe("acme-coding-app");
+    expect(normalizeStarterProjectName("../../unsafe")).toBe("unsafe");
+    expect(normalizeStarterProjectName("🔥")).toBe("project");
+    expect(parseProject(starterConfig("codex", [], true, "@acme/coding app")).name).toBe("acme-coding-app");
+  });
 });
 
 describe("starter config: the auto-wired routing chain", () => {

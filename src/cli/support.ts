@@ -91,9 +91,9 @@ export function output(data: unknown, asJson: boolean) {
   console.log(formatHuman(data));
 }
 
-export function writeIfMissing(path: string, content: string, force: boolean) {
+export function writeIfMissing(path: string, content: string, force: boolean, quiet = false) {
   if (existsSync(path) && !force) {
-    console.log(`Skipped ${path}; already exists.`);
+    if (!quiet) console.log(`Skipped ${path}; already exists.`);
     return;
   }
   writeFileSync(path, content);

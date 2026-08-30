@@ -1,6 +1,26 @@
 import { spawnSync } from "node:child_process";
+import { isValidId } from "./ids.js";
 
 export type StarterProvider = "claude" | "codex" | "gemini" | "custom";
+
+/**
+ * Turn a repository/package name into the canonical identifier RelayForge needs for run paths,
+ * branches, and tmux sessions. Starter generation is the one place where normalization is useful:
+ * the value is discovered locally rather than supplied as an authoritative config identifier.
+ */
+export function normalizeStarterProjectName(value: string): string {
+  const normalized = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .replace(/^@+/u, "")
+    .replace(/[\\/]+/gu, "-")
+    .replace(/[^A-Za-z0-9._-]+/gu, "-")
+    .replace(/\.{2,}/gu, ".")
+    .replace(/^[^A-Za-z0-9]+/u, "")
+    .slice(0, 64)
+    .replace(/[^A-Za-z0-9]+$/u, "");
+  return isValidId(normalized) ? normalized : "project";
+}
 
 const PROVIDER_CLIS: Record<Exclude<StarterProvider, "custom">, string> = {
   claude: "claude",
@@ -83,8 +103,14 @@ function providersSection(picked: StarterProvider, detected: string[], override:
   };
 }
 
-export function starterConfig(provider: StarterProvider = "claude", detected: string[] = [], override = false): string {
+export function starterConfig(
+  provider: StarterProvider = "claude",
+  detected: string[] = [],
+  override = false,
+  projectName = "demo-product"
+): string {
   const { block, providerKey } = providersSection(provider, detected, override);
+  const canonicalProjectName = normalizeStarterProjectName(projectName);
   return `version: 1
 defaults:
   namespace: loop
@@ -93,7 +119,7 @@ defaults:
   runDir: .loop/runs
 
 projects:
-  - name: demo-product
+  - name: ${canonicalProjectName}
     brief: brief.md
     workingDir: .
     intelligence: PROJECT-INTELLIGENCE.md
@@ -135,8 +161,8 @@ ${block}
 `;
 }
 
-export function starterBrief(): string {
-  return `# Demo Product Brief
+export function starterBrief(projectName = "Demo Product"): string {
+  return `# ${projectName} Brief
 
 You are a small, self-organizing engineering team building and maintaining a
 software product through small, reviewable, test-backed changes.

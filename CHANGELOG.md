@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Onboarding: added idempotent `relayforge setup`, which initializes a project
+  when needed, derives a safe project id from the real repository/package name,
+  generates project intelligence automatically, validates the selected config,
+  and reports safe-planning readiness separately from full coding-execution
+  readiness. The README now starts with a direct GitHub install and a focused
+  laptop/Ubuntu VM quickstart.
 - Usability: the tmux viewport is **on by default** — every `relayforge run
   --execute` opens its own detached tmux viewport automatically, so
   `relayforge attach` / `relayforge monitor` work immediately; best-effort and
