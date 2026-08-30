@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { Command } from "commander";
 import { configureLocalAuth, getAuthStatus } from "./auth.js";
 import { defaultRunId, latestRunId, output, parseBoundedInt, reportConfigLoadError, runSucceeded, safeLoadConfig, safeLoadConfigOptional, writeIfMissing } from "./cli/support.js";
 import { ConfigDiscoveryError, findConfig, getProject } from "./config/load.js";
 import { assertConfigSemantics, validateConfigSemantics } from "./config/validate.js";
-import { assertId } from "./ids.js";
+import { assertId, assertRealContained } from "./ids.js";
 import { startDashboard } from "./dashboard/server.js";
 import { runDoctorWithControl } from "./doctor.js";
 import { renderControlStatus, requireControlService } from "./control/client.js";
@@ -18,7 +18,7 @@ import {
   stopControlService,
   type ControlServiceHandle
 } from "./control/service.js";
-import { writeIntelligence } from "./intelligence.js";
+import { analyzeProject, renderIntelligence, writeIntelligence } from "./intelligence.js";
 import { discoverPanes, renderOnce, startMonitor } from "./monitor.js";
 import { assertOrdinaryExecuteNativeAdapterPreflight } from "./adapters/native-product-preflight.js";
 import { finalLoopState, prepareRun, runAutonomyLoop, selectLoop, writeRolePrompts } from "./orchestrator.js";
@@ -35,7 +35,13 @@ import {
   steeringIpcAdmitRequest,
   steeringIpcWithdrawRequest
 } from "./steering/ipc.js";
-import { chooseStarterProvider, starterBrief, starterConfig, StarterProvider } from "./starter.js";
+import {
+  chooseStarterProvider,
+  normalizeStarterProjectName,
+  starterBrief,
+  starterConfig,
+  type StarterProvider
+} from "./starter.js";
 import { attachSession, capturePane, isSafeTmuxName, listSessions, paneTitle, sessionName, startProjectSessions, stopRun, tmuxClient } from "./tmux.js";
 import { detectHost, killViewport, openViewport, planViewport, pruneViewport, showViewport, TmuxExit } from "./tmux-workflow.js";
 import {
@@ -67,6 +73,56 @@ function ensureGitignore(root: string, entries: string[]): void {
   const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
   if (existing) appendFileSync(path, `${prefix}${missing.join("\n")}\n`);
   else writeFileSync(path, `${missing.join("\n")}\n`);
+}
+
+const STARTER_PROVIDERS = ["claude", "codex", "gemini", "custom"] as const;
+
+type StarterCreation = {
+  projectName: string;
+  provider: StarterProvider;
+  providerInstalled: boolean;
+  detectedProviders: readonly string[];
+};
+
+function parseStarterProvider(value: unknown): StarterProvider | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && STARTER_PROVIDERS.includes(value as StarterProvider)) {
+    return value as StarterProvider;
+  }
+  throw new Error(`Unknown --provider ${String(value)}. Use one of: ${STARTER_PROVIDERS.join(", ")}.`);
+}
+
+function starterConfigCandidates(root: string): readonly string[] {
+  try {
+    return [findConfig(root)];
+  } catch (error) {
+    if (error instanceof ConfigDiscoveryError && error.code === "CONFIG_NOT_FOUND") return [];
+    if (error instanceof ConfigDiscoveryError && error.code === "CONFIG_AMBIGUOUS") return error.candidates;
+    throw error;
+  }
+}
+
+/** Create a project-aware starter without overwriting an existing config or unforced helper file. */
+function createStarter(root: string, override: StarterProvider | undefined, force: boolean, quiet = false): StarterCreation {
+  const choice = chooseStarterProvider(override);
+  const intelligence = analyzeProject(root);
+  const projectName = normalizeStarterProjectName(intelligence.name);
+  writeIfMissing(
+    resolve(root, "relayforge.config.yaml"),
+    starterConfig(choice.provider, choice.detected, Boolean(override), projectName),
+    false,
+    quiet
+  );
+  writeIfMissing(resolve(root, "brief.md"), starterBrief(projectName), force, quiet);
+  writeIfMissing(resolve(root, "PROJECT-INTELLIGENCE.md"), renderIntelligence(intelligence), force, quiet);
+  mkdirSync(resolve(root, ".loop"), { recursive: true });
+  ensureGitignore(root, [".loop/", "PROJECT-INTELLIGENCE.md"]);
+  return {
+    projectName,
+    provider: choice.provider,
+    providerInstalled: choice.installed,
+    detectedProviders: choice.detected
+  };
 }
 
 const program = new Command();
@@ -150,50 +206,179 @@ program
 
 program
   .command("init")
-  .description("create relayforge.config.yaml and starter files without replacing an existing config")
+  .description("create a project-aware config, brief, and project intelligence without replacing an existing config")
   .option("-f, --force", "overwrite auxiliary starter files (never a config or .loop state)")
   .option("--provider <type>", "force a provider: claude | codex | gemini | custom")
   .action((options) => {
     const root = process.cwd();
-    let existingConfigs: readonly string[] = [];
+    const asJson = Boolean(program.opts().json);
+    let existingConfigs: readonly string[];
     try {
-      existingConfigs = [findConfig(root)];
+      existingConfigs = starterConfigCandidates(root);
     } catch (error) {
-      if (!(error instanceof ConfigDiscoveryError) || error.code !== "CONFIG_NOT_FOUND") {
-        if (error instanceof ConfigDiscoveryError && error.code === "CONFIG_AMBIGUOUS") {
-          existingConfigs = error.candidates;
-        } else {
-          reportConfigLoadError(error, Boolean(program.opts().json));
-          return;
-        }
-      }
+      reportConfigLoadError(error, asJson);
+      return;
     }
     if (existingConfigs.length) {
       const code = existingConfigs.length > 1 ? "CONFIG_AMBIGUOUS" : "CONFIG_ALREADY_EXISTS";
       const message = `${code}: init refuses to overwrite or compete with existing config: ${existingConfigs.join(", ")}`;
-      if (program.opts().json) output({ ok: false, code, error: message }, true);
+      if (asJson) output({ ok: false, code, error: message }, true);
       else console.error(message);
       process.exitCode = 1;
       return;
     }
-    const override = options.provider as StarterProvider | undefined;
-    if (override && !["claude", "codex", "gemini", "custom"].includes(override)) {
-      console.error(`Unknown --provider ${override}. Use one of: claude, codex, gemini, custom.`);
+    let override: StarterProvider | undefined;
+    let created: StarterCreation;
+    try {
+      override = parseStarterProvider(options.provider);
+      created = createStarter(root, override, Boolean(options.force), asJson);
+    } catch (error) {
+      controlCommandError(error, asJson);
+      return;
+    }
+    if (asJson) {
+      output({
+        ok: true,
+        created: true,
+        project: created.projectName,
+        provider: created.provider,
+        providerInstalled: created.providerInstalled,
+        files: ["relayforge.config.yaml", "brief.md", "PROJECT-INTELLIGENCE.md", ".loop/"]
+      }, true);
+      return;
+    }
+    console.log("Created relayforge.config.yaml, brief.md, PROJECT-INTELLIGENCE.md, and .loop/");
+    console.log(`Project: ${created.projectName}`);
+    console.log(`Provider: ${created.provider}${created.providerInstalled ? " (detected)" : " (not detected locally)"}.`);
+    if (created.detectedProviders.length) console.log(`Installed provider CLIs: ${created.detectedProviders.join(", ")}.`);
+    if (!created.providerInstalled && created.provider !== "custom") {
+      console.log(`Tip: install the ${created.provider} CLI, or re-run \`relayforge init --provider <type>\`. Dry-run works without any provider.`);
+    }
+    console.log("Next: `relayforge setup`, then `relayforge run \"<goal>\"` (add --execute to launch agents).");
+  });
+
+program
+  .command("setup")
+  .description("one-command project onboarding: initialize if needed, learn the codebase, validate, and report run readiness")
+  .option("-p, --project <name>", "project name when the config contains more than one project")
+  .option("--provider <type>", "provider for a new config: claude | codex | gemini | custom")
+  .option("--refresh", "refresh the generated PROJECT-INTELLIGENCE.md")
+  .action(async (options) => {
+    const root = process.cwd();
+    const opts = program.opts();
+    const asJson = Boolean(opts.json);
+    let override: StarterProvider | undefined;
+    try {
+      override = parseStarterProvider(options.provider);
+    } catch (error) {
+      controlCommandError(error, asJson);
+      return;
+    }
+
+    let candidates: readonly string[];
+    try {
+      candidates = opts.config ? [opts.config] : starterConfigCandidates(root);
+    } catch (error) {
+      reportConfigLoadError(error, asJson);
+      return;
+    }
+    if (candidates.length > 1) {
+      const message = `CONFIG_AMBIGUOUS: setup refuses to choose between configs: ${candidates.join(", ")}`;
+      if (asJson) output({ ok: false, code: "CONFIG_AMBIGUOUS", error: message }, true);
+      else console.error(message);
       process.exitCode = 1;
       return;
     }
-    const choice = chooseStarterProvider(override);
-    writeIfMissing(resolve(root, "relayforge.config.yaml"), starterConfig(choice.provider, choice.detected, Boolean(override)), false);
-    writeIfMissing(resolve(root, "brief.md"), starterBrief(), Boolean(options.force));
-    mkdirSync(resolve(root, ".loop"), { recursive: true });
-    ensureGitignore(root, [".loop/", "PROJECT-INTELLIGENCE.md"]);
-    console.log("Created relayforge.config.yaml, brief.md, and .loop/");
-    console.log(`Provider: ${choice.provider}${choice.installed ? " (detected)" : " (not detected locally)"}.`);
-    if (choice.detected.length) console.log(`Installed provider CLIs: ${choice.detected.join(", ")}.`);
-    if (!choice.installed && choice.provider !== "custom") {
-      console.log(`Tip: install the ${choice.provider} CLI, or re-run \`relayforge init --provider <type>\`. Dry-run works without any provider.`);
+
+    let created = false;
+    let creation: StarterCreation | undefined;
+    if (candidates.length === 0) {
+      try {
+        creation = createStarter(root, override, false, true);
+        created = true;
+      } catch (error) {
+        controlCommandError(error, asJson);
+        return;
+      }
+    } else if (override !== undefined && !asJson) {
+      console.log("Existing config kept; --provider only applies when setup creates a new config.");
     }
-    console.log("Next: `relayforge validate`, then `relayforge doctor`, then `relayforge run \"<goal>\"` (add --execute to launch agents).");
+
+    const loaded = safeLoadConfig(opts.config, asJson);
+    if (!loaded) return;
+    let project: ReturnType<typeof getProject>;
+    try {
+      assertConfigSemantics(loaded);
+      project = getProject(loaded, options.project);
+    } catch (error) {
+      controlCommandError(error, asJson);
+      return;
+    }
+
+    let shouldWriteIntelligence = false;
+    try {
+      const workingDir = resolve(loaded.rootDir, project.workingDir);
+      const intelligencePath = assertRealContained(
+        loaded.rootDir,
+        resolve(loaded.rootDir, project.intelligence)
+      );
+      shouldWriteIntelligence = Boolean(options.refresh) || !existsSync(intelligencePath);
+      if (shouldWriteIntelligence) {
+        const intelligence = analyzeProject(workingDir);
+        mkdirSync(dirname(intelligencePath), { recursive: true });
+        writeFileSync(intelligencePath, renderIntelligence(intelligence));
+      }
+      ensureGitignore(loaded.rootDir, [".loop/", project.intelligence]);
+    } catch (error) {
+      controlCommandError(error, asJson);
+      return;
+    }
+
+    const report = await runDoctorWithControl(loaded, root, project.name);
+    const failures = report.checks.filter((check) => check.status === "fail");
+    const warnings = report.checks.filter((check) => check.status === "warn");
+    const planningChecks = new Set([
+      "node", "git", "config", "workingDir", "control-dir", "serve-lease",
+      "serve-runfile", "serve-owner", "serve-health", "serve-cursor"
+    ]);
+    const planningBlockers = failures.filter((check) => planningChecks.has(check.name));
+    const planReady = planningBlockers.length === 0;
+    const executeReady = failures.length === 0;
+    const intelligenceStatus = created || shouldWriteIntelligence ? "generated" : "kept";
+    const nextCommand = `relayforge run "Ship a small, tested coding change"`;
+    const result = {
+      ok: planReady,
+      created,
+      project: project.name,
+      provider: creation?.provider,
+      planReady,
+      executeReady,
+      intelligence: intelligenceStatus,
+      failures,
+      warnings,
+      nextCommand,
+      executeCommand: `${nextCommand} --execute`
+    };
+
+    if (asJson) {
+      output(result, true);
+    } else {
+      console.log(`${created ? "Initialized" : "Checked"} RelayForge project: ${project.name}`);
+      console.log(`Project intelligence: ${intelligenceStatus}`);
+      console.log(`Safe planning: ${planReady ? "ready" : "blocked"}`);
+      console.log(`Coding execution: ${executeReady ? "ready" : `${failures.length} blocker(s)`}`);
+      for (const check of failures) {
+        console.log(`  ✗ ${check.name}: ${check.detail}`);
+        if (check.fix) console.log(`    → ${check.fix}`);
+      }
+      for (const check of warnings.filter((item) => item.name === "git-target" || item.name === "providers")) {
+        console.log(`  ! ${check.name}: ${check.detail}`);
+        if (check.fix) console.log(`    → ${check.fix}`);
+      }
+      console.log(`\nTry a no-cost plan:\n  ${nextCommand}`);
+      console.log(`When doctor is green and the repo is clean:\n  ${nextCommand} --execute`);
+    }
+    if (!planReady) process.exitCode = 1;
   });
 
 program

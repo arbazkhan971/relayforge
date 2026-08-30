@@ -9,6 +9,14 @@ function taskLine(title: string): string {
   return `${JSON.stringify({ id: "t1", title, assignee: "dev", createdBy: "pm", description: title, acceptanceCriteria: [], dependsOn: [], priority: 5, createdAt: new Date().toISOString() })}\n`;
 }
 
+function configuredProjectName(root: string): string {
+  const canonical = join(root, "relayforge.config.yaml");
+  const config = readFileSync(existsSync(canonical) ? canonical : join(root, "loop.config.yaml"), "utf8");
+  const match = config.match(/^\s*- name: ([A-Za-z0-9._-]+)$/mu);
+  if (!match?.[1]) throw new Error("starter project name not found");
+  return match[1];
+}
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = resolve(repoRoot, "src/cli.ts");
 const tsxPath = resolve(repoRoot, "node_modules/tsx/dist/cli.mjs");
@@ -44,9 +52,10 @@ describe("CLI", () => {
 
     const first = runLoop(["init"], root);
     expect(first.status).toBe(0);
-    expect(first.stdout).toContain("Created relayforge.config.yaml, brief.md, and .loop/");
+    expect(first.stdout).toContain("Created relayforge.config.yaml, brief.md, PROJECT-INTELLIGENCE.md, and .loop/");
     expect(existsSync(join(root, "relayforge.config.yaml"))).toBe(true);
     expect(existsSync(join(root, "brief.md"))).toBe(true);
+    expect(existsSync(join(root, "PROJECT-INTELLIGENCE.md"))).toBe(true);
     expect(existsSync(join(root, ".loop"))).toBe(true);
 
     writeFileSync(join(root, "brief.md"), "custom brief");
@@ -55,6 +64,26 @@ describe("CLI", () => {
     expect(second.status).toBe(1);
     expect(second.stderr).toContain("CONFIG_ALREADY_EXISTS");
     expect(readFileSync(join(root, "brief.md"), "utf8")).toBe("custom brief");
+  });
+
+  it("setup turns a real package name into a ready, project-aware starter in one command", () => {
+    const root = mkdtempSync(join(tmpdir(), "relayforge-cli-setup-"));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@acme/coding-app", scripts: { test: "node --test" } }));
+
+    const result = runLoop(["--json", "setup", "--provider", "codex"], root);
+
+    expect(result.status).toBe(0);
+    const setup = JSON.parse(result.stdout);
+    expect(setup).toMatchObject({
+      ok: true,
+      created: true,
+      project: "acme-coding-app",
+      provider: "codex",
+      planReady: true
+    });
+    expect(configuredProjectName(root)).toBe("acme-coding-app");
+    expect(readFileSync(join(root, "PROJECT-INTELLIGENCE.md"), "utf8")).toContain("# Project Intelligence: @acme/coding-app");
+    expect(readFileSync(join(root, ".gitignore"), "utf8")).toContain("PROJECT-INTELLIGENCE.md");
   });
 
   it("`init --force` may overwrite an auxiliary brief but never a config, and provider auto-detection keeps its order", async () => {
@@ -229,8 +258,8 @@ projects:
   it("monitor --once discovers the latest run when no run id is given", () => {
     const root = mkdtempSync(join(tmpdir(), "loop-cli-latest-"));
     runLoop(["init"], root);
-    // Run state is namespaced by project on disk (starter project name is "demo-product").
-    const runs = join(root, ".loop/runs/demo-product");
+    // Run state is namespaced by the project-aware name generated during init.
+    const runs = join(root, ".loop/runs", configuredProjectName(root));
     const older = join(runs, "run-older/board");
     const newer = join(runs, "run-newer/board");
     mkdirSync(older, { recursive: true });
@@ -310,7 +339,7 @@ projects:
 
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--max-iterations must be an integer between 1 and 1000/u);
-    expect(existsSync(join(root, ".loop", "runs", "demo-product", runId))).toBe(false);
+    expect(existsSync(join(root, ".loop", "runs", configuredProjectName(root), runId))).toBe(false);
   });
 
   it("(wave-8) every lifecycle command rejects a traversal run id and leaves a sibling victim byte-identical", () => {
@@ -367,7 +396,7 @@ projects:
     expect(noRun.stderr).toMatch(/No runs found/i);
     expect(noRun.stderr).toMatch(/relayforge run/);
 
-    mkdirSync(join(root, ".loop/runs/demo-product/r1/board"), { recursive: true });
+    mkdirSync(join(root, ".loop/runs", configuredProjectName(root), "r1/board"), { recursive: true });
 
     // Viewport switched off (tests/setup.ts sets LOOP_TMUX=off; the CLI child inherits it).
     const pre = runLoop(["--json", "tmux", "pre", "-r", "r1"], root, { LOOP_TMUX: "off" });
@@ -401,7 +430,7 @@ projects:
     const socket = join(mkdtempSync(join(tmpdir(), "loop-cli-sock-")), "s.sock");
     const env = { LOOP_TMUX: "on", LOOP_TMUX_SOCKET: socket };
     const tmux = (args: string[]) => spawnSync("tmux", ["-S", socket, ...args], { encoding: "utf8" });
-    mkdirSync(join(root, ".loop/runs/demo-product/r1/board"), { recursive: true });
+    mkdirSync(join(root, ".loop/runs", configuredProjectName(root), "r1/board"), { recursive: true });
 
     try {
       // new: creates it. stdout is a pipe here, so it stays DETACHED rather than dying on "open terminal failed".

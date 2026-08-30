@@ -17,15 +17,18 @@
 </p>
 
 ```bash
-# from this repo (npm package is not published yet)
-npm ci && npm run build && npm link
+# Install the current build directly from GitHub (npm registry release is pending)
+npm install -g github:arbazkhan971/relayforge
 
 cd /path/to/your-git-project   # must be a clean git repo for --execute
-relayforge init --provider claude   # or: codex | gemini
-relayforge doctor
+relayforge setup --provider codex   # or: claude | gemini
 relayforge run "Ship a small verified change"            # dry-run (default)
 relayforge run "Ship a small verified change" --execute  # actually launch agents
 ```
+
+`setup` initializes the project when needed, detects its real name and build/test
+commands, writes project intelligence for the agents, validates the config, and
+separately reports whether safe planning and full coding execution are ready.
 
 ---
 
@@ -44,15 +47,18 @@ Most “agent team” tools are shell scripts around chat CLIs. RelayForge is a 
 
 ---
 
-## Setup (from source)
+## Setup
 
-npm is **not** on the registry yet. Install from GitHub:
+The npm registry release is still gated, but the current build installs directly
+from GitHub.
 
 ### 1. Prerequisites
 
 - **Node.js** 20.x or ≥22  
 - **Git**  
 - At least one agent CLI you use day-to-day: **`claude`**, **`codex`**, or **`gemini`**  
+- A C/C++ build toolchain and Python if npm needs to compile the SQLite binding
+  (`build-essential python3` on Ubuntu/Debian)
 - **Linux** recommended for full safety (Bubblewrap + user cgroup). macOS works
   with weaker containment: **dry-run plans, `doctor`, `serve` (dashboard) and
   the CLI all work on macOS** — only `--execute` still fails closed there,
@@ -68,13 +74,12 @@ command -v claude || command -v codex || command -v gemini
 ### 2. Install RelayForge on your PATH
 
 ```bash
-git clone https://github.com/arbazkhan971/relayforge.git
-cd relayforge
-npm ci
-npm run build
-npm link          # exposes: relayforge, loop, loop-orchestrator
+npm install -g github:arbazkhan971/relayforge
 relayforge --version
 ```
+
+To work on RelayForge itself instead, clone this repository and run
+`npm ci && npm run build && npm link`.
 
 ### 3. Init a project
 
@@ -82,19 +87,18 @@ relayforge --version
 cd /path/to/your-app
 git status         # should be clean before --execute
 
-relayforge init --provider claude   # writes relayforge.config.yaml + starters
-relayforge validate
-relayforge doctor                   # host, sandbox, providers — fix anything red
+relayforge setup --provider claude  # or: codex | gemini
 ```
 
-`doctor` should report Node/Git OK, a valid config, and at least one ready provider. On Linux you also want `sandbox: bwrap` and a strong process-scope when available.
+`setup` gives two explicit results: safe planning readiness and coding-execution
+readiness. Fix each execution blocker it prints before adding `--execute`. On
+Linux you want Bubblewrap, a delegated cgroup v2 scope, and at least one ready
+provider. See the [laptop/VM quickstart](docs/laptop-vm-quickstart.md) for the
+short Ubuntu path.
 
 ### 4. First run
 
 ```bash
-# Optional: project memory for agents
-relayforge learn
-
 # Plan only — no agents launched
 relayforge run "Add a /health endpoint and a unit test"
 
@@ -124,6 +128,7 @@ relayforge tmux new           # open the viewport explicitly
 
 ```text
 relayforge doctor              # is this machine / project ready?
+relayforge setup               # initialize/check onboarding; safe to rerun
 relayforge validate            # config schema + semantics
 relayforge run "<goal>"        # dry-run plan
 relayforge run "<goal>" --execute
@@ -151,10 +156,11 @@ Release receipts for npm publication are a separate operator gate.
 
 ---
 
-## What you get after `init`
+## What you get after `setup`
 
 - `relayforge.config.yaml` — strict team / loop / verify config  
 - `brief.md` — project brief for agents  
+- `PROJECT-INTELLIGENCE.md` — detected stack and authoritative build/test commands
 - `.loop/` — durable runs, prompts, locks (do not rename)  
 
 Compatibility: existing `loop.config.yaml` and `.loop/` still work. Binary aliases `loop` and `loop-orchestrator` call the same program as `relayforge`.
@@ -189,6 +195,7 @@ cd examples/todo-app && npm start   # http://localhost:3000
 
 | Doc | For |
 | --- | --- |
+| [Laptop/VM quickstart](docs/laptop-vm-quickstart.md) | Fastest supported path from install to a coding run |
 | [Configuration](docs/configuration.md) | Full config reference |
 | [Safety](docs/safety.md) | Containment and fail-closed rules |
 | [Session steering](docs/session-steering.md) | Future-boundary steering (not terminal injection) |
