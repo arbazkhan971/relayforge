@@ -160,7 +160,11 @@ describe("release workflow authority", () => {
     expect(portable.needs).toBe("validate");
     expect(portable["runs-on"]).toBe("ubuntu-22.04");
     expect(portable.steps?.some((step) => String(step.run).includes("portable-linux.mjs --output"))).toBe(true);
-    expect(portable.steps?.some((step) => String(step.run).includes("smoke-portable-linux.sh"))).toBe(true);
+    const cleanHostStep = portable.steps?.find((step) => String(step.run).includes("smoke-portable-linux.sh"));
+    expect(cleanHostStep).toBeTruthy();
+    expect(String(cleanHostStep?.run)).toContain("sha256sum --check SHA256SUMS");
+    expect(String(cleanHostStep?.run)).toContain("m.releaseReady");
+    expect(String(cleanHostStep?.run)).toContain("m.source.dirty");
     expect(portable.steps?.some((step) => String(step.uses).startsWith("actions/upload-artifact@"))).toBe(true);
     expect(JSON.stringify(portable)).toContain("under-two-minute");
     expect(JSON.stringify(portable)).toContain("without Node, npm, Python, or compilers");

@@ -86,7 +86,12 @@ jobs:
           test -f "$portable/SHA256SUMS"
           echo "PORTABLE_DIR=$portable" >> "$GITHUB_ENV"
       - name: Prove the under-two-minute journey on clean Ubuntu without Node, npm, Python, or compilers
-        run: sh scripts/smoke-portable-linux.sh "$PORTABLE_DIR"
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh scripts/smoke-portable-linux.sh "$PORTABLE_DIR"
+          (cd "$PORTABLE_DIR" && sha256sum --check SHA256SUMS)
+          node -e 'const m=require(process.argv[1]); if(!m.releaseReady || m.source.dirty || m.publicationRequiresOperatorApproval!==true || m.smoke.cleanHost.status!=="passed") process.exit(1)' "$PORTABLE_DIR/portable-release.json"
       - uses: actions/upload-artifact@v4
         with:
           name: relayforge-portable-linux-x64-${{ github.sha }}
