@@ -4,5 +4,7 @@ dist/
 .env
 .env.*
 coverage/
+.portable/
+.portable-cache/
 *.log
 .DS_Store

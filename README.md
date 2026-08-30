@@ -17,8 +17,11 @@
 </p>
 
 ```bash
-# Install the current build directly from GitHub (npm registry release is pending)
-npm install -g github:arbazkhan971/relayforge
+# Linux x64: download the portable CI/Release artifact, then install without npm
+sha256sum --check SHA256SUMS
+sh install-relayforge-1.0.0-rc.1-linux-x64.sh \
+  --archive relayforge-1.0.0-rc.1-linux-x64.tar.gz
+export PATH="$HOME/.local/bin:$PATH"
 
 cd /path/to/your-git-project   # must be a clean git repo for --execute
 relayforge setup --provider codex   # or: claude | gemini
@@ -49,16 +52,18 @@ Most “agent team” tools are shell scripts around chat CLIs. RelayForge is a 
 
 ## Setup
 
-The npm registry release is still gated, but the current build installs directly
-from GitHub.
+The npm registry and public GitHub Release are still gated. CI produces a
+clean-host-tested portable Linux artifact without publishing it; see the
+[portable Linux guide](docs/portable-linux.md). The source install remains
+available for contributors.
 
 ### 1. Prerequisites
 
-- **Node.js** 20.x or ≥22  
 - **Git**  
 - At least one agent CLI you use day-to-day: **`claude`**, **`codex`**, or **`gemini`**  
-- A C/C++ build toolchain and Python if npm needs to compile the SQLite binding
-  (`build-essential python3` on Ubuntu/Debian)
+- For the portable Linux bundle: no Node, npm, Python, or compiler toolchain
+- For a source/npm install only: **Node.js** 20.x or ≥22 plus Python and a C/C++
+  toolchain if npm must compile SQLite
 - **Linux** recommended for full safety (Bubblewrap + user cgroup). macOS works
   with weaker containment: **dry-run plans, `doctor`, `serve` (dashboard) and
   the CLI all work on macOS** — only `--execute` still fails closed there,
@@ -67,11 +72,25 @@ from GitHub.
   Linux box (see `docs/linux-runner-runbook.md`).
 
 ```bash
-node -v && git --version
+git --version
 command -v claude || command -v codex || command -v gemini
+# Source/npm install only:
+node --version
 ```
 
 ### 2. Install RelayForge on your PATH
+
+Recommended on Ubuntu 22.04+ x64 after downloading the portable artifact:
+
+```bash
+sha256sum --check SHA256SUMS
+sh install-relayforge-1.0.0-rc.1-linux-x64.sh \
+  --archive relayforge-1.0.0-rc.1-linux-x64.tar.gz
+export PATH="$HOME/.local/bin:$PATH"
+relayforge --version
+```
+
+For source development or another supported Node host:
 
 ```bash
 npm install -g github:arbazkhan971/relayforge
@@ -197,6 +216,7 @@ cd examples/todo-app && npm start   # http://localhost:3000
 | Doc | For |
 | --- | --- |
 | [Laptop/VM quickstart](docs/laptop-vm-quickstart.md) | Fastest supported path from install to a coding run |
+| [Portable Linux install](docs/portable-linux.md) | Rootless install, upgrades, rollback, and clean-host proof |
 | [Configuration](docs/configuration.md) | Full config reference |
 | [Safety](docs/safety.md) | Containment and fail-closed rules |
 | [Session steering](docs/session-steering.md) | Future-boundary steering (not terminal injection) |
@@ -211,7 +231,8 @@ cd examples/todo-app && npm start   # http://localhost:3000
 - **Single-repo loops** with Claude/Codex/Gemini are the supported product path.  
 - **Multi-repo** is integrated but needs explicit config.  
 - **OpenCode / Pi / Grok** characterization exists; ordinary execute is credential-gated (linked subscription or API key), and release receipts still gate npm publish.  
-- **Not on npm yet** — install from this GitHub repo until `1.0.0-rc.1` is published.  
+- **Not publicly released yet** — CI builds portable Linux assets; a GitHub
+  Release or npm publication still requires explicit operator approval.
 - No auto-merge to `main`, no invented remote PRs without explicit SCM config.
 
 ---

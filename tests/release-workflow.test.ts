@@ -150,4 +150,31 @@ describe("release workflow authority", () => {
     expect(preview.steps?.some((step) => String(step.run).includes("smoke-packed-dashboard.mjs --tarball"))).toBe(true);
     expect(preview.steps?.some((step) => String(step.uses).startsWith("actions/upload-artifact@"))).toBe(true);
   });
+
+  it("builds the rootless portable artifact and proves it on a clean Ubuntu host", () => {
+    const portable = ci.jobs["portable-linux"] as {
+      needs?: string;
+      "runs-on"?: string;
+      steps?: Array<Record<string, unknown>>;
+    };
+    expect(portable.needs).toBe("validate");
+    expect(portable["runs-on"]).toBe("ubuntu-22.04");
+    expect(portable.steps?.some((step) => String(step.run).includes("portable-linux.mjs --output"))).toBe(true);
+    expect(portable.steps?.some((step) => String(step.run).includes("smoke-portable-linux.sh"))).toBe(true);
+    expect(portable.steps?.some((step) => String(step.uses).startsWith("actions/upload-artifact@"))).toBe(true);
+    expect(JSON.stringify(portable)).toContain("under-two-minute");
+    expect(JSON.stringify(portable)).toContain("without Node, npm, Python, or compilers");
+
+    const releasePortable = release.jobs["portable-linux"] as {
+      needs?: string;
+      "runs-on"?: string;
+      steps?: Array<Record<string, unknown>>;
+    };
+    expect(releasePortable.needs).toBe("gate");
+    expect(releasePortable["runs-on"]).toBe("ubuntu-22.04");
+    expect(releasePortable.steps?.some((step) => String(step.run).includes("portable-linux.mjs --output"))).toBe(true);
+    expect(releasePortable.steps?.some((step) => String(step.run).includes("smoke-portable-linux.sh"))).toBe(true);
+    expect(releasePortable.steps?.some((step) => String(step.uses).startsWith("actions/upload-artifact@"))).toBe(true);
+    expect(JSON.stringify(releasePortable)).not.toMatch(/gh release|softprops|contents\W*write/iu);
+  });
 });

@@ -65,6 +65,7 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "smoke": "node scripts/smoke.mjs",
+    "portable:linux": "node scripts/portable-linux.mjs",
     "prepack": "npm run build",
     "validate": "npm run typecheck && npm run test && npm run build"
   },

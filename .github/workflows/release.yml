@@ -37,6 +37,39 @@ jobs:
       - run: npm ci
       - run: RELAYFORGE_TEST_REQUIRE_CGROUP=1 npx vitest run tests/cgroup-delegation-linux.test.ts
 
+  portable-linux:
+    name: release-ready rootless Linux x64 bundle
+    needs: gate
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: .portable-cache
+          key: relayforge-portable-node-v22.23.2-linux-x64
+      - run: npm ci
+      - name: Build and verify the portable artifact without publishing it
+        shell: bash
+        run: |
+          set -euo pipefail
+          portable="$RUNNER_TEMP/relayforge-portable"
+          node scripts/portable-linux.mjs --output "$portable"
+          sh scripts/smoke-portable-linux.sh "$portable"
+          (cd "$portable" && sha256sum --check SHA256SUMS)
+          node -e 'const m=require(process.argv[1]); if(!m.releaseReady || m.publicationRequiresOperatorApproval!==true || m.smoke.cleanHost.status!=="passed") process.exit(1)' "$portable/portable-release.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relayforge-portable-linux-x64-${{ github.ref_name }}
+          path: ${{ runner.temp }}/relayforge-portable
+          if-no-files-found: error
+          retention-days: 14
+
   artifact:
     name: exact packed artifact with contained native evidence
     needs: [gate, required-cgroup]
